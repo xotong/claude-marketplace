@@ -1,0 +1,81 @@
+# GitLab CI/CD Component — Skill Safety Scanner
+#
+# Publish this repo as a GitLab CI/CD catalog component so tenant repos can
+# include it with a single `include:` line. See README.md for setup steps.
+#
+# Usage in a tenant's .gitlab-ci.yml:
+#
+#   include:
+#     - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
+#       inputs:
+#         endpoint: $LITELLM_ENDPOINT      # set as CI/CD variable (masked)
+#         api_key: $LITELLM_API_KEY        # set as CI/CD variable (masked)
+#         model: "kimi-k2"                 # model alias in your LiteLLM deployment
+
+spec:
+  inputs:
+    endpoint:
+      type: string
+      description: "OpenAI-compatible LLM base URL (e.g. https://litellm.company.com/v1)"
+    api_key:
+      type: string
+      description: "API key for the LLM endpoint. Use a masked CI/CD variable."
+    model:
+      type: string
+      default: "hosted-model"
+      description: "Model alias as registered in LiteLLM. Overrides config.yaml default."
+    threshold:
+      type: number
+      default: 0.85
+      description: "Minimum confidence_safe score to pass. Float 0-1."
+    skills_dir:
+      type: string
+      default: "."
+      description: "Directory to scan recursively for SKILL.md files."
+    fail_on_review:
+      type: boolean
+      default: false
+      description: "Treat REVIEW_NEEDED verdict as a pipeline failure."
+    max_retries:
+      type: number
+      default: 3
+      description: "API call retries on transient errors."
+    image:
+      type: string
+      default: "registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest"
+      description: "Scanner image. Pin to a digest or tag for reproducible pipelines."
+    stage:
+      type: string
+      default: "test"
+      description: "GitLab CI stage to run the job in."
+
+---
+
+skill-safety-scan:
+  stage: $[[ inputs.stage ]]
+  image:
+    name: $[[ inputs.image ]]
+    # Reset the image's ENTRYPOINT so GitLab CI can run the script block normally.
+    entrypoint: [""]
+  variables:
+    SCANNER_ENDPOINT: $[[ inputs.endpoint ]]
+    SCANNER_API_KEY: $[[ inputs.api_key ]]
+    SCANNER_MODEL: $[[ inputs.model ]]
+    SCANNER_THRESHOLD: "$[[ inputs.threshold ]]"
+    SCANNER_SKILLS_DIR: "$CI_PROJECT_DIR/$[[ inputs.skills_dir ]]"
+    SCANNER_FAIL_ON_REVIEW: "$[[ inputs.fail_on_review ]]"
+    SCANNER_MAX_RETRIES: "$[[ inputs.max_retries ]]"
+  script:
+    - python /scanner/scanner.py
+  artifacts:
+    # JUnit report: individual skill results appear as named tests in the MR UI.
+    reports:
+      junit: "$CI_PROJECT_DIR/$[[ inputs.skills_dir ]]/scan-results.xml"
+    # JSON report: downloadable from the pipeline artifacts panel.
+    paths:
+      - "$CI_PROJECT_DIR/$[[ inputs.skills_dir ]]/scan-report.json"
+    # Always upload artifacts — even on failure — so you can review what failed.
+    when: always
+    expire_in: 30 days
+  # Do not allow this job to be skipped silently.
+  allow_failure: false

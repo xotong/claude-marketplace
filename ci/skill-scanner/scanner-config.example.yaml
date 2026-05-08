@@ -1,0 +1,28 @@
+# scanner-config.yaml — place this file in the root of your skills repo
+#
+# The skill scanner reads this file when it runs against your repo.
+# Only specify the fields you want to override. Unspecified fields fall back
+# to the scanner's built-in defaults (ci/skill-scanner/config.yaml in
+# skillshub/claude-marketplace).
+#
+# After editing, commit this file. The next pipeline run picks up the changes
+# automatically — no image rebuild required.
+
+# Model alias as registered in your LiteLLM deployment.
+# Ask the Platform Team for the correct value for your environment.
+model: "kimi-k2"
+
+# Safety threshold. Skills scoring below this value fail the pipeline.
+# Start at 0.85. Lower only if you have false positives you have reviewed.
+threshold: 0.85
+
+# Uncomment and edit these to customise the prompts for your team's context.
+# Useful if your skills use domain-specific patterns that confuse the default
+# evaluator (e.g. internal tool names that look like external URLs).
+#
+# system_prompt: |
+#   <your custom system prompt here>
+#
+# user_prompt: |
+#   <your custom user prompt here>
+#   The string {skill_content} is replaced with the skill file contents.
