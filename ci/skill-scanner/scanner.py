@@ -14,12 +14,14 @@ Required env vars:
   SCANNER_API_KEY    API key for the endpoint
 
 Optional env vars:
-  SCANNER_SKILLS_DIR          Directory to scan recursively (default: .)
-  SCANNER_THRESHOLD           Float 0-1, override config threshold (default: 0.85)
-  SCANNER_MODEL               Model name as registered in LiteLLM (override config)
-  SCANNER_FAIL_ON_REVIEW      Treat REVIEW_NEEDED verdict as failure (default: false)
-  SCANNER_CONFIG_FILE         Explicit path to a config YAML (overrides discovery)
-  SCANNER_MAX_RETRIES         API call retries on transient error (default: 3)
+  SCANNER_SKILLS_DIR    Directory to scan recursively (default: .)
+  SCANNER_OUTPUT_DIR    Where to write scan-report.json and scan-results.xml
+                        (default: <skills_dir>/.skill-scanner-output)
+  SCANNER_THRESHOLD     Float 0-1, override config threshold (default: 0.85)
+  SCANNER_MODEL         Model name as registered in LiteLLM (override config)
+  SCANNER_FAIL_ON_REVIEW  Treat REVIEW_NEEDED verdict as failure (default: false)
+  SCANNER_CONFIG_FILE   Explicit path to a config YAML (overrides discovery)
+  SCANNER_MAX_RETRIES   API call retries on transient error (default: 3)
 """
 
 import json
@@ -38,17 +40,16 @@ from rich import box
 
 console = Console()
 
-# ── Config loading ────────────────────────────────────────────────────────────
-
 BUILTIN_CONFIG = Path(__file__).parent / "config.yaml"
 
+
+# ── Config loading ────────────────────────────────────────────────────────────
 
 def load_config(skills_dir: Path) -> dict:
     """Merge config from builtin → local file → env vars."""
     with open(BUILTIN_CONFIG) as f:
         config = yaml.safe_load(f)
 
-    # Explicit config file path from env
     explicit = os.environ.get("SCANNER_CONFIG_FILE")
     if explicit:
         p = Path(explicit)
@@ -59,14 +60,12 @@ def load_config(skills_dir: Path) -> dict:
             config.update({k: v for k, v in (yaml.safe_load(f) or {}).items() if v is not None})
         console.print(f"[dim]Config loaded from {p}[/dim]")
     else:
-        # Auto-discover scanner-config.yaml in skills dir
         local = skills_dir / "scanner-config.yaml"
         if local.exists():
             with open(local) as f:
                 config.update({k: v for k, v in (yaml.safe_load(f) or {}).items() if v is not None})
             console.print(f"[dim]Local config merged from {local}[/dim]")
 
-    # Env var overrides — individual knobs without a full config rewrite
     if os.environ.get("SCANNER_THRESHOLD"):
         config["threshold"] = float(os.environ["SCANNER_THRESHOLD"])
     if os.environ.get("SCANNER_MODEL"):
@@ -80,7 +79,10 @@ def load_config(skills_dir: Path) -> dict:
 def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int) -> dict:
     """Call the LLM and return the parsed safety assessment."""
     skill_content = skill_path.read_text(encoding="utf-8")
-    user_prompt = config["user_prompt"].format(skill_content=skill_content)
+    # Use str.replace() not str.format() — skill files routinely contain { } braces
+    # in JSON examples, shell variables, and template syntax. .format() would attempt
+    # to substitute those as Python format fields and raise KeyError/IndexError.
+    user_prompt = config["user_prompt"].replace("{skill_content}", skill_content)
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -95,7 +97,6 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
             )
             raw = response.choices[0].message.content
             result = json.loads(raw)
-            # Normalise: ensure required fields exist
             result.setdefault("confidence_safe", 0.0)
             result.setdefault("risks", [])
             result.setdefault("reasoning", "")
@@ -110,7 +111,13 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
             time.sleep(wait)
 
         except APIStatusError as e:
-            raise RuntimeError(f"API error {e.status_code}: {e.message}") from e
+            # Retry on transient server errors; surface 4xx immediately.
+            if e.status_code >= 500 and attempt < max_retries:
+                wait = 2 ** attempt
+                console.print(f"[yellow]  Attempt {attempt} failed (HTTP {e.status_code}), retrying in {wait}s…[/yellow]")
+                time.sleep(wait)
+            else:
+                raise RuntimeError(f"API error {e.status_code}: {e.message}") from e
 
         except json.JSONDecodeError as e:
             raise RuntimeError(f"LLM returned non-JSON: {raw[:200]}") from e
@@ -119,7 +126,14 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
 # ── File discovery ────────────────────────────────────────────────────────────
 
 def find_skills(root: Path) -> list[Path]:
-    return sorted(root.rglob("SKILL.md"))
+    """Recursively find all SKILL.md files, excluding hidden directories (.git, etc.)."""
+    return sorted(
+        p for p in root.rglob("SKILL.md")
+        # Exclude any SKILL.md whose path passes through a hidden directory.
+        # parts[:-1] gives the directory components; the file itself (SKILL.md) is excluded
+        # so a skill named .hidden/SKILL.md won't be accidentally excluded.
+        if not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
+    )
 
 
 # ── Output writers ────────────────────────────────────────────────────────────
@@ -200,6 +214,12 @@ def main() -> None:
         console.print(f"[red bold]ERROR:[/red bold] SCANNER_SKILLS_DIR not found: {skills_dir}")
         sys.exit(2)
 
+    # Reports go to a dedicated output dir so they never pollute the repo working tree.
+    output_dir = Path(
+        os.environ.get("SCANNER_OUTPUT_DIR", str(skills_dir / ".skill-scanner-output"))
+    ).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     fail_on_review = os.environ.get("SCANNER_FAIL_ON_REVIEW", "false").lower() in ("1", "true", "yes")
     max_retries = int(os.environ.get("SCANNER_MAX_RETRIES", "3"))
 
@@ -208,6 +228,7 @@ def main() -> None:
 
     console.rule("[bold]Skill Safety Scanner[/bold]")
     console.print(f"  Directory : {skills_dir}")
+    console.print(f"  Output    : {output_dir}")
     console.print(f"  Endpoint  : {endpoint}")
     console.print(f"  Model     : {config['model']}")
     console.print(f"  Threshold : {threshold}")
@@ -238,29 +259,18 @@ def main() -> None:
             color = "green" if passed else "red"
             console.print(f"[{color}]{score:.2f}[/{color}] — [{color}]{verdict}[/{color}]")
 
-            results.append({
-                "path": rel,
-                "passed": passed,
-                "error": None,
-                **assessment,
-            })
+            results.append({"path": rel, "passed": passed, "error": None, **assessment})
         except Exception as e:
             console.print(f"[red]ERROR — {e}[/red]")
             results.append({
-                "path": rel,
-                "passed": False,
-                "error": str(e),
-                "confidence_safe": 0.0,
-                "verdict": "ERROR",
-                "risks": [],
-                "reasoning": "",
+                "path": rel, "passed": False, "error": str(e),
+                "confidence_safe": 0.0, "verdict": "ERROR", "risks": [], "reasoning": "",
             })
 
     print_summary_table(results, threshold)
 
-    # Write reports into the skills dir so GitLab CI can pick them up as artifacts
-    json_report = skills_dir / "scan-report.json"
-    junit_report = skills_dir / "scan-results.xml"
+    json_report = output_dir / "scan-report.json"
+    junit_report = output_dir / "scan-results.xml"
     write_json_report(results, threshold, json_report)
     write_junit_report(results, threshold, junit_report)
     console.print(f"\n  JSON report : {json_report}")

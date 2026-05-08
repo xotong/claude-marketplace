@@ -1,0 +1,56 @@
+# CI for the skillshub/claude-marketplace repo itself.
+# Runs on every MR and push to main.
+#
+# Jobs:
+#   validate-json     — Ensures marketplace.json and all plugin.json files parse cleanly.
+#   scan-platform-verified — Runs the skill safety scanner against plugins/platform-verified/
+#                            so the Platform Team dogfoods their own tool.
+
+stages:
+  - validate
+  - scan
+
+# ── JSON validation ───────────────────────────────────────────────────────────
+
+validate-json:
+  stage: validate
+  image: python:3.12-slim
+  script:
+    - |
+      set -e
+      echo "Validating .claude-plugin/marketplace.json..."
+      python3 -c "import json, sys; json.load(open('.claude-plugin/marketplace.json')); print('  OK')"
+
+      echo "Validating all plugin.json files..."
+      find plugins -name 'plugin.json' -path '*/.claude-plugin/*' | sort | while read f; do
+        python3 -c "import json, sys; json.load(open('$f')); print('  OK: $f')"
+      done
+
+      echo "All JSON files valid."
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ── Skill safety scan on platform-verified ───────────────────────────────────
+# Platform Team dogfoods the scanner against the skills they officially endorse.
+# This job is skipped if plugins/platform-verified/skills/ has no SKILL.md files yet.
+
+include:
+  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
+    inputs:
+      stage: "scan"
+      skills_dir: "plugins/platform-verified"
+      # Be strict for platform-verified — REVIEW_NEEDED blocks merge.
+      fail_on_review: true
+      threshold: 0.90
+
+# Override the job's rules so it only runs when platform-verified content changes.
+skill-safety-scan:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - plugins/platform-verified/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - plugins/platform-verified/**/*
+    - when: never

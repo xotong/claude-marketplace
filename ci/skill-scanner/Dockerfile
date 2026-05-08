@@ -10,11 +10,23 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy scanner and built-in default config.
-# The config is the primary thing teams will want to tweak — but they do so
-# via scanner-config.yaml in their own repo, not by rebuilding this image.
+# Prompts and threshold are tunable via scanner-config.yaml in the tenant's repo
+# without rebuilding this image — see config.yaml for the defaults.
 COPY scanner.py config.yaml ./
 
-# Standalone usage:   docker run --rm -e SCANNER_ENDPOINT=... -e SCANNER_API_KEY=... \
-#                       -v $(pwd):/skills -e SCANNER_SKILLS_DIR=/skills image
-# GitLab CI usage:    entrypoint is overridden by the component; see gitlab-component.yml
+# Run as a non-root user. Required by most enterprise container admission policies
+# and flagged by container security scanners (Trivy, Grype, Prisma) otherwise.
+RUN adduser --disabled-password --gecos "" scanner
+USER scanner
+
+# Standalone usage:
+#   docker run --rm \
+#     -e SCANNER_ENDPOINT=https://litellm.company.com/v1 \
+#     -e SCANNER_API_KEY=... \
+#     -v $(pwd):/repo \
+#     -e SCANNER_SKILLS_DIR=/repo \
+#     <image>
+#
+# GitLab CI usage: entrypoint is overridden by the component (entrypoint: [""]);
+# the script block calls "python /scanner/scanner.py" directly.
 ENTRYPOINT ["python", "/scanner/scanner.py"]

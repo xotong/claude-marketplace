@@ -1,3 +1,5 @@
-openai>=1.30.0
-pyyaml>=6.0.0
-rich>=13.0.0
+# ~= (compatible release) allows patch and minor bumps but blocks major version changes.
+# Update these when rebuilding the image; run pip-compile to get a full lockfile if needed.
+openai~=1.30
+pyyaml~=6.0
+rich~=13.0
