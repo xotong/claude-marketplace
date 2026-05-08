@@ -54,16 +54,22 @@ In your team skills repo, add to `.gitlab-ci.yml`:
 ```yaml
 include:
   - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
-    inputs:
-      endpoint: $LITELLM_ENDPOINT
-      api_key: $LITELLM_API_KEY
-      model: "kimi-k2"           # confirm this alias with the Platform Team
 ```
 
-Set `LITELLM_ENDPOINT` and `LITELLM_API_KEY` as masked CI/CD variables in your
-project's Settings → CI/CD → Variables. Never hardcode them in the YAML.
+That's the entire CI config change. Endpoint and model are managed centrally by
+the Platform Team — you don't need to know or configure them.
 
-### Step 2 — Copy the example config (optional but recommended)
+### Step 2 — Set the API key CI/CD variable
+
+In your project: **Settings → CI/CD → Variables → Add variable**
+
+| Key | Value | Flags |
+|---|---|---|
+| `LITELLM_API_KEY` | _(your key — ask Platform Team)_ | Masked ✓, Protected ✓ |
+
+This is the only credential tenants manage. Never put it in `.gitlab-ci.yml`.
+
+### Step 3 — Copy the example config (optional but recommended)
 
 ```bash
 cp scanner-config.example.yaml scanner-config.yaml
@@ -76,7 +82,7 @@ The scanner reads `scanner-config.yaml` from the repo root at runtime. You can
 adjust the threshold or prompts without touching the CI YAML or rebuilding
 the image. If the file is absent, built-in defaults are used.
 
-### Step 3 — View results in GitLab
+### Step 4 — View results in GitLab
 
 - **MR UI → Tests tab**: each SKILL.md appears as a named test case. Failed
   skills show the reasoning from the LLM.
@@ -89,13 +95,29 @@ the image. If the file is absent, built-in defaults are used.
 All configuration lives in `scanner-config.yaml` (tenant file) or
 `/scanner/config.yaml` (image default). Environment variables override both.
 
+**Tenant-facing** (the only things teams configure):
+
+| What | Where | Description |
+|---|---|---|
+| `LITELLM_API_KEY` | Project CI/CD variable (masked) | API key for the LLM gateway |
+| `scanner-config.yaml` | Repo root (optional) | Tune threshold or prompts per-repo |
+
+**Platform Team managed** (fixed in `gitlab-component.yml` — tenants never touch these):
+
+| Env var | Value |
+|---|---|
+| `SCANNER_ENDPOINT` | `https://litellm.company.com/v1` |
+| `SCANNER_MODEL` | `kimi-k2` |
+
+**All env vars** (for local runs or advanced overrides):
+
 | Env var | Default | Description |
 |---|---|---|
-| `SCANNER_ENDPOINT` | _(required)_ | OpenAI-compatible base URL |
-| `SCANNER_API_KEY` | _(required)_ | API key (use masked CI/CD variable) |
+| `SCANNER_ENDPOINT` | _(set in component)_ | OpenAI-compatible base URL |
+| `SCANNER_API_KEY` | `$LITELLM_API_KEY` | API key |
 | `SCANNER_SKILLS_DIR` | `.` | Directory to scan recursively |
 | `SCANNER_THRESHOLD` | `0.85` | Override threshold from config file |
-| `SCANNER_MODEL` | `hosted-model` | Override model from config file |
+| `SCANNER_MODEL` | `kimi-k2` | Override model from config file |
 | `SCANNER_FAIL_ON_REVIEW` | `false` | Treat REVIEW_NEEDED as failure |
 | `SCANNER_MAX_RETRIES` | `3` | Retries on transient API errors |
 | `SCANNER_CONFIG_FILE` | _(auto)_ | Explicit path to a config YAML |

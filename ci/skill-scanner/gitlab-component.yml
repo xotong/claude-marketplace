@@ -1,53 +1,47 @@
 # GitLab CI/CD Component — Skill Safety Scanner
 #
-# Publish this repo as a GitLab CI/CD catalog component so tenant repos can
-# include it with a single `include:` line. See README.md for setup steps.
-#
-# Usage in a tenant's .gitlab-ci.yml:
+# Usage in a tenant's .gitlab-ci.yml — no inputs needed:
 #
 #   include:
 #     - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
-#       inputs:
-#         endpoint: $LITELLM_ENDPOINT      # set as CI/CD variable (masked)
-#         api_key: $LITELLM_API_KEY        # set as CI/CD variable (masked)
-#         model: "kimi-k2"                 # model alias in your LiteLLM deployment
+#
+# The only thing tenants must configure is one masked CI/CD variable in their
+# project's Settings → CI/CD → Variables:
+#
+#   LITELLM_API_KEY   (masked, protected)   API key for the internal LLM gateway
+#
+# Endpoint and model are fixed here by the Platform Team. LiteLLM handles
+# model routing centrally — tenants never need to know or change these.
+#
+# Optional inputs (override only if you have a specific need):
+#   stage        GitLab CI stage (default: test)
+#   skills_dir   Subdirectory to scan (default: repo root)
+#   threshold    Pass score 0-1 (default: 0.85; prefer scanner-config.yaml instead)
+#   fail_on_review  Treat REVIEW_NEEDED as failure (default: false)
+#   image        Pin to a specific scanner image tag (default: latest)
 
 spec:
   inputs:
-    endpoint:
+    stage:
       type: string
-      description: "OpenAI-compatible LLM base URL (e.g. https://litellm.company.com/v1)"
-    api_key:
-      type: string
-      description: "API key for the LLM endpoint. Use a masked CI/CD variable."
-    model:
-      type: string
-      default: "hosted-model"
-      description: "Model alias as registered in LiteLLM. Overrides config.yaml default."
-    threshold:
-      type: number
-      default: 0.85
-      description: "Minimum confidence_safe score to pass. Float 0-1."
+      default: "test"
+      description: "GitLab CI stage to run the scan in."
     skills_dir:
       type: string
       default: "."
-      description: "Directory to scan recursively for SKILL.md files."
+      description: "Subdirectory to scan recursively for SKILL.md files. Defaults to repo root."
+    threshold:
+      type: number
+      default: 0.85
+      description: "Override the safety threshold. Prefer setting this in scanner-config.yaml instead."
     fail_on_review:
       type: boolean
       default: false
       description: "Treat REVIEW_NEEDED verdict as a pipeline failure."
-    max_retries:
-      type: number
-      default: 3
-      description: "API call retries on transient errors."
     image:
       type: string
       default: "registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest"
-      description: "Scanner image. Pin to a digest or tag for reproducible pipelines."
-    stage:
-      type: string
-      default: "test"
-      description: "GitLab CI stage to run the job in."
+      description: "Pin to a specific image tag or digest for reproducible pipelines."
 
 ---
 
@@ -58,24 +52,22 @@ skill-safety-scan:
     # Reset the image's ENTRYPOINT so GitLab CI can run the script block normally.
     entrypoint: [""]
   variables:
-    SCANNER_ENDPOINT: $[[ inputs.endpoint ]]
-    SCANNER_API_KEY: $[[ inputs.api_key ]]
-    SCANNER_MODEL: $[[ inputs.model ]]
+    # Fixed by the Platform Team — tenants do not configure these.
+    SCANNER_ENDPOINT: "https://litellm.company.com/v1"
+    SCANNER_MODEL: "kimi-k2"
+    # Tenants set LITELLM_API_KEY as a masked CI/CD variable in project settings.
+    SCANNER_API_KEY: $LITELLM_API_KEY
+    # Derived from inputs.
     SCANNER_THRESHOLD: "$[[ inputs.threshold ]]"
     SCANNER_SKILLS_DIR: "$CI_PROJECT_DIR/$[[ inputs.skills_dir ]]"
     SCANNER_FAIL_ON_REVIEW: "$[[ inputs.fail_on_review ]]"
-    SCANNER_MAX_RETRIES: "$[[ inputs.max_retries ]]"
   script:
     - python /scanner/scanner.py
   artifacts:
-    # JUnit report: individual skill results appear as named tests in the MR UI.
     reports:
       junit: "$CI_PROJECT_DIR/$[[ inputs.skills_dir ]]/scan-results.xml"
-    # JSON report: downloadable from the pipeline artifacts panel.
     paths:
       - "$CI_PROJECT_DIR/$[[ inputs.skills_dir ]]/scan-report.json"
-    # Always upload artifacts — even on failure — so you can review what failed.
     when: always
     expire_in: 30 days
-  # Do not allow this job to be skipped silently.
   allow_failure: false
