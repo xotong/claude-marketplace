@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "xotong1-marketplace",
+  "version": "0.1.0",
+  "description": "Internal Claude Code plugin marketplace for xotong1.",
+  "owner": {
+    "name": "xotong1 Platform Team"
+  },
+  "plugins": [
+    {
+      "name": "hello-xotong1",
+      "source": "./plugins/hello-xotong1",
+      "version": "0.1.0",
+      "description": "Smoke-test plugin for the xotong1 marketplace. Confirms the install/distribution pipeline works end-to-end.",
+      "author": {
+        "name": "xotong1 Platform Team"
+      },
+      "category": "internal",
+      "keywords": ["smoke-test", "internal", "xotong1"]
+    }
+  ]
+}
