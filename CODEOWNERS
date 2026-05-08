@@ -1,0 +1,26 @@
+# CODEOWNERS — GitLab Ultimate
+#
+# Rules are evaluated bottom-up; the last matching rule wins.
+# All paths are relative to the repo root.
+#
+# @skillshub/platform-team must approve any change to these paths.
+# Configure this in GitLab: Settings → Repository → Protected Branches → main
+# → set "Code owner approval" to required.
+
+# Default owner for everything not matched below
+*                                           @skillshub/platform-team
+
+# The central catalog — platform team owns who gets listed
+.claude-plugin/marketplace.json             @skillshub/platform-team
+
+# Platform-verified skills — only platform team can merge here
+/plugins/platform-verified/                 @skillshub/platform-team
+
+# Vendored upstream plugins — platform team manages upgrades
+/plugins/superpowers/                       @skillshub/platform-team
+/plugins/frontend-design/                  @skillshub/platform-team
+/plugins/hello-xotong1/                    @skillshub/platform-team
+
+# Governance docs
+CODEOWNERS                                  @skillshub/platform-team
+VENDORED.md                                 @skillshub/platform-team

@@ -1,22 +1,33 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "xotong1-marketplace",
-  "version": "0.2.0",
-  "description": "Internal Claude Code plugin marketplace for xotong1.",
+  "version": "0.3.0",
+  "description": "Internal Claude Code plugin marketplace for xotong1 (Skills Hub).",
   "owner": {
     "name": "xotong1 Platform Team"
   },
   "plugins": [
     {
-      "name": "hello-xotong1",
-      "source": "./plugins/hello-xotong1",
+      "name": "platform-verified",
+      "source": "./plugins/platform-verified",
       "version": "0.1.0",
-      "description": "Smoke-test plugin for the xotong1 marketplace. Confirms the install/distribution pipeline works end-to-end.",
+      "description": "Skills curated and approved by the xotong1 Platform Team. Safe to install on any tenant machine.",
       "author": {
         "name": "xotong1 Platform Team"
       },
       "category": "internal",
-      "keywords": ["smoke-test", "internal", "xotong1"]
+      "keywords": ["platform", "verified", "official"]
+    },
+    {
+      "name": "hello-xotong1",
+      "source": "./plugins/hello-xotong1",
+      "version": "0.1.0",
+      "description": "Smoke-test plugin. Confirms the install/distribution pipeline works end-to-end.",
+      "author": {
+        "name": "xotong1 Platform Team"
+      },
+      "category": "internal",
+      "keywords": ["smoke-test", "internal"]
     },
     {
       "name": "superpowers",
