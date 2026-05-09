@@ -52,6 +52,9 @@ Gives you: xotong1 coding conventions, internal docs navigation, and LiteLLM API
 /plugin install anthropic-hookify@xotong1-marketplace      # Configure hooks via Markdown rules
 /plugin install frontend-design@xotong1-marketplace        # Production-grade UI design
 /plugin install obsidian@xotong1-marketplace               # Obsidian vault Markdown, Bases, Canvas
+/plugin install gstack@xotong1-marketplace                 # Virtual team: CEO/EM/Designer/QA roles
+/plugin install getshitdone@xotong1-marketplace            # Context-rot prevention, /gsd workflow
+/plugin install ruflo@xotong1-marketplace                  # Multi-agent swarm + persistent memory
 ```
 
 ### Your team's skills
@@ -79,6 +82,9 @@ Gives you: xotong1 coding conventions, internal docs navigation, and LiteLLM API
 | `anthropic-hookify` | 1.0.0 | Markdown-configured session hooks |
 | `frontend-design` | 0.1.0 | Distinctive, production-grade frontend interfaces |
 | `obsidian` | 1.0.1 | Obsidian vault Markdown, Bases, Canvas, CLI and web extraction |
+| `gstack` | 1.0.0 | Virtual engineering team — CEO/EM/Designer/QA roles, browser QA, production gates |
+| `getshitdone` | 1.40.0 | Context-rot prevention — Discuss→Plan→Execute→Verify loop, 66 /gsd commands |
+| `ruflo` | 2.5.0 | Multi-agent swarm, AgentDB persistent memory, SPARC methodology (38 skills) |
 
 ---
 
@@ -197,6 +203,9 @@ plugins/
   anthropic-hookify/                   Vendored: anthropics/claude-plugins-official (MIT)
   compound-engineering/                Vendored: EveryInc/compound-engineering-plugin (MIT)
   obsidian/                            Vendored: kepano/obsidian-skills v1.0.1 (MIT)
+  gstack/                              Vendored: garrytan/gstack (MIT)
+  getshitdone/                         Vendored: gsd-build/get-shit-done v1.40.0 (MIT)
+  ruflo/                               Vendored: ruvnet/ruflo v2.5.0 (MIT) — skills only
 
 ci/
   skill-scanner/                       LLM-as-judge safety scanner + GitLab CI component

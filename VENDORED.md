@@ -16,6 +16,9 @@ version in `.claude-plugin/marketplace.json`, and update the "Vendored on" date.
 | `anthropic-hookify` | https://github.com/anthropics/claude-plugins-official (plugins/hookify) | `76b35e91d1c99c090b1a08dade53bcc5e352c1b2` | 2026-05-08 | MIT |
 | `compound-engineering` | https://github.com/EveryInc/compound-engineering-plugin (plugins/compound-engineering) | `6fc57c501f2e4a6978a91b41337026cf25086646` | 2026-05-08 | MIT |
 | `obsidian` | https://github.com/kepano/obsidian-skills | `ac9398734fe719565809f7a6048b05c36b1ca38f` | 2026-05-09 | MIT |
+| `gstack` | https://github.com/garrytan/gstack | `06605477e25bf9b302888465baec132fa6093f39` | 2026-05-09 | MIT |
+| `getshitdone` | https://github.com/gsd-build/get-shit-done | `3aaed8f5d7c3492678b867e6687d42c88fe227e5` | 2026-05-09 | MIT |
+| `ruflo` | https://github.com/ruvnet/ruflo | `b5a57cbf1888cc9bfcc68712d3e4679b0e3d7a75` | 2026-05-09 | MIT |
 
 ## What was vendored
 
@@ -49,6 +52,26 @@ Full repo from `kepano/obsidian-skills` verbatim (upstream already ships as a Cl
 Contains: `.claude-plugin/plugin.json`, `skills/` (obsidian-markdown, obsidian-bases, obsidian-cli, json-canvas, defuddle), `LICENSE`, `README.md`.
 Dropped: upstream `.claude-plugin/marketplace.json` (irrelevant for embedding as a sub-plugin).
 
+### gstack
+Skills from `garrytan/gstack` root (upstream uses flat layout — each skill is a top-level directory).
+Contains: 48 skills covering code review, QA, design, planning, browser automation, production safety gates.
+Dropped: `openclaw/` (separate sub-package), `bin/`, `extension/` (browser extension), `model-overlays/`, `lib/`, `contrib/` (tooling, not skills).
+Added: `.claude-plugin/plugin.json` (authored locally — upstream has no manifest).
+Note: `browse`, `qa`, `setup-browser-cookies` skills require Chrome/browser configured on the user's machine.
+
+### getshitdone
+Commands from `gsd-build/get-shit-done` `commands/gsd/` directory (66 `/gsd` commands).
+Contains: 66 slash commands covering the full Discuss→Plan→Execute→Verify lifecycle plus project management, context management, and team workflows.
+Also includes `references/` supporting docs (context-rot patterns, worktree safety, gate prompts, etc.).
+Added: `.claude-plugin/plugin.json` (authored locally — upstream has no manifest).
+
+### ruflo
+Skills from `ruvnet/ruflo` `.claude/skills/` directory (38 SKILL.md files).
+Contains: AgentDB memory skills (learning, vector-search, optimization, memory-patterns), SPARC methodology, swarm orchestration, GitHub automation, pair programming, skill-builder, browser skills.
+Dropped: all MCP server configuration (`mcpServers` entries in upstream plugin.json) — swarm coordination features that require `npx claude-flow@alpha`, `npx ruv-swarm`, or `npx flow-nexus@latest` are NOT available in airgapped environments.
+Added: simplified `.claude-plugin/plugin.json` (authored locally, without mcpServers).
+Note: The 38 skills work fully offline. Swarm MCP features require npx and internet.
+
 ### compound-engineering
 `plugins/compound-engineering/` subtree from `EveryInc/compound-engineering-plugin`.
 Contains: `.claude-plugin/plugin.json`, `agents/` (50+ specialised review agents), `skills/` (30+ skills), `LICENSE`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`.
@@ -74,3 +97,6 @@ Note: `skills/ce-gemini-imagegen/` requires a Google Gemini API key (`GEMINI_API
   - https://github.com/anthropics/claude-plugins-official/security/advisories
   - https://github.com/EveryInc/compound-engineering-plugin/security/advisories
   - https://github.com/kepano/obsidian-skills/security/advisories
+  - https://github.com/garrytan/gstack/security/advisories
+  - https://github.com/gsd-build/get-shit-done/security/advisories
+  - https://github.com/ruvnet/ruflo/security/advisories
