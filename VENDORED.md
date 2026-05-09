@@ -15,6 +15,7 @@ version in `.claude-plugin/marketplace.json`, and update the "Vendored on" date.
 | `anthropic-pr-review` | https://github.com/anthropics/claude-plugins-official (plugins/pr-review-toolkit) | `76b35e91d1c99c090b1a08dade53bcc5e352c1b2` | 2026-05-08 | MIT |
 | `anthropic-hookify` | https://github.com/anthropics/claude-plugins-official (plugins/hookify) | `76b35e91d1c99c090b1a08dade53bcc5e352c1b2` | 2026-05-08 | MIT |
 | `compound-engineering` | https://github.com/EveryInc/compound-engineering-plugin (plugins/compound-engineering) | `6fc57c501f2e4a6978a91b41337026cf25086646` | 2026-05-08 | MIT |
+| `obsidian` | https://github.com/kepano/obsidian-skills | `ac9398734fe719565809f7a6048b05c36b1ca38f` | 2026-05-09 | MIT |
 
 ## What was vendored
 
@@ -29,6 +30,7 @@ Added `plugins/frontend-design/.claude-plugin/plugin.json` (authored locally —
 ### anthropic-dev-skills
 `skills/claude-api/`, `skills/webapp-testing/`, `skills/mcp-builder/` from `anthropics/skills` including all reference materials, examples, and language-specific documentation. Added `.claude-plugin/plugin.json` (authored locally).
 Note: `skill-creator` from the same repo was not vendored here as a more featureful version is available in `anthropic-official` (claude-plugins-official).
+Airgap modifications: removed `skills/claude-api/shared/live-sources.md` (dynamic WebFetch URL registry, non-functional offline); updated `skills/claude-api/SKILL.md` to remove references to it. Vendored MCP Python SDK README and TypeScript SDK README into `skills/mcp-builder/reference/` and updated `skills/mcp-builder/SKILL.md` to reference local files instead of raw.githubusercontent.com URLs.
 
 ### anthropic-feature-dev
 `plugins/feature-dev/` subtree from `anthropics/claude-plugins-official` verbatim.
@@ -41,6 +43,11 @@ Contains: `.claude-plugin/plugin.json`, `agents/` (6 specialised review agents),
 ### anthropic-hookify
 `plugins/hookify/` subtree from `anthropics/claude-plugins-official` verbatim.
 Contains: `.claude-plugin/plugin.json`, `skills/writing-rules/SKILL.md`, `agents/`, `commands/`, `core/`, `hooks/`, `matchers/`, `utils/`, `LICENSE`, `README.md`.
+
+### obsidian
+Full repo from `kepano/obsidian-skills` verbatim (upstream already ships as a Claude plugin).
+Contains: `.claude-plugin/plugin.json`, `skills/` (obsidian-markdown, obsidian-bases, obsidian-cli, json-canvas, defuddle), `LICENSE`, `README.md`.
+Dropped: upstream `.claude-plugin/marketplace.json` (irrelevant for embedding as a sub-plugin).
 
 ### compound-engineering
 `plugins/compound-engineering/` subtree from `EveryInc/compound-engineering-plugin`.
@@ -66,3 +73,4 @@ Note: `skills/ce-gemini-imagegen/` requires a Google Gemini API key (`GEMINI_API
   - https://github.com/anthropics/skills/security/advisories
   - https://github.com/anthropics/claude-plugins-official/security/advisories
   - https://github.com/EveryInc/compound-engineering-plugin/security/advisories
+  - https://github.com/kepano/obsidian-skills/security/advisories

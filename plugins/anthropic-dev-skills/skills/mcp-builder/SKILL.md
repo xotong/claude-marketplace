@@ -36,16 +36,9 @@ Error messages should guide agents toward solutions with specific suggestions an
 
 #### 1.2 Study MCP Protocol Documentation
 
-**Navigate the MCP specification:**
+**Review the vendored MCP best practices:**
 
-Start with the sitemap to find relevant pages: `https://modelcontextprotocol.io/sitemap.xml`
-
-Then fetch specific pages with `.md` suffix for markdown format (e.g., `https://modelcontextprotocol.io/specification/draft.md`).
-
-Key pages to review:
-- Specification overview and architecture
-- Transport mechanisms (streamable HTTP, stdio)
-- Tool, resource, and prompt definitions
+See [📋 MCP Best Practices](./reference/mcp_best_practices.md) for the protocol overview, transport mechanisms (streamable HTTP, stdio), tool/resource/prompt definitions, and design guidelines. This reference is bundled locally and does not require internet access.
 
 #### 1.3 Study Framework Documentation
 
@@ -58,11 +51,11 @@ Key pages to review:
 - **MCP Best Practices**: [📋 View Best Practices](./reference/mcp_best_practices.md) - Core guidelines
 
 **For TypeScript (recommended):**
-- **TypeScript SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
+- **TypeScript SDK**: [📄 TypeScript SDK README](./reference/typescript-sdk-README.md) — vendored locally
 - [⚡ TypeScript Guide](./reference/node_mcp_server.md) - TypeScript patterns and examples
 
 **For Python:**
-- **Python SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
+- **Python SDK**: [🐍 Python SDK README](./reference/python-sdk-README.md) — vendored locally
 - [🐍 Python Guide](./reference/python_mcp_server.md) - Python patterns and examples
 
 #### 1.4 Plan Your Implementation
@@ -200,7 +193,6 @@ Create an XML file with this structure:
 Load these resources as needed during development:
 
 ### Core MCP Documentation (Load First)
-- **MCP Protocol**: Start with sitemap at `https://modelcontextprotocol.io/sitemap.xml`, then fetch specific pages with `.md` suffix
 - [📋 MCP Best Practices](./reference/mcp_best_practices.md) - Universal MCP guidelines including:
   - Server and tool naming conventions
   - Response format guidelines (JSON vs Markdown)
@@ -209,8 +201,8 @@ Load these resources as needed during development:
   - Security and error handling standards
 
 ### SDK Documentation (Load During Phase 1/2)
-- **Python SDK**: Fetch from `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
-- **TypeScript SDK**: Fetch from `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
+- [🐍 Python SDK README](./reference/python-sdk-README.md) — vendored locally
+- [📄 TypeScript SDK README](./reference/typescript-sdk-README.md) — vendored locally
 
 ### Language-Specific Implementation Guides (Load During Phase 2)
 - [🐍 Python Implementation Guide](./reference/python_mcp_server.md) - Complete Python/FastMCP guide with:

@@ -51,6 +51,7 @@ Gives you: xotong1 coding conventions, internal docs navigation, and LiteLLM API
 /plugin install anthropic-dev-skills@xotong1-marketplace   # Claude API, Playwright, MCP building
 /plugin install anthropic-hookify@xotong1-marketplace      # Configure hooks via Markdown rules
 /plugin install frontend-design@xotong1-marketplace        # Production-grade UI design
+/plugin install obsidian@xotong1-marketplace               # Obsidian vault Markdown, Bases, Canvas
 ```
 
 ### Your team's skills
@@ -77,6 +78,7 @@ Gives you: xotong1 coding conventions, internal docs navigation, and LiteLLM API
 | `anthropic-dev-skills` | 0.1.0 | Claude API, Playwright testing, MCP server building |
 | `anthropic-hookify` | 1.0.0 | Markdown-configured session hooks |
 | `frontend-design` | 0.1.0 | Distinctive, production-grade frontend interfaces |
+| `obsidian` | 1.0.1 | Obsidian vault Markdown, Bases, Canvas, CLI and web extraction |
 
 ---
 
@@ -194,6 +196,7 @@ plugins/
   anthropic-pr-review/                 Vendored: anthropics/claude-plugins-official (MIT)
   anthropic-hookify/                   Vendored: anthropics/claude-plugins-official (MIT)
   compound-engineering/                Vendored: EveryInc/compound-engineering-plugin (MIT)
+  obsidian/                            Vendored: kepano/obsidian-skills v1.0.1 (MIT)
 
 ci/
   skill-scanner/                       LLM-as-judge safety scanner + GitLab CI component
