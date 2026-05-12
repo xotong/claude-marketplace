@@ -1,6 +1,6 @@
-# xotong1 Skills Hub — Claude Code Marketplace
+# Claude Code Marketplace
 
-Central plugin marketplace for xotong1. One URL to configure; all team and platform skills flow from here.
+Central plugin marketplace. One URL to configure; all team and platform skills flow from here.
 
 | Category | What it means |
 |---|---|
@@ -17,7 +17,7 @@ Add to `~/.claude/settings.json` (create if it doesn't exist):
 ```json
 {
   "extraKnownMarketplaces": {
-    "xotong1-marketplace": {
+    "claude-marketplace": {
       "source": {
         "source": "git",
         "url": "https://gitlab.company.com/skillshub/claude-marketplace.git"
@@ -35,32 +35,32 @@ Add to `~/.claude/settings.json` (create if it doesn't exist):
 ### Recommended install (everyone)
 
 ```
-/plugin install platform-verified@xotong1-marketplace
+/plugin install platform-verified@claude-marketplace
 /reload-plugins
 ```
 
-Gives you: xotong1 coding conventions, internal docs navigation, and LiteLLM API guidance.
+Gives you: platform coding conventions, internal docs navigation, and LiteLLM API guidance.
 
 ### Popular vendored plugins
 
 ```
-/plugin install superpowers@xotong1-marketplace          # TDD, debugging, planning, git worktrees
-/plugin install anthropic-feature-dev@xotong1-marketplace  # 7-phase feature dev workflow
-/plugin install anthropic-pr-review@xotong1-marketplace    # 6-agent parallel PR review
-/plugin install compound-engineering@xotong1-marketplace   # 22-agent code review + knowledge loop
-/plugin install anthropic-dev-skills@xotong1-marketplace   # Claude API, Playwright, MCP building
-/plugin install anthropic-hookify@xotong1-marketplace      # Configure hooks via Markdown rules
-/plugin install frontend-design@xotong1-marketplace        # Production-grade UI design
-/plugin install obsidian@xotong1-marketplace               # Obsidian vault Markdown, Bases, Canvas
-/plugin install gstack@xotong1-marketplace                 # Virtual team: CEO/EM/Designer/QA roles
-/plugin install getshitdone@xotong1-marketplace            # Context-rot prevention, /gsd workflow
-/plugin install ruflo@xotong1-marketplace                  # Multi-agent swarm + persistent memory
+/plugin install superpowers@claude-marketplace          # TDD, debugging, planning, git worktrees
+/plugin install anthropic-feature-dev@claude-marketplace  # 7-phase feature dev workflow
+/plugin install anthropic-pr-review@claude-marketplace    # 6-agent parallel PR review
+/plugin install compound-engineering@claude-marketplace   # 22-agent code review + knowledge loop
+/plugin install anthropic-dev-skills@claude-marketplace   # Claude API, Playwright, MCP building
+/plugin install anthropic-hookify@claude-marketplace      # Configure hooks via Markdown rules
+/plugin install frontend-design@claude-marketplace        # Production-grade UI design
+/plugin install obsidian@claude-marketplace               # Obsidian vault Markdown, Bases, Canvas
+/plugin install gstack@claude-marketplace                 # Virtual team: CEO/EM/Designer/QA roles
+/plugin install getshitdone@claude-marketplace            # Context-rot prevention, /gsd workflow
+/plugin install ruflo@claude-marketplace                  # Multi-agent swarm + persistent memory
 ```
 
 ### Your team's skills
 
 ```
-/plugin install <team-name>@xotong1-marketplace
+/plugin install <team-name>@claude-marketplace
 /reload-plugins
 ```
 
@@ -73,7 +73,7 @@ Gives you: xotong1 coding conventions, internal docs navigation, and LiteLLM API
 
 | Plugin | Version | Description |
 |---|---|---|
-| `platform-verified` | 0.1.0 | xotong1 conventions, internal docs, LiteLLM API |
+| `platform-verified` | 0.1.0 | platform conventions, internal docs, LiteLLM API |
 | `superpowers` | 5.1.0 | TDD, debugging, planning, code review, git worktrees |
 | `anthropic-feature-dev` | 1.0.0 | 7-phase feature development with 3 specialist agents |
 | `anthropic-pr-review` | 1.0.0 | 6-agent parallel PR review with confidence scoring |
@@ -188,10 +188,10 @@ CODEOWNERS                             Write-access rules with [Section][1] appr
 VENDORED.md                            Upstream SHAs, license notes, update cadence
 
 plugins/
-  platform-verified/                   Official xotong1 skills (CODEOWNERS protected)
+  platform-verified/                   Official platform skills (CODEOWNERS protected)
     .claude-plugin/plugin.json
     skills/
-      xotong1-conventions/SKILL.md     Commit style, code style, PR conventions
+      platform-conventions/SKILL.md     Commit style, code style, PR conventions
       internal-docs-navigator/SKILL.md Confluence/GitLab navigation guidance
       litellm-api/SKILL.md             Internal LiteLLM gateway usage
 

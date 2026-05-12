@@ -1,7 +1,7 @@
 ---
 name: litellm-api
 description: >
-  Build, debug, and optimise applications that call xotong1's internal LLM
+  Build, debug, and optimise applications that call the organisation's internal LLM
   gateway (LiteLLM). Use this skill when the user is writing code that calls
   the internal AI API, asks about available models, needs to debug LLM
   integration code, wants to implement streaming or tool use via the gateway,
@@ -13,9 +13,9 @@ description: >
   nothing to do with the internal gateway.
 ---
 
-# xotong1 LiteLLM Gateway — Developer Skill
+# the organisation LiteLLM Gateway — Developer Skill
 
-xotong1 runs an internal LiteLLM gateway that proxies requests to the
+the organisation runs an internal LiteLLM gateway that proxies requests to the
 underlying model provider (currently KimiK2 via vLLM). All internal AI
 integrations should use this gateway — never call provider APIs directly.
 

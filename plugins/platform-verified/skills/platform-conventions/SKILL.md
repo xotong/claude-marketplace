@@ -1,16 +1,16 @@
 ---
-name: xotong1-conventions
+name: platform-conventions
 description: >
-  Apply xotong1 internal engineering conventions when writing or reviewing code.
+  Apply platform internal engineering conventions when writing or reviewing code.
   Use this skill when the user asks to follow company standards, apply internal
-  coding conventions, check code against xotong1 guidelines, or ensure consistency
+  coding conventions, check code against platform guidelines, or ensure consistency
   with how the team writes code. Also activate when the user says "follow our
-  conventions", "use xotong1 style", or "make this match our standards".
+  conventions", "use platform style", or "make this match our standards".
   Do NOT activate for generic best-practices questions that have nothing to do
-  with xotong1-specific conventions.
+  with platform-specific conventions.
 ---
 
-# xotong1 Engineering Conventions
+# platform Engineering Conventions
 
 When this skill is active, apply the following conventions consistently to all
 code you write or review. If a convention conflicts with what the user explicitly
@@ -52,7 +52,7 @@ Use kebab-case. No uppercase. Ticket ID is required for all non-trivial branches
 
 **TypeScript / JavaScript:**
 - Formatter: `prettier` (default config)
-- Linter: `eslint` with the internal config package `@xotong1/eslint-config`
+- Linter: `eslint` with the internal config package `@platform/eslint-config`
 - Prefer `const` over `let`; avoid `var`
 - Explicit return types on exported functions
 

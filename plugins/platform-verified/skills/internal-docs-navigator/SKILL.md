@@ -1,11 +1,11 @@
 ---
 name: internal-docs-navigator
 description: >
-  Help the user find, navigate, and reference xotong1 internal documentation.
+  Help the user find, navigate, and reference the organisation internal documentation.
   Use this skill when the user asks "where is the docs for X", "how do I find
   information about Y internally", "what's our internal runbook for Z", "is
   there a Confluence page about", "where do we document", or anything that
-  suggests they need internal xotong1 documentation rather than public docs.
+  suggests they need internal the organisation documentation rather than public docs.
   Also activate for questions about internal processes, team contacts, or
   on-call procedures where the answer would live in internal docs.
   Do NOT activate for questions about public open-source documentation —
@@ -14,11 +14,11 @@ description: >
 
 # Internal Docs Navigator
 
-When this skill is active, guide the user to xotong1's internal documentation
+When this skill is active, guide the user to the organisation's internal documentation
 systems. You do not have direct access to these systems — your job is to direct
 the user to the right place and help them craft effective searches.
 
-## Documentation systems at xotong1
+## Documentation systems at the organisation
 
 ### Confluence — primary knowledge base
 - URL: `https://confluence.company.com`
@@ -74,4 +74,4 @@ If the user is asking about something that probably isn't documented yet:
 - Do not fabricate internal URLs, page titles, or Confluence content
 - Do not guess at internal processes — always direct to the source
 - Do not use public documentation as a substitute for internal docs when
-  the question is clearly about an internal xotong1 system or process
+  the question is clearly about an internal the organisation system or process

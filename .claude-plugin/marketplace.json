@@ -1,19 +1,19 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
-  "name": "xotong1-marketplace",
+  "name": "claude-marketplace",
   "version": "0.6.0",
-  "description": "Internal Claude Code plugin marketplace for xotong1 (Skills Hub).",
+  "description": "Claude Code plugin marketplace. One URL to configure; all team and platform skills flow from here.",
   "owner": {
-    "name": "xotong1 Platform Team"
+    "name": "Platform Team"
   },
   "plugins": [
     {
       "name": "platform-verified",
       "source": "./plugins/platform-verified",
       "version": "0.1.0",
-      "description": "Platform-curated skills: xotong1 conventions, internal docs navigation, and LiteLLM API integration.",
+      "description": "Platform-curated skills: coding conventions, internal docs navigation, and LiteLLM API integration.",
       "author": {
-        "name": "xotong1 Platform Team"
+        "name": "Platform Team"
       },
       "category": "internal",
       "keywords": ["platform", "verified", "official", "internal"]
