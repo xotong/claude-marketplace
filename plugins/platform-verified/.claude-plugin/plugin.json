@@ -1,8 +1,9 @@
 {
   "name": "platform-verified",
-  "version": "0.1.0",
-  "description": "Platform-team-curated skills for xotong1. All skills here have been reviewed and approved by the Platform Team.",
+  "version": "1.0.0",
+  "description": "The full catalog: 149 skills, 58 agents, 72 commands from superpowers, gstack, compound-engineering, getshitdone, ruflo, obsidian, anthropic-feature-dev, anthropic-pr-review, anthropic-hookify, anthropic-dev-skills, and frontend-design — all vendored and verified.",
   "author": {
-    "name": "xotong1 Platform Team"
-  }
+    "name": "Platform Team"
+  },
+  "keywords": ["platform", "verified", "official", "all", "catalog"]
 }

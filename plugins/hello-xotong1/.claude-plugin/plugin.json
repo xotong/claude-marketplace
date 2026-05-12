@@ -1,8 +1,8 @@
 {
-  "name": "hello-xotong1",
+  "name": "hello-marketplace",
   "version": "0.1.0",
-  "description": "Smoke-test plugin for the xotong1 marketplace.",
+  "description": "Smoke-test plugin for the claude-marketplace.",
   "author": {
-    "name": "xotong1 Platform Team"
+    "name": "Platform Team"
   }
 }

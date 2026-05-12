@@ -1,0 +1,9 @@
+{
+  "name": "essentials",
+  "version": "1.0.0",
+  "description": "Curated starter pack for every developer: TDD, debugging, planning, and git worktrees (superpowers); 7-phase feature development (anthropic-feature-dev); and 6-agent parallel PR review (anthropic-pr-review). Install this first.",
+  "author": {
+    "name": "Platform Team"
+  },
+  "keywords": ["tdd", "debugging", "planning", "feature-dev", "pr-review", "starter"]
+}
