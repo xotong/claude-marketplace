@@ -1,0 +1,20 @@
+# When building with `docker build ci/skill-scanner/` (recommended), only
+# ci/skill-scanner/ is the build context — so this file is mostly a safeguard.
+# When building from repo root with `-f ci/skill-scanner/Dockerfile`, this file
+# prevents the entire repo from being sent as context.
+
+# Documentation and config templates — not needed in the image
+README.md
+*.example.*
+gitlab-component.yml
+.dockerignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Test output that might exist locally
+.skill-scanner-output/
+scan-report.json
+scan-results.xml

@@ -1,26 +1,49 @@
 # CODEOWNERS — GitLab Ultimate
 #
-# Rules are evaluated bottom-up; the last matching rule wins.
+# Rules are evaluated top-to-bottom; last matching rule wins.
 # All paths are relative to the repo root.
 #
-# @skillshub/platform-team must approve any change to these paths.
-# Configure this in GitLab: Settings → Repository → Protected Branches → main
-# → set "Code owner approval" to required.
+# The [Section Name][N] syntax (GitLab Ultimate) requires at least N approvals
+# from the listed owners before an MR touching that path can be merged.
+#
+# Enable enforcement:
+#   Settings → Repository → Protected Branches → main
+#   → "Require code owner approval" ON
+#   → "Allowed to merge" = Maintainers (or platform-team group)
 
-# Default owner for everything not matched below
+# ── Default: everything requires platform-team approval ──────────────────────
+
+[Platform Team][1]
 *                                           @skillshub/platform-team
 
-# The central catalog — platform team owns who gets listed
-.claude-plugin/marketplace.json             @skillshub/platform-team
+# ── Marketplace catalog ───────────────────────────────────────────────────────
+# Adding a team or changing a plugin source requires explicit sign-off.
 
-# Platform-verified skills — only platform team can merge here
+[Marketplace Catalog][1]
+/.claude-plugin/marketplace.json            @skillshub/platform-team
+
+# ── Platform-verified skills ─────────────────────────────────────────────────
+# Content here is officially endorsed — require 1 approval minimum.
+# For high-impact changes (new skill, major edit) consider bumping to [2].
+
+[Platform Verified][1]
 /plugins/platform-verified/                 @skillshub/platform-team
 
-# Vendored upstream plugins — platform team manages upgrades
+# ── Vendored upstream plugins ─────────────────────────────────────────────────
+# Vendored upgrades should be reviewed by platform team.
+
+[Vendored Plugins][1]
 /plugins/superpowers/                       @skillshub/platform-team
-/plugins/frontend-design/                  @skillshub/platform-team
+/plugins/frontend-design/                   @skillshub/platform-team
+/plugins/anthropic-dev-skills/              @skillshub/platform-team
+/plugins/anthropic-official/               @skillshub/platform-team
+/plugins/compound-engineering/              @skillshub/platform-team
 /plugins/hello-xotong1/                    @skillshub/platform-team
 
-# Governance docs
-CODEOWNERS                                  @skillshub/platform-team
-VENDORED.md                                 @skillshub/platform-team
+# ── Governance and CI ─────────────────────────────────────────────────────────
+
+[Governance][1]
+/CODEOWNERS                                 @skillshub/platform-team
+/VENDORED.md                                @skillshub/platform-team
+/.gitlab-ci.yml                             @skillshub/platform-team
+/ci/                                        @skillshub/platform-team
