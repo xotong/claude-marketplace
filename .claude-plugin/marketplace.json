@@ -1,147 +1,43 @@
 {
-  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "claude-marketplace",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Claude Code plugin marketplace. One URL to configure; all team and platform skills flow from here.",
   "owner": {
     "name": "Platform Team"
   },
   "plugins": [
     {
-      "name": "platform-verified",
-      "source": "./plugins/platform-verified",
-      "version": "0.1.0",
-      "description": "Platform-curated skills: coding conventions, internal docs navigation, and LiteLLM API integration.",
+      "name": "essentials",
+      "source": "./plugins/essentials",
+      "version": "1.0.0",
+      "description": "Curated starter pack — install this first. TDD, debugging, planning, git worktrees (superpowers); 7-phase feature dev; 6-agent parallel PR review.",
       "author": {
         "name": "Platform Team"
       },
       "category": "internal",
-      "keywords": ["platform", "verified", "official", "internal"]
+      "keywords": ["starter", "tdd", "debugging", "planning", "feature-dev", "pr-review"]
     },
     {
-      "name": "superpowers",
-      "source": "./plugins/superpowers",
-      "version": "5.1.0",
-      "description": "Vendored: obra/superpowers — TDD, systematic debugging, planning, git worktrees, code review workflows.",
+      "name": "platform-verified",
+      "source": "./plugins/platform-verified",
+      "version": "1.0.0",
+      "description": "The full catalog: 149 skills, 58 agents, 72 commands from 11 vendored sources — superpowers, gstack, compound-engineering, getshitdone, ruflo, obsidian, anthropic suite, and more.",
       "author": {
-        "name": "Jesse Vincent",
-        "email": "jesse@fsck.com"
+        "name": "Platform Team"
       },
-      "category": "vendored",
-      "keywords": ["tdd", "debugging", "planning", "worktrees", "code-review"]
+      "category": "internal",
+      "keywords": ["platform", "verified", "official", "all", "catalog"]
     },
     {
-      "name": "frontend-design",
-      "source": "./plugins/frontend-design",
+      "name": "hello-marketplace",
+      "source": "./plugins/hello-xotong1",
       "version": "0.1.0",
-      "description": "Vendored: anthropics/skills — create distinctive, production-grade frontend interfaces.",
+      "description": "Smoke-test plugin — confirms the marketplace is wired up correctly.",
       "author": {
-        "name": "Anthropic"
+        "name": "Platform Team"
       },
-      "category": "vendored",
-      "keywords": ["frontend", "design", "ui", "css"]
-    },
-    {
-      "name": "anthropic-dev-skills",
-      "source": "./plugins/anthropic-dev-skills",
-      "version": "0.1.0",
-      "description": "Vendored: anthropics/skills — Claude API development, Playwright web testing, and MCP server building.",
-      "author": {
-        "name": "Anthropic"
-      },
-      "category": "vendored",
-      "keywords": ["claude-api", "playwright", "testing", "mcp", "sdk"]
-    },
-    {
-      "name": "anthropic-feature-dev",
-      "source": "./plugins/anthropic-feature-dev",
-      "version": "1.0.0",
-      "description": "Vendored: anthropics/claude-plugins-official — 7-phase feature development workflow with code-explorer, architect, and reviewer agents.",
-      "author": {
-        "name": "Anthropic"
-      },
-      "category": "vendored",
-      "keywords": ["feature-dev", "workflow", "agents", "planning"]
-    },
-    {
-      "name": "anthropic-pr-review",
-      "source": "./plugins/anthropic-pr-review",
-      "version": "1.0.0",
-      "description": "Vendored: anthropics/claude-plugins-official — PR review toolkit with 6 specialised review agents and confidence scoring.",
-      "author": {
-        "name": "Anthropic"
-      },
-      "category": "vendored",
-      "keywords": ["pr-review", "code-review", "agents", "quality"]
-    },
-    {
-      "name": "anthropic-hookify",
-      "source": "./plugins/anthropic-hookify",
-      "version": "1.0.0",
-      "description": "Vendored: anthropics/claude-plugins-official — configure Claude Code hooks via Markdown rules without writing JSON.",
-      "author": {
-        "name": "Anthropic"
-      },
-      "category": "vendored",
-      "keywords": ["hooks", "automation", "rules", "session"]
-    },
-    {
-      "name": "compound-engineering",
-      "source": "./plugins/compound-engineering",
-      "version": "3.7.0",
-      "description": "Vendored: EveryInc/compound-engineering-plugin — 22-agent parallel code review, compound knowledge loop, planning and execution workflows.",
-      "author": {
-        "name": "Kieran Klaassen",
-        "email": "kieran@every.to"
-      },
-      "category": "vendored",
-      "keywords": ["code-review", "planning", "agents", "knowledge", "workflow"]
-    },
-    {
-      "name": "obsidian",
-      "source": "./plugins/obsidian",
-      "version": "1.0.1",
-      "description": "Vendored: kepano/obsidian-skills — create and edit Obsidian vault files including Markdown, Bases, Canvas, and CLI usage.",
-      "author": {
-        "name": "Steph Ango",
-        "url": "https://stephango.com/"
-      },
-      "category": "vendored",
-      "keywords": ["obsidian", "markdown", "notes", "pkm", "canvas", "vault"]
-    },
-    {
-      "name": "gstack",
-      "source": "./plugins/gstack",
-      "version": "1.0.0",
-      "description": "Vendored: garrytan/gstack — virtual engineering team (CEO/EM/Designer/QA roles), browser QA automation, production safety gates, 48 specialist skills.",
-      "author": {
-        "name": "Garry Tan"
-      },
-      "category": "vendored",
-      "keywords": ["code-review", "qa", "design", "planning", "browser", "virtual-team"]
-    },
-    {
-      "name": "getshitdone",
-      "source": "./plugins/getshitdone",
-      "version": "1.40.0",
-      "description": "Vendored: gsd-build/get-shit-done — context-rot prevention, Discuss→Plan→Execute→Verify loop with persistent CONTEXT.md/PLAN.md artifacts. 66 /gsd commands.",
-      "author": {
-        "name": "Lex Christopherson"
-      },
-      "category": "vendored",
-      "keywords": ["planning", "context-management", "workflow", "spec-driven", "productivity"]
-    },
-    {
-      "name": "ruflo",
-      "source": "./plugins/ruflo",
-      "version": "2.5.0",
-      "description": "Vendored: ruvnet/ruflo — multi-agent swarm orchestration, AgentDB persistent memory, SPARC methodology, GitHub automation. 38 skills (swarm MCP features need npx).",
-      "author": {
-        "name": "rUv",
-        "email": "ruv@ruv.net"
-      },
-      "category": "vendored",
-      "keywords": ["agents", "swarm", "orchestration", "sparc", "memory", "multi-agent"]
+      "category": "internal",
+      "keywords": ["smoke-test", "debug"]
     }
   ]
 }

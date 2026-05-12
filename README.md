@@ -2,11 +2,11 @@
 
 Central plugin marketplace. One URL to configure; all team and platform skills flow from here.
 
-| Category | What it means |
+| Plugin | What it gives you |
 |---|---|
-| **platform-verified** | Skills curated and approved by the Platform Team. Safe on any machine. |
-| **vendored** | Upstream community skills pinned at a specific commit. Audited before inclusion. |
-| **team** | Team-specific skills in private repos. Listed in the catalog; content stays private. |
+| **essentials** | Curated starter pack — install this first. TDD, debugging, planning, feature dev, PR review. |
+| **platform-verified** | The full catalog — every vendored skill, agent, and command in one install. |
+| **`<team-name>`** | Your team's private skills, hosted in a separate repo. |
 
 ---
 
@@ -32,30 +32,23 @@ Add to `~/.claude/settings.json` (create if it doesn't exist):
 > in your GitLab profile, or a Personal Access Token stored in your macOS Keychain.
 > If `git clone https://gitlab.company.com/any-repo.git` works in your terminal, you're set.
 
-### Recommended install (everyone)
+### Start here (recommended for everyone)
+
+```
+/plugin install essentials@claude-marketplace
+/reload-plugins
+```
+
+Gives you: TDD, systematic debugging, planning, git worktrees, 7-phase feature development, and 6-agent parallel PR review. A solid foundation for any developer.
+
+### Want everything?
 
 ```
 /plugin install platform-verified@claude-marketplace
 /reload-plugins
 ```
 
-Gives you: platform coding conventions, internal docs navigation, and LiteLLM API guidance.
-
-### Popular vendored plugins
-
-```
-/plugin install superpowers@claude-marketplace          # TDD, debugging, planning, git worktrees
-/plugin install anthropic-feature-dev@claude-marketplace  # 7-phase feature dev workflow
-/plugin install anthropic-pr-review@claude-marketplace    # 6-agent parallel PR review
-/plugin install compound-engineering@claude-marketplace   # 22-agent code review + knowledge loop
-/plugin install anthropic-dev-skills@claude-marketplace   # Claude API, Playwright, MCP building
-/plugin install anthropic-hookify@claude-marketplace      # Configure hooks via Markdown rules
-/plugin install frontend-design@claude-marketplace        # Production-grade UI design
-/plugin install obsidian@claude-marketplace               # Obsidian vault Markdown, Bases, Canvas
-/plugin install gstack@claude-marketplace                 # Virtual team: CEO/EM/Designer/QA roles
-/plugin install getshitdone@claude-marketplace            # Context-rot prevention, /gsd workflow
-/plugin install ruflo@claude-marketplace                  # Multi-agent swarm + persistent memory
-```
+Installs the full catalog: 149 skills, 58 agents, and 72 commands from 11 vendored sources.
 
 ### Your team's skills
 
@@ -71,20 +64,26 @@ Gives you: platform coding conventions, internal docs navigation, and LiteLLM AP
 
 ## Plugin catalog
 
-| Plugin | Version | Description |
+| Plugin | Version | What's inside |
 |---|---|---|
-| `platform-verified` | 0.1.0 | platform conventions, internal docs, LiteLLM API |
-| `superpowers` | 5.1.0 | TDD, debugging, planning, code review, git worktrees |
-| `anthropic-feature-dev` | 1.0.0 | 7-phase feature development with 3 specialist agents |
-| `anthropic-pr-review` | 1.0.0 | 6-agent parallel PR review with confidence scoring |
-| `compound-engineering` | 3.7.0 | 22-agent code review, compound knowledge loop, planning |
-| `anthropic-dev-skills` | 0.1.0 | Claude API, Playwright testing, MCP server building |
-| `anthropic-hookify` | 1.0.0 | Markdown-configured session hooks |
-| `frontend-design` | 0.1.0 | Distinctive, production-grade frontend interfaces |
-| `obsidian` | 1.0.1 | Obsidian vault Markdown, Bases, Canvas, CLI and web extraction |
-| `gstack` | 1.0.0 | Virtual engineering team — CEO/EM/Designer/QA roles, browser QA, production gates |
-| `getshitdone` | 1.40.0 | Context-rot prevention — Discuss→Plan→Execute→Verify loop, 66 /gsd commands |
-| `ruflo` | 2.5.0 | Multi-agent swarm, AgentDB persistent memory, SPARC methodology (38 skills) |
+| `essentials` | 1.0.0 | **Starter pack:** superpowers (TDD, debugging, planning, git worktrees, 14 skills) + anthropic-feature-dev (3 agents, feature-dev command) + anthropic-pr-review (6 agents, review-pr command) |
+| `platform-verified` | 1.0.0 | **Full catalog:** all 11 vendored sources — see breakdown below |
+
+### What's in `platform-verified`
+
+| Source | Skills / Agents / Commands |
+|---|---|
+| superpowers (obra) | 14 skills: TDD, debugging, planning, worktrees, code review, brainstorming… |
+| gstack (Garry Tan) | 48 skills: CEO/EM/Designer/QA roles, browser QA, freeze, make-pdf… |
+| compound-engineering (EveryInc) | 39 skills + 49 agents: parallel code review, knowledge loop… |
+| getshitdone | 66 /gsd commands: Discuss→Plan→Execute→Verify lifecycle |
+| ruflo (rUv) | 38 skills: AgentDB memory, SPARC, swarm, GitHub automation… |
+| anthropic-feature-dev | 3 agents + feature-dev command |
+| anthropic-pr-review | 6 agents + review-pr command |
+| anthropic-hookify | writing-rules skill + hook automation agents/commands |
+| anthropic-dev-skills | claude-api, webapp-testing, mcp-builder skills |
+| frontend-design | frontend-design skill |
+| obsidian (Steph Ango) | 5 skills: obsidian-markdown, bases, CLI, json-canvas, defuddle |
 
 ---
 
@@ -169,13 +168,17 @@ The Platform Team reviews structure, not skill content — you own quality withi
 
 ---
 
-## For contributors: platform-verified skills
+## For contributors: adding skills to platform-verified
 
-`plugins/platform-verified/` is for cross-team skills reviewed and endorsed by the Platform Team.
+`plugins/platform-verified/` is the full vendored catalog. To add a new upstream skill source:
 
-**Criteria:** useful to ≥ 3 teams · no team-specific internal references · no destructive commands without confirmation · no external API calls · passes CI scanner at threshold 0.90.
+1. Vendor the files into the relevant subdirectory (see VENDORED.md for pattern)
+2. Merge skills into `plugins/platform-verified/skills/`, agents into `agents/`, commands into `commands/`
+3. If the source is broadly useful, also add its core skills to `plugins/essentials/`
+4. Open an MR using the **"Add Skill to Platform-Verified"** MR template
+5. Update VENDORED.md provenance table and `marketplace.json` versions
 
-Use the **"Add Skill to Platform-Verified"** MR template. Platform Team is a required approver (CODEOWNERS).
+Platform Team is a required approver (CODEOWNERS).
 
 ---
 
@@ -188,24 +191,27 @@ CODEOWNERS                             Write-access rules with [Section][1] appr
 VENDORED.md                            Upstream SHAs, license notes, update cadence
 
 plugins/
-  platform-verified/                   Official platform skills (CODEOWNERS protected)
+  essentials/                          Curated starter pack (Platform Team maintained)
     .claude-plugin/plugin.json
-    skills/
-      platform-conventions/SKILL.md     Commit style, code style, PR conventions
-      internal-docs-navigator/SKILL.md Confluence/GitLab navigation guidance
-      litellm-api/SKILL.md             Internal LiteLLM gateway usage
+    skills/   ← superpowers 14 skills
+    agents/   ← feature-dev 3 agents + pr-review 6 agents
+    commands/ ← feature-dev.md + review-pr.md
+    hooks/    ← superpowers hooks
+    assets/   ← superpowers assets
 
-  superpowers/                         Vendored: obra/superpowers v5.1.0 (MIT)
-  frontend-design/                     Vendored: anthropics/skills (see LICENSE.txt)
-  anthropic-dev-skills/                Vendored: anthropics/skills — claude-api, playwright, mcp
-  anthropic-feature-dev/              Vendored: anthropics/claude-plugins-official (MIT)
-  anthropic-pr-review/                 Vendored: anthropics/claude-plugins-official (MIT)
-  anthropic-hookify/                   Vendored: anthropics/claude-plugins-official (MIT)
-  compound-engineering/                Vendored: EveryInc/compound-engineering-plugin (MIT)
-  obsidian/                            Vendored: kepano/obsidian-skills v1.0.1 (MIT)
-  gstack/                              Vendored: garrytan/gstack (MIT)
-  getshitdone/                         Vendored: gsd-build/get-shit-done v1.40.0 (MIT)
-  ruflo/                               Vendored: ruvnet/ruflo v2.5.0 (MIT) — skills only
+  platform-verified/                   Full vendored catalog (CODEOWNERS protected)
+    .claude-plugin/plugin.json
+    skills/   ← 149 skills from all 11 sources
+    agents/   ← 58 agents
+    commands/ ← 72 commands (including 66 /gsd commands)
+    hooks/    ← superpowers + hookify hooks
+    matchers/ ← hookify matchers
+    utils/    ← hookify utils
+    core/     ← hookify core
+    assets/   ← superpowers assets
+    references/ ← getshitdone reference docs
+
+  hello-xotong1/                       Smoke-test plugin
 
 ci/
   skill-scanner/                       LLM-as-judge safety scanner + GitLab CI component
@@ -228,8 +234,8 @@ ci/
 | Path | Who can merge | Minimum approvals |
 |---|---|---|
 | `.claude-plugin/marketplace.json` | Platform Team | 1 |
+| `plugins/essentials/` | Platform Team | 1 |
 | `plugins/platform-verified/` | Platform Team | 1 |
-| `plugins/<vendored>/` | Platform Team | 1 |
 | `CODEOWNERS`, `VENDORED.md`, `ci/`, `.gitlab-ci.yml` | Platform Team | 1 |
 
 Team skill content lives in separate private repos. The Platform Team has no read access to those repos unless explicitly added.
