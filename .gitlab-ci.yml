@@ -2,9 +2,9 @@
 # Runs on every MR and push to main.
 #
 # Jobs:
-#   validate-json     — Ensures marketplace.json and all plugin.json files parse cleanly.
-#   scan-platform-verified — Runs the skill safety scanner against plugins/platform-verified/
-#                            so the Platform Team dogfoods their own tool.
+#   validate-json       — Ensures marketplace.json and all plugin.json files parse cleanly.
+#   lint-shell          — shellcheck on all bash/sh scripts in plugins/ (hooks, bin, scripts).
+#   skill-safety-scan   — LLM-as-judge on changed skills, agents, and commands in platform-verified.
 
 stages:
   - validate
@@ -31,6 +31,61 @@ validate-json:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
+# ── Shell script linting ─────────────────────────────────────────────────────
+# Runs shellcheck (error severity only) on every bash/sh script across plugins/.
+# Covers hooks, skill scripts, and bin/ helpers. Python and JSON files are skipped.
+# Uses --severity=error so vendored scripts don't fail on style — only genuine bugs block.
+
+lint-shell:
+  stage: validate
+  image: alpine:3
+  before_script:
+    - apk add --no-cache shellcheck file
+  script:
+    - |
+      set -e
+      # Collect all shell scripts: .sh files plus extensionless files with a bash/sh shebang.
+      # Explicitly skip .py, .json, .md, .yaml, .yml, .cmd, and __init__ files.
+      SCRIPTS=""
+      while IFS= read -r f; do
+        case "$f" in
+          *.py|*.json|*.md|*.yaml|*.yml|*.cmd|*/__init__) continue ;;
+          *.sh) SCRIPTS="$SCRIPTS $f" ;;
+          *)
+            if head -1 "$f" 2>/dev/null | grep -qE '^#!.*(bash|sh)'; then
+              SCRIPTS="$SCRIPTS $f"
+            fi
+            ;;
+        esac
+      done < <(find plugins -type f)
+
+      if [ -z "$SCRIPTS" ]; then
+        echo "No shell scripts found."
+        exit 0
+      fi
+
+      COUNT=$(echo "$SCRIPTS" | wc -w)
+      echo "Found $COUNT shell script(s) to lint."
+      # shellcheck: error severity only (style warnings are noise on vendored code)
+      # SC1091: don't fail on unresolvable 'source' paths in vendored scripts
+      # shellcheck disable=SC2086 — SCRIPTS is intentionally word-split here
+      shellcheck --severity=error --exclude=SC1091 $SCRIPTS
+      echo "All shell scripts passed shellcheck."
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - plugins/**/*.sh
+        - plugins/**/hooks/**/*
+        - plugins/**/bin/**/*
+        - plugins/**/scripts/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - plugins/**/*.sh
+        - plugins/**/hooks/**/*
+        - plugins/**/bin/**/*
+        - plugins/**/scripts/**/*
+    - when: never
+
 # ── Skill safety scan on platform-verified ───────────────────────────────────
 # Platform Team dogfoods the scanner against the skills they officially endorse.
 # This job is skipped if plugins/platform-verified/skills/ has no SKILL.md files yet.
@@ -45,8 +100,8 @@ include:
       threshold: 0.90
 
 # Override the job's rules and script so it only runs when platform-verified
-# SKILL.md files change. On MRs, scan only the changed files (fast). On push
-# to main, scan everything (no SCANNER_FILES set = full scan).
+# instruction files (skills, agents, commands) change. On MRs, scan only the
+# changed files. On push to main, scan everything (full scan).
 #
 # Note: GitLab CI variables: does not evaluate shell commands — SCANNER_FILES
 # must be set inside the script: block, not via variables:.
@@ -56,33 +111,38 @@ skill-safety-scan:
     GIT_DEPTH: "0"
   script:
     - |
-      # On MR pipelines, restrict to only the SKILL.md files touched in this MR.
+      # On MR pipelines, restrict to only the instruction files touched in this MR.
       if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
         # Fetch the target branch so the diff ref resolves.
         git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-        # Prepend CI_PROJECT_DIR so paths are absolute — scanner.py resolves
-        # relative paths against SCANNER_SKILLS_DIR, which would double-up the prefix.
+        # Match skills (SKILL.md), agents (agents/*.md), and commands (commands/**/*.md).
+        # Prepend CI_PROJECT_DIR so paths are absolute — scanner.py resolves relative
+        # paths against SCANNER_SKILLS_DIR, which would otherwise double-up the prefix.
         CHANGED=$(git diff --name-only \
           "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD" \
-          | grep '^plugins/platform-verified/.*SKILL\.md$' \
+          | grep -E '^plugins/platform-verified/(skills/.*\.md|agents/.*\.md|commands/.*\.md)$' \
           | sed "s|^|${CI_PROJECT_DIR}/|" \
           | tr '\n' ',' | sed 's/,$//')
         if [ -n "$CHANGED" ]; then
           export SCANNER_FILES="$CHANGED"
           echo "Targeted scan: $SCANNER_FILES"
         else
-          echo "No changed SKILL.md files detected — nothing to scan."
+          echo "No changed instruction files detected — nothing to scan."
           exit 0
         fi
       else
-        echo "Push to main — running full scan."
+        echo "Push to main — running full scan of skills, agents, and commands."
       fi
       python /scanner/scanner.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - plugins/platform-verified/**/*SKILL.md
+        - plugins/platform-verified/skills/**/*.md
+        - plugins/platform-verified/agents/**/*.md
+        - plugins/platform-verified/commands/**/*.md
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - plugins/platform-verified/**/*SKILL.md
+        - plugins/platform-verified/skills/**/*.md
+        - plugins/platform-verified/agents/**/*.md
+        - plugins/platform-verified/commands/**/*.md
     - when: never
