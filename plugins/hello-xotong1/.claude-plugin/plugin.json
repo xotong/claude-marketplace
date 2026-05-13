@@ -1,8 +1,0 @@
-{
-  "name": "hello-marketplace",
-  "version": "0.1.0",
-  "description": "Smoke-test plugin for the claude-marketplace.",
-  "author": {
-    "name": "Platform Team"
-  }
-}
