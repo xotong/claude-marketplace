@@ -121,6 +121,7 @@ All configuration lives in `scanner-config.yaml` (tenant file) or
 | `SCANNER_FAIL_ON_REVIEW` | `false` | Treat REVIEW_NEEDED as failure |
 | `SCANNER_MAX_RETRIES` | `3` | Retries on transient API errors |
 | `SCANNER_CONFIG_FILE` | _(auto)_ | Explicit path to a config YAML |
+| `SCANNER_FILES` | _(unset = full scan)_ | Comma-separated list of specific SKILL.md paths to scan instead of the full directory. Paths may be absolute or relative to `SCANNER_SKILLS_DIR`. Used by the marketplace CI to scan only changed files on MRs. |
 
 **Config file fields** (all optional — unset fields use image defaults):
 

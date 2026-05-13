@@ -21,7 +21,7 @@
       "name": "platform-verified",
       "source": "./plugins/platform-verified",
       "version": "1.0.0",
-      "description": "The full catalog: 149 skills, 58 agents, 72 commands from 11 vendored sources — superpowers, gstack, compound-engineering, getshitdone, ruflo, obsidian, anthropic suite, and more.",
+      "description": "The full catalog: 150 skills, 58 agents, 72 commands from 11 vendored sources — superpowers, gstack, compound-engineering, getshitdone, ruflo, obsidian, anthropic suite, and more.",
       "author": {
         "name": "Platform Team"
       },

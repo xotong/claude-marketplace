@@ -44,18 +44,40 @@ include:
       fail_on_review: true
       threshold: 0.90
 
-# Override the job's rules and variables so it only runs when platform-verified
-# SKILL.md files change, and only scans those changed files (not all 149).
+# Override the job's rules and script so it only runs when platform-verified
+# SKILL.md files change. On MRs, scan only the changed files (fast). On push
+# to main, scan everything (no SCANNER_FILES set = full scan).
+#
+# Note: GitLab CI variables: does not evaluate shell commands — SCANNER_FILES
+# must be set inside the script: block, not via variables:.
 skill-safety-scan:
   variables:
-    # Compute the list of changed SKILL.md files at job start and pass them to
-    # the scanner via SCANNER_FILES. This avoids making one LLM call per skill
-    # on every MR — only the touched files are evaluated.
-    SCANNER_FILES: >-
-      $(git diff --name-only origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-main}...HEAD
-      | grep '^plugins/platform-verified/.*SKILL\.md$'
-      | tr '\n' ','
-      | sed 's/,$//')
+    # Ensure a full clone so git diff against the target branch ref works.
+    GIT_DEPTH: "0"
+  script:
+    - |
+      # On MR pipelines, restrict to only the SKILL.md files touched in this MR.
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
+        # Fetch the target branch so the diff ref resolves.
+        git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+        # Prepend CI_PROJECT_DIR so paths are absolute — scanner.py resolves
+        # relative paths against SCANNER_SKILLS_DIR, which would double-up the prefix.
+        CHANGED=$(git diff --name-only \
+          "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD" \
+          | grep '^plugins/platform-verified/.*SKILL\.md$' \
+          | sed "s|^|${CI_PROJECT_DIR}/|" \
+          | tr '\n' ',' | sed 's/,$//')
+        if [ -n "$CHANGED" ]; then
+          export SCANNER_FILES="$CHANGED"
+          echo "Targeted scan: $SCANNER_FILES"
+        else
+          echo "No changed SKILL.md files detected — nothing to scan."
+          exit 0
+        fi
+      else
+        echo "Push to main — running full scan."
+      fi
+      python /scanner/scanner.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:

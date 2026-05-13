@@ -230,15 +230,7 @@ def main() -> None:
     config = load_config(skills_dir)
     threshold: float = config["threshold"]
 
-    console.rule("[bold]Skill Safety Scanner[/bold]")
-    console.print(f"  Directory : {skills_dir}")
-    console.print(f"  Output    : {output_dir}")
-    console.print(f"  Endpoint  : {endpoint}")
-    console.print(f"  Model     : {config['model']}")
-    console.print(f"  Threshold : {threshold}")
-    console.print(f"  Fail on REVIEW_NEEDED: {fail_on_review}")
-    console.rule()
-
+    # Resolve skills list before printing header so Mode appears in the header block.
     scanner_files_env = os.environ.get("SCANNER_FILES", "").strip()
     if scanner_files_env:
         explicit_paths = [p.strip() for p in scanner_files_env.split(",") if p.strip()]
@@ -255,10 +247,20 @@ def main() -> None:
                 console.print(f"[yellow]  Warning: SCANNER_FILES entry is not a SKILL.md, skipping: {p}[/yellow]")
                 continue
             skills.append(p)
-        console.print(f"  Mode      : targeted ({len(skills)} file(s) from SCANNER_FILES)")
+        mode_str = f"targeted ({len(skills)} file(s) from SCANNER_FILES)"
     else:
         skills = find_skills(skills_dir)
-        console.print(f"  Mode      : full scan")
+        mode_str = "full scan"
+
+    console.rule("[bold]Skill Safety Scanner[/bold]")
+    console.print(f"  Directory : {skills_dir}")
+    console.print(f"  Output    : {output_dir}")
+    console.print(f"  Endpoint  : {endpoint}")
+    console.print(f"  Model     : {config['model']}")
+    console.print(f"  Threshold : {threshold}")
+    console.print(f"  Fail on REVIEW_NEEDED: {fail_on_review}")
+    console.print(f"  Mode      : {mode_str}")
+    console.rule()
 
     if not skills:
         console.print(f"[yellow]No SKILL.md files found to scan. Nothing to do.[/yellow]")

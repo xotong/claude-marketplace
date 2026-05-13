@@ -202,7 +202,7 @@ A note: if any of the model strings above look unfamiliar to you, that's to be e
 
 **Critical:** Append `response.content` (not just the text) back to your messages on every turn. Compaction blocks in the response must be preserved — the API uses them to replace the compacted history on the next request. Extracting only the text string and appending that will silently lose the compaction state.
 
-See `{lang}/claude-api/README.md` (Compaction section) for code examples. Full docs via WebFetch in `shared/live-sources.md`.
+See `{lang}/claude-api/README.md` (Compaction section) for code examples.
 
 ---
 
@@ -234,7 +234,7 @@ For placement patterns, architectural guidance, and the silent-invalidator audit
 |---|---|
 | `managed-agents-onboard` | Walk the user through setting up a Managed Agent from scratch. **Read `shared/managed-agents-onboarding.md` immediately** and follow its interview script: mental model → know-or-explore branch → template config → session setup → emit code. Do not summarize — run the interview. |
 
-**Reading guide:** Start with `shared/managed-agents-overview.md`, then the topical `shared/managed-agents-*.md` files (core, environments, tools, events, outcomes, multiagent, webhooks, memory, client-patterns, onboarding, api-reference). For Python, TypeScript, Go, Ruby, PHP, and Java, read `{lang}/managed-agents/README.md` for code examples. For cURL, read `curl/managed-agents.md`. **Agents are persistent — create once, reference by ID.** Store the agent ID returned by `agents.create` and pass it to every subsequent `sessions.create`; do not call `agents.create` in the request path. The Anthropic CLI is one convenient way to create agents and environments from version-controlled YAML (URL in `shared/live-sources.md`). If a binding you need isn't shown in the language README, WebFetch the relevant entry from `shared/live-sources.md` rather than guess. C# does not currently have Managed Agents support; use raw HTTP from `curl/managed-agents.md` as a reference.
+**Reading guide:** Start with `shared/managed-agents-overview.md`, then the topical `shared/managed-agents-*.md` files (core, environments, tools, events, outcomes, multiagent, webhooks, memory, client-patterns, onboarding, api-reference). For Python, TypeScript, Go, Ruby, PHP, and Java, read `{lang}/managed-agents/README.md` for code examples. For cURL, read `curl/managed-agents.md`. **Agents are persistent — create once, reference by ID.** Store the agent ID returned by `agents.create` and pass it to every subsequent `sessions.create`; do not call `agents.create` in the request path. C# does not currently have Managed Agents support; use raw HTTP from `curl/managed-agents.md` as a reference.
 
 **When the user wants to set up a Managed Agent from scratch** (e.g. "how do I get started", "walk me through creating one", "set up a new agent"): read `shared/managed-agents-onboarding.md` and run its interview — same flow as the `managed-agents-onboard` subcommand.
 
@@ -274,7 +274,7 @@ After detecting the language, read the relevant files based on what the user nee
 → Read `{lang}/claude-api/README.md` + `{lang}/claude-api/files-api.md`
 
 **Managed Agents (server-managed stateful agents with workspace):**
-→ Read `shared/managed-agents-overview.md` + the rest of the `shared/managed-agents-*.md` files. For Python, TypeScript, Go, Ruby, PHP, and Java, read `{lang}/managed-agents/README.md` for code examples. For cURL, read `curl/managed-agents.md`. **Agents are persistent — create once, reference by ID.** Store the agent ID returned by `agents.create` and pass it to every subsequent `sessions.create`; do not call `agents.create` in the request path. The Anthropic CLI is one convenient way to create agents and environments from version-controlled YAML (URL in `shared/live-sources.md`). If a binding you need isn't shown in the language README, WebFetch the relevant entry from `shared/live-sources.md` rather than guess. C# does not currently support Managed Agents — use raw HTTP from `curl/managed-agents.md` as a reference.
+→ Read `shared/managed-agents-overview.md` + the rest of the `shared/managed-agents-*.md` files. For Python, TypeScript, Go, Ruby, PHP, and Java, read `{lang}/managed-agents/README.md` for code examples. For cURL, read `curl/managed-agents.md`. **Agents are persistent — create once, reference by ID.** Store the agent ID returned by `agents.create` and pass it to every subsequent `sessions.create`; do not call `agents.create` in the request path. C# does not currently support Managed Agents — use raw HTTP from `curl/managed-agents.md` as a reference.
 
 ### Claude API (Full File Reference)
 
@@ -290,23 +290,12 @@ Read the **language-specific Claude API folder** (`{language}/claude-api/`):
 8. **`shared/prompt-caching.md`** — Read when adding or optimizing prompt caching. Covers prefix-stability design, breakpoint placement, and anti-patterns that silently invalidate cache.
 9. **`shared/error-codes.md`** — Read when debugging HTTP errors or implementing error handling.
 10. **`shared/model-migration.md`** — Read when upgrading to newer models, replacing retired models, or translating `budget_tokens` / prefill patterns to the current API.
-11. **`shared/live-sources.md`** — WebFetch URLs for fetching the latest official documentation.
 
 > **Note:** For Java, Go, Ruby, C#, PHP, and cURL — these have a single file each covering all basics. Read that file plus `shared/tool-use-concepts.md` and `shared/error-codes.md` as needed.
 
 > **Note:** For the Managed Agents file reference, see the `## Managed Agents (Beta)` section above — it lists every `shared/managed-agents-*.md` file and the language-specific READMEs.
 
 ---
-
-## When to Use WebFetch
-
-Use WebFetch to get the latest documentation when:
-
-- User asks for "latest" or "current" information
-- Cached data seems incorrect
-- User asks about features not covered here
-
-Live documentation URLs are in `shared/live-sources.md`.
 
 ## Common Pitfalls
 
