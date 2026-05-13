@@ -1,6 +1,6 @@
 {
   "name": "claude-marketplace",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Claude Code plugin marketplace. One URL to configure; all team and platform skills flow from here.",
   "owner": {
     "name": "Platform Team"
@@ -27,17 +27,6 @@
       },
       "category": "internal",
       "keywords": ["platform", "verified", "official", "all", "catalog"]
-    },
-    {
-      "name": "hello-marketplace",
-      "source": "./plugins/hello-xotong1",
-      "version": "0.1.0",
-      "description": "Smoke-test plugin — confirms the marketplace is wired up correctly.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "internal",
-      "keywords": ["smoke-test", "debug"]
     }
   ]
 }
