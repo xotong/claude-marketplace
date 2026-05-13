@@ -22,6 +22,11 @@ Optional env vars:
   SCANNER_FAIL_ON_REVIEW  Treat REVIEW_NEEDED verdict as failure (default: false)
   SCANNER_CONFIG_FILE   Explicit path to a config YAML (overrides discovery)
   SCANNER_MAX_RETRIES   API call retries on transient error (default: 3)
+  SCANNER_FILES         Comma-separated list of instruction file paths to scan instead of
+                        the full directory tree. Paths may be absolute or relative
+                        to SCANNER_SKILLS_DIR. When set, only the listed files are
+                        scanned — use this in CI to scan only changed files.
+                        Accepted: SKILL.md files, agents/*.md, commands/**/*.md.
 """
 
 import json
@@ -125,15 +130,52 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
 
 # ── File discovery ────────────────────────────────────────────────────────────
 
-def find_skills(root: Path) -> list[Path]:
-    """Recursively find all SKILL.md files, excluding hidden directories (.git, etc.)."""
-    return sorted(
-        p for p in root.rglob("SKILL.md")
-        # Exclude any SKILL.md whose path passes through a hidden directory.
-        # parts[:-1] gives the directory components; the file itself (SKILL.md) is excluded
-        # so a skill named .hidden/SKILL.md won't be accidentally excluded.
-        if not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
-    )
+def find_instruction_files(root: Path) -> list[Path]:
+    """Find all instruction files that need safety scanning:
+    - SKILL.md everywhere in the tree (standard skill convention)
+    - Any *.md file under skills/ with a YAML frontmatter name: field
+      (catches non-standard skill naming like dual-mode/*.md)
+    - All *.md files under agents/ (sub-agent definitions)
+    - All *.md files recursively under commands/ (slash command definitions)
+    Hidden directories (.git, etc.) are excluded throughout.
+    """
+    def not_hidden(p: Path) -> bool:
+        return not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
+
+    def has_skill_frontmatter(p: Path) -> bool:
+        """Return True if the file starts with --- YAML containing a name: field."""
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+            if not text.startswith("---"):
+                return False
+            end = text.find("---", 3)
+            return end > 0 and "name:" in text[3:end]
+        except OSError:
+            return False
+
+    found: set[Path] = set()
+
+    # Skills: SKILL.md anywhere in the tree (standard)
+    found.update(p for p in root.rglob("SKILL.md") if not_hidden(p))
+
+    # Skills: non-standard *.md files inside skills/ that carry skill frontmatter
+    skills_dir = root / "skills"
+    if skills_dir.is_dir():
+        for p in skills_dir.rglob("*.md"):
+            if p.name != "SKILL.md" and not_hidden(p) and has_skill_frontmatter(p):
+                found.add(p)
+
+    # Agents: *.md files under agents/
+    agents_dir = root / "agents"
+    if agents_dir.is_dir():
+        found.update(p for p in agents_dir.rglob("*.md") if not_hidden(p))
+
+    # Commands: *.md files under commands/
+    commands_dir = root / "commands"
+    if commands_dir.is_dir():
+        found.update(p for p in commands_dir.rglob("*.md") if not_hidden(p))
+
+    return sorted(found)
 
 
 # ── Output writers ────────────────────────────────────────────────────────────
@@ -226,6 +268,28 @@ def main() -> None:
     config = load_config(skills_dir)
     threshold: float = config["threshold"]
 
+    # Resolve skills list before printing header so Mode appears in the header block.
+    scanner_files_env = os.environ.get("SCANNER_FILES", "").strip()
+    if scanner_files_env:
+        explicit_paths = [p.strip() for p in scanner_files_env.split(",") if p.strip()]
+        skills = []
+        for raw in explicit_paths:
+            p = Path(raw)
+            if not p.is_absolute():
+                p = skills_dir / p
+            p = p.resolve()
+            if not p.exists():
+                console.print(f"[yellow]  Warning: SCANNER_FILES entry not found, skipping: {p}[/yellow]")
+                continue
+            if p.suffix != ".md":
+                console.print(f"[yellow]  Warning: SCANNER_FILES entry is not a .md file, skipping: {p}[/yellow]")
+                continue
+            skills.append(p)
+        mode_str = f"targeted ({len(skills)} file(s) from SCANNER_FILES)"
+    else:
+        skills = find_instruction_files(skills_dir)
+        mode_str = "full scan"
+
     console.rule("[bold]Skill Safety Scanner[/bold]")
     console.print(f"  Directory : {skills_dir}")
     console.print(f"  Output    : {output_dir}")
@@ -233,11 +297,11 @@ def main() -> None:
     console.print(f"  Model     : {config['model']}")
     console.print(f"  Threshold : {threshold}")
     console.print(f"  Fail on REVIEW_NEEDED: {fail_on_review}")
+    console.print(f"  Mode      : {mode_str}")
     console.rule()
 
-    skills = find_skills(skills_dir)
     if not skills:
-        console.print(f"[yellow]No SKILL.md files found under {skills_dir}. Nothing to scan.[/yellow]")
+        console.print(f"[yellow]No SKILL.md files found to scan. Nothing to do.[/yellow]")
         sys.exit(0)
 
     console.print(f"\nFound [bold]{len(skills)}[/bold] skill(s) to scan.\n")

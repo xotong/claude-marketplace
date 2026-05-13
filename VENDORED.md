@@ -78,14 +78,38 @@ Contains: `.claude-plugin/plugin.json`, `agents/` (50+ specialised review agents
 Dropped: `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json` (other-tool manifests not needed).
 Note: `skills/ce-gemini-imagegen/` requires a Google Gemini API key (`GEMINI_API_KEY`) to function. The skill is included but will not work without the key configured on the user's machine.
 
-## Updating a vendored plugin
+## Updating a vendored source
 
-1. `git clone --depth=1 <upstream-url>` into a temp directory.
-2. Compare the relevant subtree against `plugins/<name>/` using `diff -rq`.
-3. Copy updated files. Keep all LICENSE files current.
-4. Bump `version` in `.claude-plugin/marketplace.json` for the affected plugin.
+All upstream sources are now merged into `plugins/platform-verified/` (and `plugins/essentials/` for the curated subset). There are no longer individual `plugins/<name>/` directories.
+
+1. Clone the upstream at the new commit:
+   ```bash
+   git clone --depth=1 <upstream-url> /tmp/<source-name>
+   NEW_SHA=$(git -C /tmp/<source-name> rev-parse HEAD)
+   ```
+
+2. Identify which files in `plugins/platform-verified/` belong to this source. Check the "What was vendored" section above — each source lists exactly which skill directories it contributed. For example, superpowers contributed `skills/tdd/`, `skills/debugging/`, etc.
+
+3. Remove the old files for this source only, then copy in the new ones:
+   ```bash
+   # Example: updating superpowers skills
+   rm -rf plugins/platform-verified/skills/tdd \
+          plugins/platform-verified/skills/debugging \
+          plugins/platform-verified/skills/planning  # … all superpowers skills
+   cp -r /tmp/<source-name>/skills/. plugins/platform-verified/skills/
+
+   # If this source also contributes to essentials, repeat there:
+   rm -rf plugins/essentials/skills/tdd  # … all superpowers skills in essentials
+   cp -r /tmp/<source-name>/skills/. plugins/essentials/skills/
+   ```
+
+4. Reapply any airgap modifications documented in the "What was vendored" section for this source (e.g., anthropic-dev-skills requires removing `live-sources.md` and keeping the vendored SDK READMEs).
+
 5. Update the SHA and date in the provenance table above.
-6. Open an MR; the Platform Team review covers the diff, not just the bump.
+
+6. Bump `version` in `plugins/platform-verified/.claude-plugin/plugin.json` (and `plugins/essentials/.claude-plugin/plugin.json` if that plugin was also affected).
+
+7. Open an MR using the **"Add Skill to Platform-Verified"** template. The Platform Team review covers the diff, not just the version bump.
 
 ## Security update cadence
 

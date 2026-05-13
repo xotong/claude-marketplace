@@ -1,10 +1,13 @@
 FROM python:3.12-slim
 
-LABEL org.opencontainers.image.title="xotong1 Skill Safety Scanner"
+LABEL org.opencontainers.image.title="Skill Safety Scanner"
 LABEL org.opencontainers.image.description="Scans Claude Code SKILL.md files for security risks using an LLM-as-judge pattern."
 LABEL org.opencontainers.image.source="https://gitlab.company.com/skillshub/claude-marketplace"
 
 WORKDIR /scanner
+
+# git is required for the targeted-scan path in CI (git diff to find changed SKILL.md files).
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

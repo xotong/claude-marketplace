@@ -1,8 +1,8 @@
 # Skill Safety Scanner
 
-LLM-as-judge CI scanner for Claude Code SKILL.md files. Sends each skill to an
-OpenAI-compatible endpoint and fails the pipeline if the safety confidence score
-is below a configurable threshold.
+LLM-as-judge CI scanner for Claude Code plugin instruction files. Evaluates skills,
+agent definitions, and slash command definitions against five security risk categories.
+Fails the pipeline if safety confidence is below a configurable threshold.
 
 Designed to run airgap: no external calls except to your internal LiteLLM endpoint.
 
@@ -11,26 +11,26 @@ Designed to run airgap: no external calls except to your internal LiteLLM endpoi
 ## Architecture
 
 ```
-Your skills repo
+Your plugin repo
   skills/my-skill/SKILL.md  ──┐
-  skills/other/SKILL.md     ──┤──▶  scanner.py  ──▶  LiteLLM  ──▶  vLLM (KimiK2)
-  scanner-config.yaml  (opt) ──┘         │
-                                         ▼
-                                  scan-report.json      (artifact)
-                                  scan-results.xml      (JUnit → MR UI)
+  agents/my-agent.md        ──┤──▶  scanner.py  ──▶  LiteLLM  ──▶  vLLM (KimiK2)
+  commands/my-cmd.md        ──┤         │
+  scanner-config.yaml (opt) ──┘         ▼
+                                 scan-report.json      (artifact)
+                                 scan-results.xml      (JUnit → MR UI)
 ```
 
-**What the scanner checks:**
+**What the scanner checks** (skills, agents, and commands all share the same risk surface):
 
 | Risk category | What it looks for |
 |---|---|
 | `PROMPT_INJECTION` | Instructions that try to override Claude's guidelines or claim extra permissions |
 | `DATA_EXFILTRATION` | Hardcoded external URLs, instructions to POST/send data off-device |
 | `DESTRUCTIVE_COMMANDS` | `rm -rf`, DROP TABLE, bulk deletes without confirmation steps |
-| `SECRETS_EMBEDDED` | API keys, tokens, passwords, internal IPs baked into skill text |
-| `SCOPE_CREEP` | Skill claims authority well outside its stated purpose |
+| `SECRETS_EMBEDDED` | API keys, tokens, passwords, internal IPs baked into file content |
+| `SCOPE_CREEP` | File claims authority well outside its stated purpose |
 
-**Output per skill:**
+**Output per file:**
 ```json
 {
   "confidence_safe": 0.93,
@@ -115,12 +115,13 @@ All configuration lives in `scanner-config.yaml` (tenant file) or
 |---|---|---|
 | `SCANNER_ENDPOINT` | _(set in component)_ | OpenAI-compatible base URL |
 | `SCANNER_API_KEY` | `$LITELLM_API_KEY` | API key |
-| `SCANNER_SKILLS_DIR` | `.` | Directory to scan recursively |
+| `SCANNER_SKILLS_DIR` | `.` | Root directory to scan. Finds SKILL.md everywhere; also scans all `*.md` in `agents/` and `commands/` subdirectories. |
 | `SCANNER_THRESHOLD` | `0.85` | Override threshold from config file |
 | `SCANNER_MODEL` | `kimi-k2` | Override model from config file |
 | `SCANNER_FAIL_ON_REVIEW` | `false` | Treat REVIEW_NEEDED as failure |
 | `SCANNER_MAX_RETRIES` | `3` | Retries on transient API errors |
 | `SCANNER_CONFIG_FILE` | _(auto)_ | Explicit path to a config YAML |
+| `SCANNER_FILES` | _(unset = full scan)_ | Comma-separated list of specific `.md` instruction file paths to scan instead of the full directory. Accepts SKILL.md, agent `.md`, and command `.md` files. Paths may be absolute or relative to `SCANNER_SKILLS_DIR`. Used by the marketplace CI to scan only changed files on MRs. |
 
 **Config file fields** (all optional — unset fields use image defaults):
 

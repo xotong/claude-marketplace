@@ -12,37 +12,64 @@ Central plugin marketplace. One URL to configure; all team and platform skills f
 
 ## For tenants: one-time Claude Code setup
 
-Add to `~/.claude/settings.json` (create if it doesn't exist):
+### Step 1 — Add the marketplace
 
-```json
-{
-  "extraKnownMarketplaces": {
-    "claude-marketplace": {
-      "source": {
-        "source": "git",
-        "url": "https://gitlab.company.com/skillshub/claude-marketplace.git"
-      }
-    }
-  }
-}
+In any Claude Code session, run:
+
+```
+/plugin marketplace add https://gitlab.company.com/skillshub/claude-marketplace.git
 ```
 
-> **Git auth prerequisite:** Claude Code clones marketplace repos using your system git.
-> You need git configured to authenticate to internal GitLab — either an SSH key registered
-> in your GitLab profile, or a Personal Access Token stored in your macOS Keychain.
-> If `git clone https://gitlab.company.com/any-repo.git` works in your terminal, you're set.
+Claude Code will clone the catalog and register it as `claude-marketplace`. You only need to do this once per machine.
 
-### Start here (recommended for everyone)
+> **Git auth prerequisite:** Claude Code clones the marketplace using your system git.
+> You need git configured to authenticate to internal GitLab before running the command above.
+>
+> **macOS**
+> ```bash
+> # Option A — SSH key (recommended)
+> ssh-keygen -t ed25519 -C "your@email.com"
+> # Add ~/.ssh/id_ed25519.pub to your GitLab profile → SSH Keys
+>
+> # Option B — Personal Access Token via credential helper
+> git config --global credential.helper osxkeychain
+> # Then `git clone` any internal repo; macOS will prompt for username/PAT and save it
+> ```
+>
+> **Ubuntu / Debian**
+> ```bash
+> # Option A — SSH key
+> ssh-keygen -t ed25519 -C "your@email.com"
+> # Add ~/.ssh/id_ed25519.pub to your GitLab profile → SSH Keys
+>
+> # Option B — Personal Access Token via credential store
+> git config --global credential.helper store
+> git clone https://gitlab.company.com/skillshub/claude-marketplace.git /tmp/test-clone
+> # Enter your GitLab username and PAT when prompted; credentials are saved to ~/.git-credentials
+> rm -rf /tmp/test-clone
+> ```
+>
+> **WSL (Windows Subsystem for Linux)**
+> ```bash
+> # Recommended: delegate to the Windows Git credential manager
+> git config --global credential.helper "/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe"
+> # Then authenticate once via the Windows Git Credential Manager dialog
+> ```
+>
+> Verify with: `git ls-remote https://gitlab.company.com/skillshub/claude-marketplace.git`
+> If that prints refs without prompting, you're set.
 
+### Step 2 — Install skills
+
+**Start here (recommended for everyone):**
 ```
 /plugin install essentials@claude-marketplace
 /reload-plugins
 ```
 
-Gives you: TDD, systematic debugging, planning, git worktrees, 7-phase feature development, and 6-agent parallel PR review. A solid foundation for any developer.
+Gives you: TDD, systematic debugging, planning, git worktrees, 7-phase feature development, and 6-agent parallel PR review.
 
-### Want everything?
-
+**Want everything?**
 ```
 /plugin install platform-verified@claude-marketplace
 /reload-plugins
@@ -50,15 +77,24 @@ Gives you: TDD, systematic debugging, planning, git worktrees, 7-phase feature d
 
 Installs the full catalog: 149 skills, 58 agents, and 72 commands from 11 vendored sources.
 
-### Your team's skills
-
+**Your team's skills:**
 ```
-/plugin install <team-name>@claude-marketplace
+/plugin install my-team@claude-marketplace
 /reload-plugins
 ```
 
-> Your team repo must exist in the `skillshub` GitLab group and be listed in the catalog.
-> See "For teams" below if it isn't yet.
+Replace `my-team` with your team's plugin name (same as the `name` in your team's `plugin.json`). Your team repo must be listed in the catalog — see "For teams" below.
+
+### Step 3 — Verify your install
+
+After `/reload-plugins`, run:
+```
+/plugins
+```
+
+This lists all installed plugins and their loaded skills. Confirm `essentials` (or `platform-verified`) appears and the skill count matches what you expect. If a plugin is missing, check that your git credentials can reach the marketplace repo and re-run the install command.
+
+> **Need a `LITELLM_API_KEY`?** This key is needed if your team runs the skill scanner CI job. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
 
 ---
 
@@ -84,6 +120,8 @@ Installs the full catalog: 149 skills, 58 agents, and 72 commands from 11 vendor
 | anthropic-dev-skills | claude-api, webapp-testing, mcp-builder skills |
 | frontend-design | frontend-design skill |
 | obsidian (Steph Ango) | 5 skills: obsidian-markdown, bases, CLI, json-canvas, defuddle |
+
+> All sources are vendored at a fixed commit — no runtime network calls to upstream repos. Works fully offline once the marketplace is cloned. See VENDORED.md for commit SHAs and license notes.
 
 ---
 
@@ -125,9 +163,9 @@ include:
   - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
 ```
 
-Plus set `LITELLM_API_KEY` as a masked CI/CD variable in your project settings.
+> **`LITELLM_API_KEY` required:** Add it as a masked CI/CD variable in your project's **Settings → CI/CD → Variables**. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
 
-### Step 3 — Write a skill
+### Step 2 — Write a skill
 
 ```markdown
 ---
@@ -157,7 +195,7 @@ description: >
 - Keep it under 200 words — Claude truncates long descriptions
 - Be specific: vague descriptions cause false positives and missed triggers
 
-### Step 4 — List in the marketplace
+### Step 3 — List in the marketplace
 
 Open an MR against this repo using the **"Add Team to Marketplace"** MR template.
 The Platform Team reviews structure, not skill content — you own quality within your repo.
@@ -166,13 +204,63 @@ The Platform Team reviews structure, not skill content — you own quality withi
 
 ## For contributors: adding skills to platform-verified
 
-`plugins/platform-verified/` is the full vendored catalog. To add a new upstream skill source:
+`plugins/platform-verified/` and `plugins/essentials/` are the two user-facing plugins. All vendored content lives inside them. Here is the explicit workflow to add or update an upstream skill source:
 
-1. Vendor the files into the relevant subdirectory (see VENDORED.md for pattern)
-2. Merge skills into `plugins/platform-verified/skills/`, agents into `agents/`, commands into `commands/`
-3. If the source is broadly useful, also add its core skills to `plugins/essentials/`
-4. Open an MR using the **"Add Skill to Platform-Verified"** MR template
-5. Update VENDORED.md provenance table and `marketplace.json` versions
+### Adding a new upstream source
+
+1. Clone the upstream repo into a temp directory:
+   ```bash
+   git clone --depth=1 <upstream-url> /tmp/<source-name>
+   ```
+
+2. Copy the relevant skill files into `plugins/platform-verified/`:
+   ```bash
+   # Skills go into skills/
+   cp -r /tmp/<source-name>/skills/. plugins/platform-verified/skills/
+
+   # Agents (if any) go into agents/
+   cp -r /tmp/<source-name>/agents/. plugins/platform-verified/agents/
+
+   # Commands (if any) go into commands/
+   cp -r /tmp/<source-name>/commands/. plugins/platform-verified/commands/
+   ```
+
+3. If the source is broadly useful (good for most developers), also copy its core skills into `plugins/essentials/`:
+   ```bash
+   cp -r /tmp/<source-name>/skills/. plugins/essentials/skills/
+   ```
+
+4. Record the provenance in `VENDORED.md`:
+   - Add a row to the provenance table with the upstream URL, commit SHA (`git -C /tmp/<source-name> rev-parse HEAD`), date, and license
+   - Add a `### <source-name>` section describing what was included/excluded
+
+5. Bump `version` in `plugins/platform-verified/.claude-plugin/plugin.json` and `plugins/essentials/.claude-plugin/plugin.json` (if changed).
+
+6. Open an MR using the **"Add Skill to Platform-Verified"** MR template. Platform Team is a required approver.
+
+### Updating an existing upstream source
+
+1. Clone the upstream at the new commit:
+   ```bash
+   git clone --depth=1 <upstream-url> /tmp/<source-name>
+   ```
+
+2. Identify which skill directories belong to this source (check VENDORED.md for the list).
+
+3. Remove the old files and copy the new ones:
+   ```bash
+   # Example: updating superpowers skills
+   rm -rf plugins/platform-verified/skills/tdd \
+          plugins/platform-verified/skills/debugging \
+          plugins/platform-verified/skills/planning  # ... all superpowers skills
+   cp -r /tmp/<source-name>/skills/. plugins/platform-verified/skills/
+
+   # Repeat for essentials if the source appears there too
+   ```
+
+4. Update the SHA and date in `VENDORED.md`.
+
+5. Bump versions and open an MR.
 
 Platform Team is a required approver (CODEOWNERS).
 
@@ -182,9 +270,10 @@ Platform Team is a required approver (CODEOWNERS).
 
 ```
 .claude-plugin/marketplace.json        Central catalog — Platform Team only
-.gitlab-ci.yml                         CI: JSON validation + scanner on platform-verified
+.gitlab-ci.yml                         CI: JSON validation + scanner on platform-verified (changed files only)
 CODEOWNERS                             Write-access rules with [Section][1] approval counts
 VENDORED.md                            Upstream SHAs, license notes, update cadence
+CLAUDE.md                              Project context for contributors
 
 plugins/
   essentials/                          Curated starter pack (Platform Team maintained)
@@ -206,8 +295,6 @@ plugins/
     core/     ← hookify core
     assets/   ← superpowers assets
     references/ ← getshitdone reference docs
-
-  hello-xotong1/                       Smoke-test plugin
 
 ci/
   skill-scanner/                       LLM-as-judge safety scanner + GitLab CI component
