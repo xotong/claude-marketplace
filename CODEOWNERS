@@ -22,23 +22,13 @@
 [Marketplace Catalog][1]
 /.claude-plugin/marketplace.json            @skillshub/platform-team
 
-# ── Platform-verified skills ─────────────────────────────────────────────────
-# Content here is officially endorsed — require 1 approval minimum.
-# For high-impact changes (new skill, major edit) consider bumping to [2].
+# ── Plugin content ────────────────────────────────────────────────────────────
+# Both plugins are Platform Team maintained.
+# platform-verified is officially endorsed — bump threshold to [2] for large changes.
 
-[Platform Verified][1]
+[Plugin Content][1]
+/plugins/essentials/                        @skillshub/platform-team
 /plugins/platform-verified/                 @skillshub/platform-team
-
-# ── Vendored upstream plugins ─────────────────────────────────────────────────
-# Vendored upgrades should be reviewed by platform team.
-
-[Vendored Plugins][1]
-/plugins/superpowers/                       @skillshub/platform-team
-/plugins/frontend-design/                   @skillshub/platform-team
-/plugins/anthropic-dev-skills/              @skillshub/platform-team
-/plugins/anthropic-official/               @skillshub/platform-team
-/plugins/compound-engineering/              @skillshub/platform-team
-/plugins/hello-xotong1/                    @skillshub/platform-team
 
 # ── Governance and CI ─────────────────────────────────────────────────────────
 

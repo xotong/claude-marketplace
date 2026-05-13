@@ -22,6 +22,10 @@ Optional env vars:
   SCANNER_FAIL_ON_REVIEW  Treat REVIEW_NEEDED verdict as failure (default: false)
   SCANNER_CONFIG_FILE   Explicit path to a config YAML (overrides discovery)
   SCANNER_MAX_RETRIES   API call retries on transient error (default: 3)
+  SCANNER_FILES         Comma-separated list of SKILL.md paths to scan instead of
+                        the full directory tree. Paths may be absolute or relative
+                        to SCANNER_SKILLS_DIR. When set, only the listed files are
+                        scanned — use this in CI to scan only changed files.
 """
 
 import json
@@ -235,9 +239,29 @@ def main() -> None:
     console.print(f"  Fail on REVIEW_NEEDED: {fail_on_review}")
     console.rule()
 
-    skills = find_skills(skills_dir)
+    scanner_files_env = os.environ.get("SCANNER_FILES", "").strip()
+    if scanner_files_env:
+        explicit_paths = [p.strip() for p in scanner_files_env.split(",") if p.strip()]
+        skills = []
+        for raw in explicit_paths:
+            p = Path(raw)
+            if not p.is_absolute():
+                p = skills_dir / p
+            p = p.resolve()
+            if not p.exists():
+                console.print(f"[yellow]  Warning: SCANNER_FILES entry not found, skipping: {p}[/yellow]")
+                continue
+            if p.name != "SKILL.md":
+                console.print(f"[yellow]  Warning: SCANNER_FILES entry is not a SKILL.md, skipping: {p}[/yellow]")
+                continue
+            skills.append(p)
+        console.print(f"  Mode      : targeted ({len(skills)} file(s) from SCANNER_FILES)")
+    else:
+        skills = find_skills(skills_dir)
+        console.print(f"  Mode      : full scan")
+
     if not skills:
-        console.print(f"[yellow]No SKILL.md files found under {skills_dir}. Nothing to scan.[/yellow]")
+        console.print(f"[yellow]No SKILL.md files found to scan. Nothing to do.[/yellow]")
         sys.exit(0)
 
     console.print(f"\nFound [bold]{len(skills)}[/bold] skill(s) to scan.\n")

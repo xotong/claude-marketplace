@@ -44,13 +44,23 @@ include:
       fail_on_review: true
       threshold: 0.90
 
-# Override the job's rules so it only runs when platform-verified content changes.
+# Override the job's rules and variables so it only runs when platform-verified
+# SKILL.md files change, and only scans those changed files (not all 149).
 skill-safety-scan:
+  variables:
+    # Compute the list of changed SKILL.md files at job start and pass them to
+    # the scanner via SCANNER_FILES. This avoids making one LLM call per skill
+    # on every MR — only the touched files are evaluated.
+    SCANNER_FILES: >-
+      $(git diff --name-only origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-main}...HEAD
+      | grep '^plugins/platform-verified/.*SKILL\.md$'
+      | tr '\n' ','
+      | sed 's/,$//')
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - plugins/platform-verified/**/*
+        - plugins/platform-verified/**/*SKILL.md
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - plugins/platform-verified/**/*
+        - plugins/platform-verified/**/*SKILL.md
     - when: never
