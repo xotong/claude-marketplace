@@ -89,17 +89,13 @@ Installs the full catalog: 149 skills, 58 agents, and 72 commands from 11 vendor
 
 ## For teams: create and publish your skills repo
 
-### Step 1 — Request a repo
+### Step 1 — Create and structure your repo
 
-Open an issue titled `[New team repo] <team-name>-skills` in this repo. Include:
-- Team name and GitLab group path for access control
-- Slack channel
-- Brief description of planned skills
+Create a new project under the `skillshub` GitLab group named `<team-name>-skills`.
 
-The Platform Team creates `skillshub/<team-name>-skills` with access restricted to your team.
-No one outside your team will have read access.
+> **Set the project visibility to Private.** This ensures only your team members (and the Platform Team) can read the skill content. The `skillshub` group itself is public — private projects within it are still fully hidden from non-members. Add your team members directly to the project (not to the group) to keep the project invisible even in the group listing.
 
-### Step 2 — Structure your repo
+Structure it as follows:
 
 ```
 <team-name>-skills/
