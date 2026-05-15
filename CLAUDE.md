@@ -8,7 +8,7 @@ This is the `skillshub/claude-marketplace` repo. It is the single URL tenants co
 .claude-plugin/marketplace.json   Central catalog (Platform Team only)
 plugins/
   essentials/                     Curated starter pack — superpowers + feature-dev + pr-review
-  platform-verified/              Full vendored catalog (149 skills, 58 agents, 72 commands)
+  platform-verified/              Full vendored catalog (154 skills, 58 agents, 72 commands)
 ci/skill-scanner/                 LLM-as-judge safety scanner + GitLab CI component
 VENDORED.md                       Upstream SHAs, licenses, what was included/excluded
 CODEOWNERS                        Approval rules (GitLab Ultimate [Section][N] syntax)

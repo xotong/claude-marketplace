@@ -75,7 +75,7 @@ Gives you: TDD, systematic debugging, planning, git worktrees, 7-phase feature d
 /reload-plugins
 ```
 
-Installs the full catalog: 149 skills, 58 agents, and 72 commands from 11 vendored sources.
+Installs the full catalog: 154 skills, 58 agents, and 72 commands from 11 vendored sources.
 
 **Your team's skills:**
 ```
@@ -286,7 +286,7 @@ plugins/
 
   platform-verified/                   Full vendored catalog (CODEOWNERS protected)
     .claude-plugin/plugin.json
-    skills/   ← 149 skills from all 11 sources
+    skills/   ← 154 skills from all 11 sources
     agents/   ← 58 agents
     commands/ ← 72 commands (including 66 /gsd commands)
     hooks/    ← superpowers + hookify hooks

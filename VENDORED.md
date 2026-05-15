@@ -78,6 +78,22 @@ Contains: `.claude-plugin/plugin.json`, `agents/` (50+ specialised review agents
 Dropped: `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json` (other-tool manifests not needed).
 Note: `skills/ce-gemini-imagegen/` requires a Google Gemini API key (`GEMINI_API_KEY`) to function. The skill is included but will not work without the key configured on the user's machine.
 
+### First-party (Platform Team authored)
+
+The following skills were authored by the Platform Team and are not vendored from any upstream repo. They have no upstream SHA or license dependency — they are original works owned by the organisation.
+
+| Skill | Added on | Notes |
+|---|---|---|
+| `appsec-scan` | 2026-05-15 | 7-phase security scan: secrets, SAST, SCA, config review, DAST |
+| `lint-and-validate` | 2026-05-15 | Pre-commit gate: auto-fix formatters + linters + type checkers |
+| `api-design-principles` | 2026-05-15 | REST/GraphQL design enforcement, RFC 7807, versioning, pagination |
+| `openapi-spec-generation` | 2026-05-15 | Generate/sync OpenAPI 3.1 spec with implementation |
+| `doc-coauthoring` | 2026-05-15 | Interview-first structured docs: ADR, Design Doc, Runbook, Postmortem |
+
+`lint-and-validate` is also included in `plugins/essentials/` as a mandatory pre-commit gate suitable for all developers.
+
+---
+
 ## Updating a vendored source
 
 All upstream sources are now merged into `plugins/platform-verified/` (and `plugins/essentials/` for the curated subset). There are no longer individual `plugins/<name>/` directories.
