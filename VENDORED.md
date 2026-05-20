@@ -84,7 +84,8 @@ The following skills were authored by the Platform Team and are not vendored fro
 
 | Skill | Added on | Notes |
 |---|---|---|
-| `appsec-scan` | 2026-05-15 | 7-phase security scan: secrets, SAST, SCA, config review, DAST |
+| `appsec-scan` | 2026-05-20 | Container-based CI-mirror: Fortify SAST, Parasoft Jtest, Pylint, ESLint, Scantist SCA, Trivy |
+| `appsec-dast-sim` | 2026-05-20 | LLM-based DAST following WSTG v4.2; no containers required; works at design time |
 | `lint-and-validate` | 2026-05-15 | Pre-commit gate: auto-fix formatters + linters + type checkers |
 | `api-design-principles` | 2026-05-15 | REST/GraphQL design enforcement, RFC 7807, versioning, pagination |
 | `openapi-spec-generation` | 2026-05-15 | Generate/sync OpenAPI 3.1 spec with implementation |
