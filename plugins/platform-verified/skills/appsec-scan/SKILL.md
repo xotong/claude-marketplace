@@ -1,489 +1,525 @@
 ---
 name: appsec-scan
 description: >
-  Run a comprehensive local security scan before pushing to GitLab, covering SAST,
-  SCA (dependency audit), secret scanning, DAST (if app is running), and config review.
-  The goal is to surface and fix the same findings that GitLab CI security pipelines
-  would report — before the commit is pushed.
-  Use when the user says: "security scan", "security audit", "appsec", "check for
-  vulnerabilities", "check for secrets", "dependency audit", "SAST scan", "SCA scan",
-  "secrets scan", "scan before PR", "find security issues", "full pentest", "security
-  check", "run all security checks", "vulnerability assessment", "check for CVEs".
-  Do NOT activate for general code review, testing questions, or lint requests.
+  Run the same security scanners as CI — locally, using identical container images —
+  before pushing to GitLab. Covers Fortify SAST (Python and JS), Parasoft Jtest
+  (Gradle and Maven), Pylint (SARIF output), ESLint (JSON output), Scantist SCA
+  (JAR-based dependency analysis), and Trivy (container image scanning).
+  Results go to .appsec-results/ and a severity-gated summary is printed at the end.
+  Use when the user says: "appsec scan", "run security scanners", "run Fortify",
+  "run Parasoft", "Scantist scan", "Trivy scan", "ESLint security", "Pylint scan",
+  "pre-push security check", "CI security pipeline locally", "mirror CI scanners",
+  "container security scan", "SCA scan", "SAST scan", "security before merge".
+  Do NOT activate for general code review, unit testing, or lint-only requests.
 ---
 
-# AppSec Scan
+# AppSec Scan — CI-Mirror
 
-Pre-empt GitLab CI security pipeline findings by running equivalent checks locally,
-with actionable remediation for every issue found.
-
-## Phase 1 — Detect Stack
-
-Read the project root to identify languages, package managers, and frameworks.
-
-```bash
-ls -la
-cat package.json 2>/dev/null | python3 -m json.tool 2>/dev/null | grep -E '"name"|"dependencies"|"devDependencies"' | head -20 || true
-cat requirements.txt 2>/dev/null | head -30 || cat pyproject.toml 2>/dev/null | head -30 || true
-cat go.mod 2>/dev/null | head -10 || true
-cat pom.xml 2>/dev/null | grep -E '<groupId>|<artifactId>|<version>' | head -20 || true
-cat build.gradle 2>/dev/null | grep -E 'implementation|compile' | head -20 || true
-cat Gemfile 2>/dev/null | head -20 || true
-cat Cargo.toml 2>/dev/null | head -20 || true
-cat composer.json 2>/dev/null | head -20 || true
-```
-
-Record: primary language(s), package manager(s), web framework(s), whether a server runs locally.
+Run the same scanner images your GitLab CI pipeline uses, locally, so you catch
+findings before the push. Each scanner runs in its own container with the same
+image tag CI uses. Results land in `.appsec-results/` and a final gate blocks if
+any CRITICAL or HIGH findings are present.
 
 ---
 
-## Phase 2 — Secret Scanning (always run first)
+## Prerequisites
 
-Secrets in code are Critical severity. Run this phase regardless of what the user asked for.
+Collect these values before starting. Ask the user for any that are missing.
 
-### Step 2a: gitleaks (preferred)
-```bash
-which gitleaks 2>/dev/null && \
-  gitleaks detect --source . --no-git \
-    --report-format json \
-    --report-path /tmp/gitleaks-report.json && \
-  echo "gitleaks: clean" || \
-  ([ -f /tmp/gitleaks-report.json ] && \
-    python3 -c "
-import json
-d = json.load(open('/tmp/gitleaks-report.json'))
-for f in d:
-    print(f'CRITICAL SECRET: {f[\"RuleID\"]} in {f[\"File\"]}:{f[\"StartLine\"]}')
-    print(f'  Match: {f[\"Secret\"][:20]}...')
-" || echo "gitleaks not installed")
-```
-
-### Step 2b: detect-secrets (fallback)
-```bash
-which detect-secrets 2>/dev/null && \
-  detect-secrets scan --baseline .secrets.baseline 2>/dev/null || \
-  detect-secrets scan 2>/dev/null | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for fname, secrets in d.get('results', {}).items():
-    for s in secrets:
-        print(f'CRITICAL SECRET: {s[\"type\"]} in {fname}:{s[\"line_number\"]}')
-" || true
-```
-
-### Step 2c: Pattern grep (always run as belt-and-braces)
-```bash
-# AWS keys
-grep -rn --include="*.js" --include="*.ts" --include="*.py" --include="*.go" \
-  --include="*.java" --include="*.rb" --include="*.php" --include="*.env" \
-  -E 'AKIA[0-9A-Z]{16}' . 2>/dev/null && echo "CRITICAL: AWS Access Key found" || true
-
-# Generic API key / token patterns in assignments
-grep -rn --include="*.js" --include="*.ts" --include="*.py" --include="*.go" \
-  --include="*.java" --include="*.rb" -iE \
-  '(password|passwd|secret|api_key|apikey|auth_token|access_token|private_key)\s*[=:]\s*["\x27][A-Za-z0-9/+_\-]{8,}["\x27]' \
-  . 2>/dev/null | grep -v "test\|spec\|mock\|fake\|example\|placeholder\|your_" || true
-
-# .env files that should not be committed
-git ls-files 2>/dev/null | grep -E '^\.env$|^\.env\.' | grep -v '\.env\.example\|\.env\.sample\|\.env\.template' && \
-  echo "WARNING: .env file is tracked by git — remove and add to .gitignore" || true
-
-# Private keys
-git ls-files 2>/dev/null | xargs grep -l "BEGIN.*PRIVATE KEY\|BEGIN RSA PRIVATE\|BEGIN EC PRIVATE" 2>/dev/null && \
-  echo "CRITICAL: Private key file committed to git" || true
-```
-
----
-
-## Phase 3 — SAST (Static Application Security Testing)
-
-Run for every language detected in Phase 1. Semgrep is the universal tool; language-specific tools add depth.
-
-### Universal: Semgrep
-```bash
-if which semgrep 2>/dev/null; then
-  semgrep scan \
-    --config=p/owasp-top-ten \
-    --config=p/secrets \
-    --config=p/sql-injection \
-    --config=p/xss \
-    --config=p/command-injection \
-    --json \
-    --output=/tmp/semgrep-results.json \
-    --severity=ERROR \
-    --severity=WARNING \
-    . 2>/dev/null
-  python3 -c "
-import json
-d = json.load(open('/tmp/semgrep-results.json'))
-results = d.get('results', [])
-print(f'Semgrep: {len(results)} finding(s)')
-for r in sorted(results, key=lambda x: x.get('extra',{}).get('severity',''), reverse=True)[:20]:
-    sev = r.get('extra',{}).get('severity','?')
-    msg = r.get('extra',{}).get('message','')[:100]
-    path = r.get('path','')
-    line = r.get('start',{}).get('line','')
-    print(f'  [{sev}] {path}:{line} — {msg}')
-  " 2>/dev/null
-else
-  echo "semgrep not installed — install with: pip install semgrep"
-fi
-```
-
-### Node.js / TypeScript
-```bash
-# ESLint with security plugin
-if [ -f package.json ]; then
-  npx eslint . --ext .js,.jsx,.ts,.tsx \
-    --plugin security \
-    --rule 'security/detect-eval-with-expression: error' \
-    --rule 'security/detect-non-literal-regexp: warn' \
-    --rule 'security/detect-object-injection: warn' \
-    --rule 'security/detect-possible-timing-attacks: warn' \
-    --rule 'security/detect-sql-literal-injection: error' \
-    --rule 'no-eval: error' \
-    --rule 'no-new-func: error' \
-    2>/dev/null || true
-  # Also run semgrep with JS/TS rules
-  which semgrep 2>/dev/null && \
-    semgrep --config=p/javascript --config=p/typescript --config=p/nodejs \
-    --json --output=/tmp/semgrep-js.json . 2>/dev/null || true
-fi
-```
-
-### Python
-```bash
-if [ -f requirements.txt ] || [ -f pyproject.toml ] || [ -f setup.py ]; then
-  # bandit: Python SAST
-  if which bandit 2>/dev/null; then
-    bandit -r . \
-      -f json \
-      -o /tmp/bandit-results.json \
-      -ll \
-      --exclude ./node_modules,./venv,./.venv,./tests 2>/dev/null
-    python3 -c "
-import json
-d = json.load(open('/tmp/bandit-results.json'))
-results = d.get('results', [])
-print(f'Bandit: {len(results)} finding(s)')
-for r in results[:20]:
-    print(f'  [{r[\"issue_severity\"]}] {r[\"filename\"]}:{r[\"line_number\"]} — {r[\"issue_text\"]}')
-    print(f'    CWE: {r.get(\"issue_cwe\", {}).get(\"id\", \"?\")} | More: {r.get(\"more_info\",\"\")}')
-    " 2>/dev/null
-  else
-    echo "bandit not installed — install with: pip install bandit"
-  fi
-  which semgrep 2>/dev/null && \
-    semgrep --config=p/python --config=p/django --config=p/flask \
-    --json --output=/tmp/semgrep-py.json . 2>/dev/null || true
-fi
-```
-
-### Go
-```bash
-if [ -f go.mod ]; then
-  # govulncheck: Go vulnerability database
-  if which govulncheck 2>/dev/null; then
-    govulncheck ./... 2>/dev/null
-  else
-    echo "govulncheck not installed — install with: go install golang.org/x/vuln/cmd/govulncheck@latest"
-  fi
-  # gosec: Go SAST
-  if which gosec 2>/dev/null; then
-    gosec -fmt json -out /tmp/gosec-results.json -severity high ./... 2>/dev/null
-    python3 -c "
-import json
-d = json.load(open('/tmp/gosec-results.json'))
-issues = d.get('Issues', [])
-print(f'gosec: {len(issues)} finding(s)')
-for i in issues[:20]:
-    print(f'  [{i[\"severity\"]}] {i[\"file\"]}:{i[\"line\"]} — {i[\"details\"]}')
-    print(f'    CWE: {i.get(\"cwe\",{}).get(\"id\",\"?\")} | Rule: {i[\"rule_id\"]}')
-    " 2>/dev/null
-  else
-    echo "gosec not installed — install with: go install github.com/securego/gosec/v2/cmd/gosec@latest"
-  fi
-  which semgrep 2>/dev/null && semgrep --config=p/golang --json --output=/tmp/semgrep-go.json . 2>/dev/null || true
-fi
-```
-
-### Java
-```bash
-if [ -f pom.xml ] || [ -f build.gradle ]; then
-  which semgrep 2>/dev/null && \
-    semgrep --config=p/java --config=p/spring --config=p/java-security-audit \
-    --json --output=/tmp/semgrep-java.json . 2>/dev/null || true
-  # Check for known critical vulnerabilities in declared deps
-  grep -E 'log4j-(core|api).*:(1\.|2\.[0-9]\.|2\.1[0-4]\.)' pom.xml build.gradle 2>/dev/null && \
-    echo "CRITICAL: Log4Shell-vulnerable log4j version detected" || true
-fi
-```
-
-### Ruby
-```bash
-if [ -f Gemfile ]; then
-  if which brakeman 2>/dev/null; then
-    brakeman -f json -o /tmp/brakeman-results.json -q . 2>/dev/null
-    python3 -c "
-import json
-d = json.load(open('/tmp/brakeman-results.json'))
-warnings = d.get('warnings', [])
-print(f'Brakeman: {len(warnings)} warning(s)')
-for w in warnings[:20]:
-    print(f'  [{w[\"confidence\"]}] {w[\"file\"]}:{w[\"line\"]} — {w[\"warning_type\"]}: {w[\"message\"]}')
-    " 2>/dev/null
-  else
-    echo "brakeman not installed — install with: gem install brakeman"
-  fi
-  which semgrep 2>/dev/null && semgrep --config=p/ruby --json --output=/tmp/semgrep-rb.json . 2>/dev/null || true
-fi
-```
-
----
-
-## Phase 4 — SCA (Software Composition Analysis / Dependency Audit)
-
-Check all direct and transitive dependencies for known CVEs.
-
-### Node.js
-```bash
-if [ -f package-lock.json ]; then
-  npm audit --json 2>/dev/null | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-vulns = d.get('vulnerabilities', {})
-by_sev = {'critical': [], 'high': [], 'moderate': [], 'low': []}
-for name, v in vulns.items():
-    sev = v.get('severity', 'low')
-    if sev in by_sev:
-        via = v.get('via', [{}])
-        title = via[0] if isinstance(via[0], str) else via[0].get('title', 'transitive')
-        by_sev[sev].append(f'{name} ({title})')
-for sev in ['critical','high','moderate']:
-    if by_sev[sev]:
-        print(f'{sev.upper()} ({len(by_sev[sev])}): {chr(10).join(by_sev[sev][:10])}')
-" || npm audit 2>/dev/null || true
-elif [ -f yarn.lock ]; then
-  yarn audit --json 2>/dev/null | head -50 || true
-elif [ -f pnpm-lock.yaml ]; then
-  pnpm audit 2>/dev/null || true
-fi
-```
-
-### Python
-```bash
-if [ -f requirements.txt ] || [ -f pyproject.toml ]; then
-  if which pip-audit 2>/dev/null; then
-    pip-audit --format json 2>/dev/null | python3 -c "
-import json, sys
-results = json.load(sys.stdin)
-vulns = [r for r in results if r.get('vulns')]
-print(f'pip-audit: {len(vulns)} package(s) with vulnerabilities')
-for r in vulns:
-    for v in r['vulns']:
-        print(f'  {r[\"name\"]}=={r[\"version\"]}: {v[\"id\"]} — {v[\"description\"][:80]}')
-        print(f'    Fix: upgrade to {v.get(\"fix_versions\", [\"no fix available\"])}')
-    " || pip-audit 2>/dev/null
-  elif which safety 2>/dev/null; then
-    safety check --json 2>/dev/null | python3 -c "
-import json, sys
-results = json.load(sys.stdin)
-for r in results:
-    print(f'  {r[0]}=={r[2]}: {r[3][:80]}')
-    " || safety check 2>/dev/null
-  else
-    echo "pip-audit not installed — install with: pip install pip-audit"
-  fi
-fi
-```
-
-### Go
-```bash
-[ -f go.mod ] && which govulncheck 2>/dev/null && govulncheck ./... 2>/dev/null || true
-```
-
-### Ruby
-```bash
-if [ -f Gemfile.lock ]; then
-  if which bundler-audit 2>/dev/null; then
-    bundle-audit check --update 2>/dev/null
-  else
-    echo "bundler-audit not installed — install with: gem install bundler-audit"
-  fi
-fi
-```
-
-### Java
-```bash
-if [ -f pom.xml ]; then
-  which mvn 2>/dev/null && \
-    mvn org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7 2>/dev/null | \
-    grep -E "Vulnerability|CVE-" | head -20 || true
-fi
-```
-
----
-
-## Phase 5 — Configuration Review
-
-Run for all projects regardless of stack.
-
-```bash
-# Dockerfile security
-if [ -f Dockerfile ]; then
-  echo "=== Dockerfile review ==="
-  grep -n "USER root" Dockerfile && echo "  WARNING: Running as root" || true
-  grep -n "ADD http" Dockerfile && echo "  WARNING: ADD from URL — use COPY + curl with checksum instead" || true
-  grep -n "chmod 777\|chmod -R 777" Dockerfile && echo "  WARNING: World-writable permissions" || true
-  grep -n "COPY \. \." Dockerfile && echo "  INFO: Copying full context — ensure .dockerignore excludes secrets" || true
-  [ ! -f .dockerignore ] && echo "  WARNING: No .dockerignore found — .env and secrets may be in image" || true
-fi
-
-# CORS misconfiguration
-echo "=== CORS check ==="
-grep -rn --include="*.js" --include="*.ts" --include="*.py" --include="*.go" \
-  --include="*.java" --include="*.rb" \
-  -E "Access-Control-Allow-Origin.*['\"]?\*['\"]?" . 2>/dev/null | \
-  grep -v "test\|spec\|mock" | head -10 && \
-  echo "  WARNING: Wildcard CORS — restrict to known origins" || true
-
-# Debug mode in production code
-echo "=== Debug flags ==="
-grep -rn --include="*.py" -E "^DEBUG\s*=\s*True" . 2>/dev/null | grep -v "test\|example" || true
-grep -rn --include="*.js" --include="*.ts" -E "NODE_ENV.*development|debug.*true" \
-  . 2>/dev/null | grep -v "test\|example\|.env.example" | head -5 || true
-
-# Insecure session/cookie configuration
-echo "=== Cookie/session security ==="
-grep -rn --include="*.js" --include="*.ts" --include="*.py" \
-  -E "httpOnly\s*:\s*false|secure\s*:\s*false|sameSite\s*:\s*['\"]none['\"]" \
-  . 2>/dev/null | grep -v "test\|spec" || true
-
-# SQL injection via string concatenation
-echo "=== SQL injection risk ==="
-grep -rn --include="*.py" --include="*.js" --include="*.ts" --include="*.java" \
-  -E "execute\s*\(\s*[\"'].*\%[sd].*[\"']\s*%|query\s*=.*\+.*req\.|WHERE.*\+\s*(req|request|params|body|query)" \
-  . 2>/dev/null | grep -v "test\|spec" | head -10 || true
-
-# Insecure cryptography
-echo "=== Weak cryptography ==="
-grep -rn --include="*.py" --include="*.js" --include="*.ts" \
-  -E "md5\(|sha1\(|DES\.|3DES\.|RC4|createCipher\b" \
-  . 2>/dev/null | grep -v "test\|spec\|comment" | head -10 || true
-
-# Hardcoded IPs / internal infrastructure
-echo "=== Hardcoded infrastructure ==="
-grep -rn --include="*.js" --include="*.ts" --include="*.py" --include="*.go" \
-  --include="*.java" --include="*.yml" --include="*.yaml" \
-  -E "([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}|localhost:[0-9]{4,5}" \
-  . 2>/dev/null | grep -v "test\|spec\|mock\|127\.0\.0\.1:.*test" | head -10 || true
-```
-
----
-
-## Phase 6 — DAST (Dynamic Application Security Testing)
-
-Only if a local server is detected. Skip gracefully if no server is running.
-
-```bash
-# Detect running services
-LOCAL_PORTS=""
-for port in 3000 3001 4000 5000 8000 8080 8443 9000; do
-  nc -z -w1 localhost $port 2>/dev/null && LOCAL_PORTS="$LOCAL_PORTS $port"
-done
-
-if [ -z "$LOCAL_PORTS" ]; then
-  echo "No local server detected — skipping DAST. Start the app and re-run to include dynamic tests."
-else
-  echo "Detected local services on ports:$LOCAL_PORTS"
-  TARGET_PORT=$(echo $LOCAL_PORTS | tr ' ' '\n' | head -1)
-  TARGET="http://localhost:$TARGET_PORT"
-  echo "Running DAST against $TARGET"
-
-  # Security headers check (always available)
-  echo "=== Security headers ==="
-  curl -sI "$TARGET" 2>/dev/null | grep -iE \
-    "content-security-policy|x-content-type-options|x-frame-options|strict-transport-security|permissions-policy" || \
-    echo "WARNING: One or more critical security headers missing"
-  # Report which are missing:
-  HEADERS=$(curl -sI "$TARGET" 2>/dev/null)
-  echo "$HEADERS" | grep -qi "x-content-type-options" || echo "  MISSING: X-Content-Type-Options: nosniff"
-  echo "$HEADERS" | grep -qi "x-frame-options" || echo "  MISSING: X-Frame-Options: DENY"
-  echo "$HEADERS" | grep -qi "content-security-policy" || echo "  MISSING: Content-Security-Policy"
-  echo "$HEADERS" | grep -qi "strict-transport-security" || echo "  MISSING: Strict-Transport-Security"
-
-  # Path traversal probe
-  echo "=== Path traversal probe ==="
-  STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET/../../../etc/passwd" 2>/dev/null)
-  [ "$STATUS" = "200" ] && echo "CRITICAL: Possible path traversal at $TARGET/../../../etc/passwd" || true
-
-  # Exposed debug/admin endpoints
-  echo "=== Exposed debug endpoints ==="
-  for endpoint in /debug /console /actuator /actuator/env /actuator/heapdump \
-                  /metrics /health/details /swagger-ui /api-docs /graphql/playground \
-                  /__debug__ /admin /phpinfo.php; do
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET$endpoint" 2>/dev/null)
-    [ "$STATUS" = "200" ] && echo "  WARNING: $endpoint returned 200 — verify this should be public" || true
-  done
-
-  # Error message leakage
-  echo "=== Error leakage ==="
-  RESP=$(curl -s "$TARGET/this-path-does-not-exist-appsec-probe-$(date +%s)" 2>/dev/null)
-  echo "$RESP" | grep -iE "traceback|stack trace|Exception in|at line [0-9]|Error:.*\.py|\.js:[0-9]" && \
-    echo "  WARNING: Stack trace visible in 404 response — disable debug mode" || true
-
-  # NIKTO (if available)
-  if which nikto 2>/dev/null; then
-    echo "=== Nikto scan ==="
-    nikto -h "$TARGET" -maxtime 60 -Format txt 2>/dev/null | grep -E "OSVDB|WARNING|ERROR" | head -20 || true
-  fi
-fi
-```
-
----
-
-## Phase 7 — Remediate and Report
-
-After all phases complete, produce a structured report and fix issues.
-
-### Severity Classification
-
-| Severity | Definition | Action |
+| Variable | Description | Default |
 |---|---|---|
-| **Critical** | Secrets in code, SQLi, RCE, auth bypass, CVSS 9-10 | Block commit — fix before anything else |
-| **High** | Known CVE CVSS 7-8.9, XSS, insecure deserialization, SAST confirmed | Fix before pushing this PR |
-| **Medium** | Missing security headers, weak config, CVSS 4-6.9 | Fix in this PR or file a tracked issue |
-| **Low** | Informational, best practice, CVSS < 4 | Note and backlog |
+| `APPSEC_REGISTRY` | Registry prefix for all scanner images | `registry.company.com/security` |
+| `FORTIFY_PY_IMAGE` | Fortify image for Python scans (e.g. `fortify-sast:latest-jdk17`) | — |
+| `FORTIFY_JS_IMAGE` | Fortify image for JS/TS scans | — |
+| `PARASOFT_IMAGE` | Parasoft Jtest image (shared for Gradle and Maven) | — |
+| `PYLINT_IMAGE` | Pylint image (with pylint + pylint2sarif installed) | — |
+| `ESLINT_IMAGE` | ESLint image (with npm/npx) | — |
+| `SCANTIST_IMAGE` | Scantist image (with Java + curl + sudo) | — |
+| `TRIVY_IMAGE` | Trivy image (e.g. `trivy:latest`) | — |
+| `DEVSECOPS_IMPORT_URL` | DTP server URL for Scantist JAR download and reporting | — |
+| `APP_NAME` | Application name used in Fortify build IDs | `basename $PWD` |
+| `APP_VERSION` | Application version / branch label | current git branch |
+| `SOURCE_PATH` | Source directory to scan (Fortify, Pylint) | `src` |
+| `ESLINT_CONFIG_FILE` | Path to ESLint config file | — |
+| `MAVEN_SETTINGS_XML` | Maven settings.xml path (Parasoft Maven + Scantist Maven) | — |
+| `TRIVY_TARGET` | Container image:tag to scan with Trivy | — |
+| `BRANCH` | Branch name (Parasoft + Scantist labels) | current git branch |
+| `CI_PROJECT_URL` | GitLab project URL (Parasoft source control config) | — |
+| `CI_PROJECT_DIR` | Local workspace root (Parasoft source control config) | `$PWD` |
 
-### Report Format
+---
 
-For each finding output:
+## Step 1 — Detect project type and set defaults
+
+```bash
+# Resolve defaults
+APP_NAME="${APP_NAME:-$(basename "$PWD")}"
+APP_VERSION="${APP_VERSION:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
+BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
+SOURCE_PATH="${SOURCE_PATH:-src}"
+CI_PROJECT_DIR="${CI_PROJECT_DIR:-$PWD}"
+APPSEC_REGISTRY="${APPSEC_REGISTRY:-registry.company.com/security}"
+
+# Detect build system
+HAS_POM=false; HAS_GRADLE=false; HAS_PACKAGE_JSON=false
+HAS_REQUIREMENTS=false; HAS_DOCKERFILE=false
+[ -f pom.xml ]          && HAS_POM=true
+[ -f build.gradle ] || [ -f build.gradle.kts ] && HAS_GRADLE=true
+[ -f package.json ]     && HAS_PACKAGE_JSON=true
+[ -f requirements.txt ] || [ -f pyproject.toml ] && HAS_REQUIREMENTS=true
+[ -f Dockerfile ]       && HAS_DOCKERFILE=true
+
+echo "Project: $APP_NAME  Branch: $BRANCH"
+echo "Detected: POM=$HAS_POM GRADLE=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON PY=$HAS_REQUIREMENTS DOCKER=$HAS_DOCKERFILE"
+
+# Create results directory
+mkdir -p .appsec-results
+echo "Results will be written to $PWD/.appsec-results"
+echo "Add .appsec-results/ to your .gitignore if not already present."
+grep -qxF '.appsec-results/' .gitignore 2>/dev/null || echo "  Reminder: .gitignore does not yet exclude .appsec-results/"
 ```
-[SEVERITY] <title>
-File/URL : <path or endpoint>:<line>
-Issue    : <what the vulnerability is — one sentence>
-Impact   : <what an attacker could do if exploited>
-Fix      : <exact code change, command, or config to apply>
-GitLab CI: <which scanner catches this: SAST / Secret Detection / Dependency Scanning / DAST / Container Scanning>
+
+---
+
+## Step 2 — Fortify SAST (scan only, no SSC upload)
+
+Run Fortify in the background. Pick the correct image for the detected language.
+Both Python and JS/TS scans follow the same three-step pattern: clean → translate → scan.
+
+### Fortify Python (run if Python source detected)
+
+```bash
+if $HAS_REQUIREMENTS && [ -n "$FORTIFY_PY_IMAGE" ]; then
+  echo "[Fortify/Python] Starting scan in background..."
+  docker run --rm \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${FORTIFY_PY_IMAGE}" \
+    bash -c "
+      sourceanalyzer -b ${APP_NAME} -clean
+      sourceanalyzer -b ${APP_NAME} -debug-verbose -python-version 3 ${SOURCE_PATH}
+      sourceanalyzer -b ${APP_NAME} -scan -f .appsec-results/fortify-python.fpr \
+        \$([ -e filter_list.txt ] && echo '-filter filter_list.txt')
+    " > .appsec-results/fortify-python.log 2>&1 &
+  FORTIFY_PY_PID=$!
+  echo "[Fortify/Python] PID $FORTIFY_PY_PID"
+fi
 ```
 
-### After Applying Fixes
+### Fortify JS/TS (run if package.json detected)
 
-1. Re-run the specific check that flagged the issue to confirm it is resolved.
-2. If a finding cannot be fixed immediately (e.g. transitive dependency with no fix version):
-   - Add a suppression comment with rationale: `# nosec B324 — MD5 used only for non-security cache key, not cryptographic`
-   - File a ticket and note the ticket number in the comment
-   - Do NOT suppress without explanation
-3. Confirm the overall finding count decreased before handing back to the user.
+```bash
+if $HAS_PACKAGE_JSON && [ -n "$FORTIFY_JS_IMAGE" ]; then
+  echo "[Fortify/JS] Starting scan in background..."
+  docker run --rm \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${FORTIFY_JS_IMAGE}" \
+    bash -c "
+      sourceanalyzer -b ${APP_NAME}-js -clean
+      sourceanalyzer -b ${APP_NAME}-js -debug-verbose -Dcom.fortify.sca.follow.imports=false ${SOURCE_PATH}
+      sourceanalyzer -b ${APP_NAME}-js -scan -f .appsec-results/fortify-js.fpr \
+        \$([ -e filter_list.txt ] && echo '-filter filter_list.txt')
+    " > .appsec-results/fortify-js.log 2>&1 &
+  FORTIFY_JS_PID=$!
+  echo "[Fortify/JS] PID $FORTIFY_JS_PID"
+fi
+```
+
+---
+
+## Step 3 — Pylint (Python linter, SARIF output)
+
+Override the container entrypoint to `""` so the image uses the shell directly.
+Runs in parallel with Fortify.
+
+```bash
+if $HAS_REQUIREMENTS && [ -n "$PYLINT_IMAGE" ]; then
+  echo "[Pylint] Starting scan in background..."
+  docker run --rm \
+    --entrypoint "" \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${PYLINT_IMAGE}" \
+    bash -c "
+      cd /workspace
+      pylint ${SOURCE_PATH} --exit-zero \
+        --output-format=json:.appsec-results/pylint-report.json,text:.appsec-results/pylint-report.txt
+      pylint2sarif .appsec-results/pylint-report.json \
+        --sarif-output .appsec-results/pylint-report.sarif
+      sed -i '1i\\##tool = Pylint' .appsec-results/pylint-report.json
+    " > .appsec-results/pylint.log 2>&1 &
+  PYLINT_PID=$!
+  echo "[Pylint] PID $PYLINT_PID"
+fi
+```
+
+---
+
+## Step 4 — ESLint (JS/TS linter, JSON output)
+
+```bash
+if $HAS_PACKAGE_JSON && [ -n "$ESLINT_IMAGE" ] && [ -n "$ESLINT_CONFIG_FILE" ]; then
+  echo "[ESLint] Starting scan in background..."
+  docker run --rm \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${ESLINT_IMAGE}" \
+    bash -c "
+      npm install --save-dev --legacy-peer-deps eslint
+      npx eslint 'src/**/*.ts' 'src/**/*.tsx' \
+        -c ${ESLINT_CONFIG_FILE} \
+        --no-eslintrc \
+        --ext ts,tsx \
+        -f json \
+        -o .appsec-results/eslint.json \
+        ./
+    " > .appsec-results/eslint.log 2>&1 &
+  ESLINT_PID=$!
+  echo "[ESLint] PID $ESLINT_PID"
+fi
+```
+
+---
+
+## Step 5 — Wait for parallel scanners (Fortify + Pylint + ESLint)
+
+```bash
+echo "Waiting for parallel scanners to complete..."
+[ -n "$FORTIFY_PY_PID" ] && wait $FORTIFY_PY_PID && echo "[Fortify/Python] Done" || echo "[Fortify/Python] Failed — check .appsec-results/fortify-python.log"
+[ -n "$FORTIFY_JS_PID" ] && wait $FORTIFY_JS_PID && echo "[Fortify/JS] Done"     || echo "[Fortify/JS] Failed — check .appsec-results/fortify-js.log"
+[ -n "$PYLINT_PID"     ] && wait $PYLINT_PID     && echo "[Pylint] Done"         || echo "[Pylint] Failed — check .appsec-results/pylint.log"
+[ -n "$ESLINT_PID"     ] && wait $ESLINT_PID     && echo "[ESLint] Done"         || echo "[ESLint] Failed — check .appsec-results/eslint.log"
+```
+
+---
+
+## Step 6 — Parasoft Jtest
+
+Parasoft requires a DTP server reachable from dev machines. Run synchronously (sequential).
+
+### Parasoft — Gradle project
+
+```bash
+if $HAS_GRADLE && [ -n "$PARASOFT_IMAGE" ]; then
+  echo "[Parasoft/Gradle] Running..."
+  docker run --rm \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE}" \
+    bash -c "
+      echo 'report.format=txt,pdf,xml,html,sast-gitlab,sate' > report.properties
+      echo 'report.scontrol=min'                              >> report.properties
+      echo 'scontrol.rep.type=git'                            >> report.properties
+      echo 'scontrol.rep.git.url=${CI_PROJECT_URL}'           >> report.properties
+      echo 'scontrol.branch=${BRANCH}'                        >> report.properties
+      echo 'scontrol.rep.git.workspace=${CI_PROJECT_DIR}'     >> report.properties
+
+      ./gradlew clean assemble
+      ./gradlew jtest \
+        -I \$PARASOFT_INSTALL_DIR/integration/gradle/init.gradle \
+        '-Djtest.config=dtp://Recommended-Rules-for-Java' \
+        '-Djtest.settings=report.properties' \
+        '-Djtest.report=.appsec-results/parasoft-reports' \
+        '-Djtest.exclude=path:**/build/**'
+    " 2>&1 | tee .appsec-results/parasoft-gradle.log
+
+  # Severity gate: count findings with severity id < 3 (Critical/High)
+  PARA_HIGH=0
+  if [ -f .appsec-results/parasoft-reports/report.xml ]; then
+    PARA_HIGH=$(xmllint --xpath \
+      "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id<3])" \
+      .appsec-results/parasoft-reports/report.xml 2>/dev/null || echo 0)
+    echo "[Parasoft/Gradle] Critical/High findings: $PARA_HIGH"
+  fi
+fi
+```
+
+### Parasoft — Maven project
+
+```bash
+if $HAS_POM && ! $HAS_GRADLE && [ -n "$PARASOFT_IMAGE" ] && [ -n "$MAVEN_SETTINGS_XML" ]; then
+  echo "[Parasoft/Maven] Running..."
+  docker run --rm \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE}" \
+    bash -c "
+      echo 'report.format=pdf,xml,html,sast-gitlab' > report.properties
+      echo 'report.scontrol=min'                    >> report.properties
+      echo 'scontrol.rep.type=git'                  >> report.properties
+      echo 'scontrol.rep.git.url=${CI_PROJECT_URL}' >> report.properties
+      echo 'scontrol.branch=${BRANCH}'              >> report.properties
+      echo 'scontrol.rep.git.workspace=${CI_PROJECT_DIR}' >> report.properties
+
+      mvn clean install jtest:jtest \
+        -s ${MAVEN_SETTINGS_XML} \
+        '-DskipTests' \
+        '-Djtest.config=dtp://Recommended-Rules-for-Java' \
+        '-Djtest.settings=report.properties' \
+        '-Djtest.report=.appsec-results/parasoft-reports'
+    " 2>&1 | tee .appsec-results/parasoft-maven.log
+
+  PARA_HIGH=0
+  if [ -f .appsec-results/parasoft-reports/report.xml ]; then
+    PARA_HIGH=$(xmllint --xpath \
+      "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id<3])" \
+      .appsec-results/parasoft-reports/report.xml 2>/dev/null || echo 0)
+    echo "[Parasoft/Maven] Critical/High findings: $PARA_HIGH"
+  fi
+fi
+```
+
+---
+
+## Step 7 — Scantist SCA
+
+Scantist downloads its own JAR from the DTP server at runtime (`--network=host` is required
+to reach `$DEVSECOPS_IMPORT_URL`). This is intentional — the JAR is not vendored.
+
+### Scantist — JS project
+
+Runs in parallel with other scanners.
+
+```bash
+if $HAS_PACKAGE_JSON && [ -n "$SCANTIST_IMAGE" ] && [ -n "$DEVSECOPS_IMPORT_URL" ]; then
+  echo "[Scantist/JS] Starting scan in background..."
+  docker run --rm \
+    --network=host \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE}" \
+    bash -c "
+      curl -k ${DEVSECOPS_IMPORT_URL}/CA.pem --output CA.pem
+      sudo \$JAVA_HOME/bin/keytool -cacerts -storepass changeit -noprompt \
+        -trustcacerts -importcert -alias platformCA -file CA.pem
+
+      curl -k ${DEVSECOPS_IMPORT_URL}/scantist-bom-detect.jar --output scantist-bom-detect.jar
+
+      java -jar scantist-bom-detect.jar \
+        -report_format xml \
+        -checkCompliance \
+        -branch ${BRANCH} \
+        --debug \
+        -jsScope prod
+
+      # Rename report files: scan-*-<uuid>.xml → scantist-<uuid>.xml
+      for file in ./devsecops_report/**/*.xml; do
+        if [ -f \"\$file\" ]; then
+          newname=\$(echo \"\$file\" | sed 's|scan-[^/]*-|scantist-|')
+          mv \"\$file\" \"\$newname\"
+        fi
+      done
+
+      cp -r ./devsecops_report /workspace/.appsec-results/scantist-js-report
+    " > .appsec-results/scantist-js.log 2>&1 &
+  SCANTIST_JS_PID=$!
+  echo "[Scantist/JS] PID $SCANTIST_JS_PID"
+fi
+```
+
+### Scantist — Maven project
+
+Must run AFTER Parasoft Maven (needs compiled artifacts from `mvn clean install`).
+
+```bash
+if $HAS_POM && ! $HAS_GRADLE && [ -n "$SCANTIST_IMAGE" ] && [ -n "$DEVSECOPS_IMPORT_URL" ] && [ -n "$MAVEN_SETTINGS_XML" ]; then
+  echo "[Scantist/Maven] Running (after Parasoft Maven artifacts)..."
+  docker run --rm \
+    --network=host \
+    -v "$PWD:/workspace" \
+    -w /workspace \
+    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE}" \
+    bash -c "
+      curl -k ${DEVSECOPS_IMPORT_URL}/scantist-bom-detect.jar --output scantist-bom-detect.jar
+
+      # Build artifacts needed by Scantist (compile without re-running jtest)
+      mvn clean install -s ${MAVEN_SETTINGS_XML} -DskipTests
+
+      java -jar scantist-bom-detect.jar \
+        -report_format xml \
+        -checkCompliance \
+        -branch ${BRANCH} \
+        --debug
+
+      for file in ./devsecops_report/**/*.xml; do
+        if [ -f \"\$file\" ]; then
+          newname=\$(echo \"\$file\" | sed 's|scan-[^/]*-|scantist-|')
+          mv \"\$file\" \"\$newname\"
+        fi
+      done
+
+      cp -r ./devsecops_report /workspace/.appsec-results/scantist-maven-report
+    " 2>&1 | tee .appsec-results/scantist-maven.log
+  echo "[Scantist/Maven] Done"
+fi
+```
+
+---
+
+## Step 8 — Trivy (container image scanning)
+
+```bash
+if [ -n "$TRIVY_TARGET" ] && [ -n "$TRIVY_IMAGE" ]; then
+  echo "[Trivy] Scanning image: $TRIVY_TARGET"
+  docker run --rm \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$PWD/.appsec-results:/results" \
+    "${APPSEC_REGISTRY}/${TRIVY_IMAGE}" \
+    trivy image \
+      --format json \
+      --output /results/trivy-results.json \
+      "$TRIVY_TARGET"
+  echo "[Trivy] Done"
+else
+  echo "[Trivy] Skipped — set TRIVY_TARGET and TRIVY_IMAGE to enable"
+fi
+```
+
+---
+
+## Step 9 — Wait for remaining background jobs
+
+```bash
+[ -n "$SCANTIST_JS_PID" ] && wait $SCANTIST_JS_PID && echo "[Scantist/JS] Done" || echo "[Scantist/JS] Failed — check .appsec-results/scantist-js.log"
+```
+
+---
+
+## Step 10 — Parse results and severity gate
+
+Parse each result file and build a summary table. Block if any CRITICAL or HIGH findings exist.
+
+```bash
+echo ""
+echo "============================================================"
+echo "  AppSec Scan Summary"
+echo "============================================================"
+printf "%-20s %-10s %-6s %-8s %-5s\n" "Scanner" "Critical" "High" "Medium" "Low"
+printf "%-20s %-10s %-6s %-8s %-5s\n" "-------" "--------" "----" "------" "---"
+
+TOTAL_CRITICAL=0
+TOTAL_HIGH=0
+
+# --- Fortify Python ---
+if [ -f .appsec-results/fortify-python.fpr ]; then
+  # FPR is a ZIP; count <Issue> tags as a proxy
+  FORTIFY_PY_COUNT=$(unzip -p .appsec-results/fortify-python.fpr audit.fvdl 2>/dev/null | \
+    grep -c '<Vulnerability>' || echo 0)
+  printf "%-20s %-10s %-6s %-8s %-5s\n" "Fortify/Python" "-" "-" "-" "$FORTIFY_PY_COUNT total"
+fi
+
+# --- Fortify JS ---
+if [ -f .appsec-results/fortify-js.fpr ]; then
+  FORTIFY_JS_COUNT=$(unzip -p .appsec-results/fortify-js.fpr audit.fvdl 2>/dev/null | \
+    grep -c '<Vulnerability>' || echo 0)
+  printf "%-20s %-10s %-6s %-8s %-5s\n" "Fortify/JS" "-" "-" "-" "$FORTIFY_JS_COUNT total"
+fi
+
+# --- Pylint ---
+if [ -f .appsec-results/pylint-report.json ]; then
+  PY_FATAL=$(jq '[.[] | select(.type == "fatal" or .type == "error")] | length' \
+    .appsec-results/pylint-report.json 2>/dev/null || echo 0)
+  PY_WARN=$(jq '[.[] | select(.type == "warning")] | length' \
+    .appsec-results/pylint-report.json 2>/dev/null || echo 0)
+  PY_INFO=$(jq '[.[] | select(.type == "convention" or .type == "refactor")] | length' \
+    .appsec-results/pylint-report.json 2>/dev/null || echo 0)
+  printf "%-20s %-10s %-6s %-8s %-5s\n" "Pylint" "$PY_FATAL" "-" "$PY_WARN" "$PY_INFO"
+  TOTAL_CRITICAL=$((TOTAL_CRITICAL + PY_FATAL))
+fi
+
+# --- ESLint ---
+if [ -f .appsec-results/eslint.json ]; then
+  ES_ERROR=$(jq '[.[].messages[] | select(.severity == 2)] | length' \
+    .appsec-results/eslint.json 2>/dev/null || echo 0)
+  ES_WARN=$(jq '[.[].messages[] | select(.severity == 1)] | length' \
+    .appsec-results/eslint.json 2>/dev/null || echo 0)
+  printf "%-20s %-10s %-6s %-8s %-5s\n" "ESLint" "$ES_ERROR" "-" "$ES_WARN" "-"
+  TOTAL_CRITICAL=$((TOTAL_CRITICAL + ES_ERROR))
+fi
+
+# --- Parasoft ---
+if [ -f .appsec-results/parasoft-reports/report.xml ]; then
+  PARA_CRIT=$(xmllint --xpath \
+    "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=1])" \
+    .appsec-results/parasoft-reports/report.xml 2>/dev/null || echo 0)
+  PARA_HIGH=$(xmllint --xpath \
+    "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=2])" \
+    .appsec-results/parasoft-reports/report.xml 2>/dev/null || echo 0)
+  PARA_MED=$(xmllint --xpath \
+    "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=3])" \
+    .appsec-results/parasoft-reports/report.xml 2>/dev/null || echo 0)
+  PARA_LOW=$(xmllint --xpath \
+    "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=4])" \
+    .appsec-results/parasoft-reports/report.xml 2>/dev/null || echo 0)
+  printf "%-20s %-10s %-6s %-8s %-5s\n" "Parasoft" "$PARA_CRIT" "$PARA_HIGH" "$PARA_MED" "$PARA_LOW"
+  TOTAL_CRITICAL=$((TOTAL_CRITICAL + PARA_CRIT))
+  TOTAL_HIGH=$((TOTAL_HIGH + PARA_HIGH))
+fi
+
+# --- Trivy ---
+if [ -f .appsec-results/trivy-results.json ]; then
+  TRIVY_CRIT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' \
+    .appsec-results/trivy-results.json 2>/dev/null || echo 0)
+  TRIVY_HIGH=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "HIGH")] | length' \
+    .appsec-results/trivy-results.json 2>/dev/null || echo 0)
+  TRIVY_MED=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' \
+    .appsec-results/trivy-results.json 2>/dev/null || echo 0)
+  TRIVY_LOW=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity == "LOW")] | length' \
+    .appsec-results/trivy-results.json 2>/dev/null || echo 0)
+  printf "%-20s %-10s %-6s %-8s %-5s\n" "Trivy" "$TRIVY_CRIT" "$TRIVY_HIGH" "$TRIVY_MED" "$TRIVY_LOW"
+  TOTAL_CRITICAL=$((TOTAL_CRITICAL + TRIVY_CRIT))
+  TOTAL_HIGH=$((TOTAL_HIGH + TRIVY_HIGH))
+fi
+
+echo "============================================================"
+printf "%-20s %-10s %-6s\n" "TOTAL" "$TOTAL_CRITICAL" "$TOTAL_HIGH"
+echo "============================================================"
+
+# Final gate
+if [ "$TOTAL_CRITICAL" -gt 0 ] || [ "$TOTAL_HIGH" -gt 0 ]; then
+  echo ""
+  echo "GATE FAILED: $TOTAL_CRITICAL Critical and $TOTAL_HIGH High findings detected."
+  echo "Fix all Critical and High findings before pushing."
+  echo "Full results in .appsec-results/"
+  exit 1
+else
+  echo ""
+  echo "GATE PASSED: No Critical or High findings. Results in .appsec-results/"
+fi
+```
+
+---
+
+## Environment variable reference
+
+Set these in your shell or `.env` file (do NOT commit credentials):
+
+```bash
+export APPSEC_REGISTRY="registry.company.com/security"
+export FORTIFY_PY_IMAGE="fortify-sast:latest-jdk17"
+export FORTIFY_JS_IMAGE="fortify-sast:latest-jdk17"
+export PARASOFT_IMAGE="parasoft-jtest:latest"
+export PYLINT_IMAGE="pylint:latest"
+export ESLINT_IMAGE="eslint:latest"
+export SCANTIST_IMAGE="scantist:latest"
+export TRIVY_IMAGE="trivy:latest"
+export DEVSECOPS_IMPORT_URL="https://dtp.company.com"
+export APP_NAME="my-app"
+export SOURCE_PATH="src"
+export ESLINT_CONFIG_FILE=".eslintrc.js"
+export MAVEN_SETTINGS_XML="/home/user/.m2/settings.xml"
+export TRIVY_TARGET="my-app:1.0.0"
+export CI_PROJECT_URL="https://gitlab.company.com/mygroup/my-app"
+```
 
 ---
 
 ## What NOT to do
 
-- Do not skip Phase 2 (secrets) — run it even if the user only asked for SAST.
-- Do not report a finding without a remediation step.
-- Do not mark something as a false positive without explaining specifically why.
-- Do not suppress warnings with a blanket `# noqa` or `# nosec` without a comment explaining the rationale.
-- Do not stop after one tool — run all available tools for the detected stack.
-- Do not run `rm`, `DROP TABLE`, or any destructive command as part of scanning.
-- Do not send scan results to external services or URLs.
+- Do not add `--upload-results` or `fortifyclient` steps — scan-only is sufficient locally.
+- Do not remove `--network=host` from Scantist — it needs to reach the DTP server.
+- Do not skip the `wait` calls — parallel scanners must complete before gating.
+- Do not commit `.appsec-results/` — add it to `.gitignore`.
+- Do not hard-code registry URLs or credentials in SKILL.md or code.
+- Do not run Scantist Maven before Parasoft Maven — it requires compiled artifacts.
