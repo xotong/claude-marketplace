@@ -21,7 +21,8 @@ plugins/
   frontend-design/                Vendored: anthropics/skills (frontend-design)
   appsec/                         Platform Team — 2 security scanning skills
   code-quality/                   Platform Team — 4 code/doc quality skills
-ci/skill-scanner/                 LLM-as-judge safety scanner + GitLab CI component
+ci/skill-scanner/                 Scanner implementation (scanner.py, Dockerfile, config.yaml)
+skill-scanner-component/          GitLab CI component spec + tenant and platform team docs
 VENDORED.md                       Upstream SHAs, licenses, what was included/excluded
 CODEOWNERS                        Approval rules (GitLab Ultimate [Section][N] syntax)
 ```
@@ -52,7 +53,7 @@ MCP SDK docs and other reference material should be vendored locally under `skil
 
 ## Skill safety scanner
 
-The CI scanner (`ci/skill-scanner/`) evaluates SKILL.md files using an LLM-as-judge. It only scans changed SKILL.md files on MRs (via `SCANNER_FILES` env var). Full scan runs on push to main.
+The CI scanner evaluates SKILL.md files using an LLM-as-judge. Implementation lives in `ci/skill-scanner/` (scanner.py, Dockerfile). The GitLab CI component spec is in `skill-scanner-component/templates/skill-scanner-component.yml`. It only scans changed files on MRs (via `SCANNER_FILES` env var). Full scan runs on push to main.
 
 Requires `LITELLM_API_KEY`, `SCANNER_ENDPOINT`, and `SCANNER_API_KEY` as CI/CD variables.
 

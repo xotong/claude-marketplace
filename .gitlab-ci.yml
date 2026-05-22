@@ -91,7 +91,7 @@ lint-shell:
 # On MRs, only changed instruction files are scanned. On push to main, full scan.
 
 include:
-  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
+  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner-component/skill-scanner-component@~latest
     inputs:
       stage: "scan"
       skills_dir: "plugins"

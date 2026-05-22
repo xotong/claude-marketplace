@@ -1,25 +1,3 @@
-# GitLab CI/CD Component — Skill Safety Scanner
-#
-# Usage in a tenant's .gitlab-ci.yml — no inputs needed:
-#
-#   include:
-#     - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
-#
-# The only thing tenants must configure is one masked CI/CD variable in their
-# project's Settings → CI/CD → Variables:
-#
-#   LITELLM_API_KEY   (masked, protected)   API key for the internal LLM gateway
-#
-# Endpoint and model are fixed here by the Platform Team. LiteLLM handles
-# model routing centrally — tenants never need to know or change these.
-#
-# Optional inputs (override only if you have a specific need):
-#   stage        GitLab CI stage (default: test)
-#   skills_dir   Subdirectory to scan (default: . = repo root)
-#   threshold    Pass score 0-1 (default: 0.85; prefer scanner-config.yaml instead)
-#   fail_on_review  Treat REVIEW_NEEDED as failure (default: false)
-#   image        Pin to a specific scanner image tag (default: latest)
-
 spec:
   inputs:
     stage:
@@ -33,11 +11,15 @@ spec:
     threshold:
       type: number
       default: 0.85
-      description: "Override the safety threshold. Prefer setting this in scanner-config.yaml instead."
+      description: "Override the safety threshold (0–1). Prefer setting this in scanner-config.yaml instead."
     fail_on_review:
       type: boolean
       default: false
       description: "Treat REVIEW_NEEDED verdict as a pipeline failure."
+    scanner_model:
+      type: string
+      default: "kimi-k2"
+      description: "LiteLLM model name to use for evaluation. Defaults to the Platform Team standard. Override only if you need to test with a specific model."
     image:
       type: string
       default: "registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest"
@@ -54,7 +36,7 @@ skill-safety-scan:
   variables:
     # Fixed by the Platform Team — tenants do not configure these.
     SCANNER_ENDPOINT: "https://litellm.company.com/v1"
-    SCANNER_MODEL: "kimi-k2"
+    SCANNER_MODEL: "$[[ inputs.scanner_model ]]"
     # Tenants set LITELLM_API_KEY as a masked CI/CD variable in project settings.
     SCANNER_API_KEY: $LITELLM_API_KEY
     SCANNER_THRESHOLD: "$[[ inputs.threshold ]]"

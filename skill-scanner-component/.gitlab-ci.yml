@@ -1,0 +1,76 @@
+# CI for the skill-scanner-component project.
+# Validates the component spec YAML and runs a smoke test against a fixture skill.
+#
+# Jobs:
+#   validate-component   — Checks that templates/skill-scanner-component.yml is valid YAML
+#                          and that all spec.inputs have types and defaults.
+#   smoke-test           — Runs the scanner against a known-safe fixture skill to verify
+#                          the component wires env vars correctly end-to-end.
+
+stages:
+  - validate
+  - test
+
+validate-component:
+  stage: validate
+  image: python:3.12-slim
+  script:
+    - |
+      set -e
+      python3 -c "
+      import yaml, sys
+
+      with open('skill-scanner-component/templates/skill-scanner-component.yml') as f:
+          content = f.read()
+
+      # Component files use --- to separate spec from job definition; parse the spec block only.
+      spec_block = content.split('---')[0]
+      spec = yaml.safe_load(spec_block)
+
+      inputs = spec.get('spec', {}).get('inputs', {})
+      errors = []
+      for name, defn in inputs.items():
+          if 'type' not in defn:
+              errors.append(f'Input \"{name}\" is missing a type.')
+          if 'default' not in defn:
+              errors.append(f'Input \"{name}\" is missing a default.')
+          if 'description' not in defn:
+              errors.append(f'Input \"{name}\" is missing a description.')
+      if errors:
+          print('Component spec errors:')
+          for e in errors: print(' -', e)
+          sys.exit(1)
+      print(f'spec.inputs OK — {len(inputs)} input(s) validated.')
+      "
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - skill-scanner-component/templates/skill-scanner-component.yml
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+smoke-test:
+  stage: test
+  image:
+    name: registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest
+    entrypoint: [""]
+  variables:
+    SCANNER_ENDPOINT: $SCANNER_ENDPOINT
+    SCANNER_API_KEY: $LITELLM_API_KEY
+    SCANNER_MODEL: "kimi-k2"
+    SCANNER_SKILLS_DIR: "$CI_PROJECT_DIR/skill-scanner-component/tests/fixtures"
+    SCANNER_OUTPUT_DIR: "$CI_PROJECT_DIR/.smoke-test-output"
+    SCANNER_THRESHOLD: "0.85"
+    SCANNER_FAIL_ON_REVIEW: "false"
+  script:
+    - python /scanner/scanner.py
+  artifacts:
+    paths:
+      - .smoke-test-output/
+    when: always
+    expire_in: 7 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - skill-scanner-component/**/*
+        - ci/skill-scanner/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'

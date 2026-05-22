@@ -203,7 +203,7 @@ Your repo is its own marketplace. Each plugin is an independently installable un
 **`.gitlab-ci.yml` minimum:**
 ```yaml
 include:
-  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
+  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner-component/skill-scanner-component@~latest
 ```
 
 > **`LITELLM_API_KEY` required:** Add it as a masked CI/CD variable in your project's **Settings → CI/CD → Variables**. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
@@ -356,12 +356,20 @@ plugins/
   code-quality/                        Platform Team — 4 code/doc quality skills
 
 ci/
-  skill-scanner/                       LLM-as-judge safety scanner + GitLab CI component
+  skill-scanner/                       Scanner implementation (scanner.py, Dockerfile, config.yaml)
     scanner.py
     config.yaml                        Default prompts and threshold (editable without rebuild)
     Dockerfile
-    gitlab-component.yml
-    README.md
+    requirements.txt
+    scanner-config.example.yaml        Template for teams to copy into their repo
+
+skill-scanner-component/              GitLab CI component (component spec + docs)
+  templates/
+    skill-scanner-component.yml        Component spec — inputs: stage, skills_dir, threshold,
+                                       fail_on_review, scanner_model, image
+    README.md                          Platform Team reference (publishing, calibration, local runs)
+  .gitlab-ci.yml                       CI for validating and smoke-testing the component
+  README.md                            Tenant reference (how to add the scanner to your skills repo)
 
 .gitlab/
   merge_request_templates/
@@ -392,7 +400,7 @@ Every team skills repo should include the scanner. It evaluates each `SKILL.md` 
 ```yaml
 # .gitlab-ci.yml in your skills repo — this is the complete config
 include:
-  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
+  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner-component/skill-scanner-component@~latest
 ```
 
 Set `LITELLM_API_KEY` as a masked CI/CD variable. That's it.
