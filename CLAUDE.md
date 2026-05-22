@@ -1,6 +1,6 @@
 # Claude Code — Contributor Context
 
-This is the `skillshub/claude-marketplace` repo. It is the single URL tenants configure to get all Platform Team skills, plus a gateway for team-specific skill repos.
+This is the `skillshub/claude-marketplace` repo. It is the Platform Team's curated skill catalog. It does **not** host team-specific skills — each team runs its own private marketplace.
 
 ## Repo structure
 
@@ -63,10 +63,11 @@ Requires `LITELLM_API_KEY`, `SCANNER_ENDPOINT`, and `SCANNER_API_KEY` as CI/CD v
 
 See README.md "For contributors" section for the full step-by-step. Short version:
 1. Clone upstream into `/tmp/<source-name>`
-2. Copy skill files into `plugins/platform-verified/` (and `plugins/essentials/` if broadly useful)
-3. Record provenance in `VENDORED.md`
-4. Bump versions in both plugin.json files
-5. Open MR using the "Add Skill to Platform-Verified" template
+2. Create `plugins/<source-name>/` with content + `plugin.json`
+3. Mirror into `plugins/platform-verified/` (CI scanner reference)
+4. Add entry to `.claude-plugin/marketplace.json`
+5. Record provenance in `VENDORED.md`
+6. Open MR using the "Add Vendored Plugin" MR template
 
 ## CODEOWNERS
 
@@ -74,4 +75,13 @@ All plugin directories under `/plugins/` require 1 Platform Team approval. `.cla
 
 ## Team skill repos
 
-Teams host their own skills in private GitLab repos under the `skillshub` group. They are NOT vendored here — tenants install them directly via `/plugin install <team-name>@platform-claude-marketplace` after their repo is listed in `marketplace.json`. The Platform Team reviews structure (MR template), not skill content.
+Teams host their own skills in **separate private repos** under the `skillshub` group. They are **not** listed in this repo's `marketplace.json` — team repos run their own standalone marketplace (`.claude-plugin/marketplace.json` inside their own repo).
+
+Developers add a team's marketplace directly:
+```
+/plugin marketplace add https://gitlab.company.com/skillshub/<team-name>-skills.git
+```
+
+This keeps team plugin names and skill descriptions private — they never appear in this central repo.
+
+Teams can MR here only to **add vendored upstream skills** to the Platform Team catalog (see "Adding a new upstream source" above). They cannot register their team repo as an entry in this `marketplace.json`.

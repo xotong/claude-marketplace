@@ -18,7 +18,6 @@ Central plugin marketplace. One URL to configure; all team and platform skills f
 | **anthropic-pr-review** | 6-agent parallel PR review (already in essentials). |
 | **anthropic-hookify** | Git hooks framework + writing-rules skill. |
 | **frontend-design** | Frontend design patterns skill. |
-| **`<team-name>`** | Your team's private skills, hosted in a separate repo. |
 
 ---
 
@@ -101,13 +100,20 @@ Gives you: TDD, systematic debugging, planning, git worktrees, 7-phase feature d
 
 Available plugin names: `essentials`, `appsec`, `code-quality`, `superpowers`, `compound-engineering`, `gstack`, `ruflo`, `getshitdone`, `anthropic-dev-skills`, `obsidian`, `anthropic-feature-dev`, `anthropic-pr-review`, `anthropic-hookify`, `frontend-design`
 
-**Your team's skills:**
+**Your team's private skills:**
+
+Team skills are **not** listed in this marketplace — each team hosts its own standalone marketplace in their private skills repo. Add it separately:
 ```
-/plugin install my-team@platform-claude-marketplace
+/plugin marketplace add https://gitlab.company.com/skillshub/<team-name>-skills.git
+```
+
+After adding the team marketplace, install from it the same way:
+```
+/plugin install <plugin-name>@<team-marketplace-name>
 /reload-plugins
 ```
 
-Replace `my-team` with your team's plugin name (same as the `name` in your team's `plugin.json`). Your team repo must be listed in the catalog — see "For teams" below.
+Ask your team lead for the exact repo URL and plugin names. Team skill names and descriptions are private to that repo.
 
 ### Step 3 — Verify and manage your install
 
@@ -165,34 +171,68 @@ If a plugin is missing after install, check that your git credentials can reach 
 
 ---
 
-## For teams: create and publish your skills repo
+## For teams: create your own private marketplace
+
+Team skills live in your own private repo — **not** in this central catalog. This means:
+
+- Plugin names and skill descriptions are never visible to other teams
+- You control your own release cadence
+- You can offer multiple granular plugins (e.g. one per domain) so developers install only what they need
+- You never need Platform Team approval to add or update your own skills
 
 ### Step 1 — Create and structure your repo
 
 Create a new project under the `skillshub` GitLab group named `<team-name>-skills`.
 
-> **Set the project visibility to Private.** This ensures only your team members (and the Platform Team) can read the skill content. The `skillshub` group itself is public — private projects within it are still fully hidden from non-members. Add your team members directly to the project (not to the group) to keep the project invisible even in the group listing.
+> **Set the project visibility to Private.** The `skillshub` group itself is public — private projects within it are hidden from non-members. Add your team members directly to the project to keep it invisible in the group listing.
 
-Structure it as follows:
+Structure:
 
 ```
 <team-name>-skills/
   .claude-plugin/
-    plugin.json             ← required
-  skills/
-    <skill-name>/
-      SKILL.md              ← required
-      supporting-doc.md     ← optional
+    marketplace.json        ← your team's marketplace catalog (lists your plugins)
+  plugins/
+    <plugin-name>/
+      .claude-plugin/
+        plugin.json         ← required per plugin
+      skills/
+        <skill-name>/
+          SKILL.md          ← required
+          supporting-doc.md ← optional
   scanner-config.yaml       ← optional: tune scanner threshold/prompts
   .gitlab-ci.yml            ← required: include the skill scanner component
 ```
 
-**`plugin.json` minimum:**
+### Step 2 — Set up your marketplace catalog
+
+Your repo is its own marketplace. Each plugin is an independently installable unit — create as many as makes sense for your team.
+
+**`.claude-plugin/marketplace.json` example:**
 ```json
 {
-  "name": "<team-name>",
-  "version": "0.1.0",
+  "name": "<team-name>-skills",
+  "version": "1.0.0",
   "description": "Skills for the <team-name> team.",
+  "owner": { "name": "<Team Name>" },
+  "plugins": [
+    {
+      "name": "<plugin-name>",
+      "source": "./plugins/<plugin-name>",
+      "version": "1.0.0",
+      "description": "Brief description of what this plugin does.",
+      "author": { "name": "<Team Name>" }
+    }
+  ]
+}
+```
+
+**`plugins/<plugin-name>/.claude-plugin/plugin.json` minimum:**
+```json
+{
+  "name": "<plugin-name>",
+  "version": "1.0.0",
+  "description": "Brief description.",
   "author": { "name": "<Team Name>" }
 }
 ```
@@ -205,7 +245,7 @@ include:
 
 > **`LITELLM_API_KEY` required:** Add it as a masked CI/CD variable in your project's **Settings → CI/CD → Variables**. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
 
-### Step 2 — Write a skill
+### Step 3 — Write a skill
 
 ```markdown
 ---
@@ -235,14 +275,32 @@ description: >
 - Keep it under 200 words — Claude truncates long descriptions
 - Be specific: vague descriptions cause false positives and missed triggers
 
-### Step 3 — List in the marketplace
+### Step 4 — Distribute to your team
 
-Open an MR against this repo using the **"Add Team to Marketplace"** MR template.
-The Platform Team reviews structure, not skill content — you own quality within your repo.
+Share the repo URL with your team. Developers add your marketplace directly:
+
+```
+/plugin marketplace add https://gitlab.company.com/skillshub/<team-name>-skills.git
+```
+
+Then install individual plugins from it:
+
+```
+/plugin install <plugin-name>@<team-name>-skills
+/reload-plugins
+```
+
+> **No MR to this repo needed.** Your marketplace is entirely self-contained. You do not need Platform Team approval to publish or update your team's skills.
+
+### Step 5 — Contribute a skill back (optional)
+
+If your team builds a skill that would benefit the whole org, you can propose it for the Platform Team catalog. Open an MR against **this** repo using the **"Add Vendored Plugin"** MR template. The Platform Team will review and vendor it if approved.
 
 ---
 
-## For contributors: adding and updating plugins
+## For contributors: adding and updating vendored plugins
+
+This section covers adding or updating **vendored upstream content** in the Platform Team catalog. Team-specific skills belong in the team's own private repo — see "For teams" above.
 
 Each upstream source has its own plugin directory under `plugins/<source-name>/`. `plugins/platform-verified/` is a consolidated reference copy used by the CI scanner — it is not listed in the marketplace catalog.
 
@@ -283,7 +341,7 @@ Each upstream source has its own plugin directory under `plugins/<source-name>/`
 
 7. Record provenance in `VENDORED.md` (upstream URL, commit SHA, date, license).
 
-8. Open an MR using the **"Add Skill to Platform-Verified"** MR template. Platform Team is a required approver.
+8. Open an MR using the **"Add Vendored Plugin"** MR template. Platform Team is a required approver.
 
 ### Updating an existing upstream source
 
@@ -361,8 +419,7 @@ ci/
 
 .gitlab/
   merge_request_templates/
-    add-team-to-marketplace.md
-    add-skill-to-platform-verified.md
+    add-vendored-plugin.md
 ```
 
 ---
@@ -379,7 +436,7 @@ ci/
 | `plugins/<vendored-source>/` | Platform Team | 1 |
 | `CODEOWNERS`, `VENDORED.md`, `ci/`, `.gitlab-ci.yml` | Platform Team | 1 |
 
-Team skill content lives in separate private repos. The Platform Team has no read access to those repos unless explicitly added.
+Team skill content lives in separate private repos and is governed entirely by the team — no entry in this table covers it. The Platform Team has no read access to those repos unless explicitly added.
 
 ---
 
