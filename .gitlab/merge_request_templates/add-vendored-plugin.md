@@ -28,7 +28,6 @@
 - [ ] Created `plugins/<plugin-name>/.claude-plugin/plugin.json` with `name`, `version`, `description`, `author`, `keywords`
 - [ ] Description in `plugin.json` starts with `[Vendored: <upstream-url>]`
 - [ ] All skill content is under `plugins/<plugin-name>/skills/` (agents under `agents/`, commands under `commands/`)
-- [ ] Mirrored content into `plugins/platform-verified/` for CI scanner use
 - [ ] Added an entry to `.claude-plugin/marketplace.json`
 
 **Skill quality:**
@@ -58,4 +57,3 @@ List the exact phrases you tested that correctly activate a representative skill
 - [ ] No PII, credentials, or internal infrastructure details
 - [ ] `VENDORED.md` entry is complete and accurate
 - [ ] `marketplace.json` entry is correctly structured
-- [ ] `plugins/platform-verified/` is in sync with the new plugin directory

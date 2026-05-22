@@ -8,7 +8,6 @@ This is the `skillshub/claude-marketplace` repo. It is the Platform Team's curat
 .claude-plugin/marketplace.json   Central catalog (Platform Team only) — name: platform-claude-marketplace
 plugins/
   essentials/                     Curated starter pack — superpowers + feature-dev + pr-review
-  platform-verified/              Consolidated reference copy — NOT in marketplace catalog, used by CI scanner
   superpowers/                    Vendored: obra/superpowers (14 skills)
   compound-engineering/           Vendored: EveryInc (38 skills + 50 agents)
   gstack/                         Vendored: garrytan/gstack (54 skills)
@@ -36,13 +35,11 @@ The marketplace (registered as `platform-claude-marketplace`) offers 14 installa
 - **`code-quality`** — Platform Team code/doc quality tools
 - **11 per-source vendored plugins** — `superpowers`, `compound-engineering`, `gstack`, `ruflo`, `getshitdone`, `anthropic-dev-skills`, `obsidian`, `anthropic-feature-dev`, `anthropic-pr-review`, `anthropic-hookify`, `frontend-design`
 
-`plugins/platform-verified/` is a consolidated reference copy kept for the CI scanner. It is NOT listed in the marketplace catalog.
-
 All upstream content is vendored (no runtime network calls).
 
 ## Vendored sources
 
-Each upstream source has its own plugin directory under `plugins/<source-name>/`. Content is also mirrored into `plugins/platform-verified/` for CI scanner use. See `VENDORED.md` for upstream SHAs and what was included from each source.
+Each upstream source has its own plugin directory under `plugins/<source-name>/`. See `VENDORED.md` for upstream SHAs and what was included from each source.
 
 ## Airgap requirement
 
@@ -64,10 +61,9 @@ Requires `LITELLM_API_KEY`, `SCANNER_ENDPOINT`, and `SCANNER_API_KEY` as CI/CD v
 See README.md "For contributors" section for the full step-by-step. Short version:
 1. Clone upstream into `/tmp/<source-name>`
 2. Create `plugins/<source-name>/` with content + `plugin.json`
-3. Mirror into `plugins/platform-verified/` (CI scanner reference)
-4. Add entry to `.claude-plugin/marketplace.json`
-5. Record provenance in `VENDORED.md`
-6. Open MR using the "Add Vendored Plugin" MR template
+3. Add entry to `.claude-plugin/marketplace.json`
+4. Record provenance in `VENDORED.md`
+5. Open MR using the "Add Vendored Plugin" MR template
 
 ## CODEOWNERS
 

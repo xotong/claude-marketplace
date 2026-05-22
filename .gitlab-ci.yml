@@ -4,7 +4,7 @@
 # Jobs:
 #   validate-json       — Ensures marketplace.json and all plugin.json files parse cleanly.
 #   lint-shell          — shellcheck on all bash/sh scripts in plugins/ (hooks, bin, scripts).
-#   skill-safety-scan   — LLM-as-judge on changed skills, agents, and commands in platform-verified.
+#   skill-safety-scan   — LLM-as-judge on changed skills, agents, and commands across all plugins.
 
 stages:
   - validate
@@ -86,23 +86,18 @@ lint-shell:
         - plugins/**/scripts/**/*
     - when: never
 
-# ── Skill safety scan on platform-verified ───────────────────────────────────
-# Platform Team dogfoods the scanner against the skills they officially endorse.
-# This job is skipped if plugins/platform-verified/skills/ has no SKILL.md files yet.
+# ── Skill safety scan across all plugins ─────────────────────────────────────
+# Scans all skills, agents, and commands across every plugin directory.
+# On MRs, only changed instruction files are scanned. On push to main, full scan.
 
 include:
   - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner@~latest
     inputs:
       stage: "scan"
-      skills_dir: "plugins/platform-verified"
-      # Be strict for platform-verified — REVIEW_NEEDED blocks merge.
+      skills_dir: "plugins"
       fail_on_review: true
       threshold: 0.90
 
-# Override the job's rules and script so it only runs when platform-verified
-# instruction files (skills, agents, commands) change. On MRs, scan only the
-# changed files. On push to main, scan everything (full scan).
-#
 # Note: GitLab CI variables: does not evaluate shell commands — SCANNER_FILES
 # must be set inside the script: block, not via variables:.
 skill-safety-scan:
@@ -115,12 +110,12 @@ skill-safety-scan:
       if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
         # Fetch the target branch so the diff ref resolves.
         git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-        # Match skills (SKILL.md), agents (agents/*.md), and commands (commands/**/*.md).
+        # Match skills/agents/commands in any plugin directory under plugins/.
         # Prepend CI_PROJECT_DIR so paths are absolute — scanner.py resolves relative
         # paths against SCANNER_SKILLS_DIR, which would otherwise double-up the prefix.
         CHANGED=$(git diff --name-only \
           "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD" \
-          | grep -E '^plugins/platform-verified/(skills/.*\.md|agents/.*\.md|commands/.*\.md)$' \
+          | grep -E '^plugins/[^/]+/(skills/.*\.md|agents/.*\.md|commands/.*\.md)$' \
           | sed "s|^|${CI_PROJECT_DIR}/|" \
           | tr '\n' ',' | sed 's/,$//')
         if [ -n "$CHANGED" ]; then
@@ -137,12 +132,12 @@ skill-safety-scan:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
-        - plugins/platform-verified/skills/**/*.md
-        - plugins/platform-verified/agents/**/*.md
-        - plugins/platform-verified/commands/**/*.md
+        - plugins/*/skills/**/*.md
+        - plugins/*/agents/**/*.md
+        - plugins/*/commands/**/*.md
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
-        - plugins/platform-verified/skills/**/*.md
-        - plugins/platform-verified/agents/**/*.md
-        - plugins/platform-verified/commands/**/*.md
+        - plugins/*/skills/**/*.md
+        - plugins/*/agents/**/*.md
+        - plugins/*/commands/**/*.md
     - when: never

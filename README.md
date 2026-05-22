@@ -265,7 +265,7 @@ If your team builds a skill that would benefit the whole org, you can propose it
 
 This section covers adding or updating **vendored upstream content** in the Platform Team catalog. Team-specific skills belong in the team's own private repo — see "For teams" above.
 
-Each upstream source has its own plugin directory under `plugins/<source-name>/`. `plugins/platform-verified/` is a consolidated reference copy used by the CI scanner — it is not listed in the marketplace catalog.
+Each upstream source has its own plugin directory under `plugins/<source-name>/`. The CI scanner runs across all plugin directories automatically.
 
 ### Adding a new upstream source
 
@@ -293,18 +293,13 @@ Each upstream source has its own plugin directory under `plugins/<source-name>/`
    }
    ```
 
-4. Also copy the skills into `plugins/platform-verified/` (CI scanner reference):
-   ```bash
-   cp -r /tmp/<source-name>/skills/. plugins/platform-verified/skills/
-   ```
+4. If broadly useful for all developers, also add to `plugins/essentials/skills/`.
 
-5. If broadly useful for all developers, also add to `plugins/essentials/skills/`.
+5. Register in `.claude-plugin/marketplace.json` — add an entry to the `plugins` array.
 
-6. Register in `.claude-plugin/marketplace.json` — add an entry to the `plugins` array.
+6. Record provenance in `VENDORED.md` (upstream URL, commit SHA, date, license).
 
-7. Record provenance in `VENDORED.md` (upstream URL, commit SHA, date, license).
-
-8. Open an MR using the **"Add Vendored Plugin"** MR template. Platform Team is a required approver.
+7. Open an MR using the **"Add Vendored Plugin"** MR template. Platform Team is a required approver.
 
 ### Updating an existing upstream source
 
@@ -317,7 +312,7 @@ Each upstream source has its own plugin directory under `plugins/<source-name>/`
    ```bash
    rm -rf plugins/<source-name>/skills/*
    cp -r /tmp/<source-name>/skills/. plugins/<source-name>/skills/
-   # Also update platform-verified and essentials if they include this source
+   # Also update essentials if it bundles content from this source
    ```
 
 3. Update the SHA and date in `VENDORED.md`.
@@ -332,7 +327,7 @@ Platform Team is a required approver (CODEOWNERS).
 
 ```
 .claude-plugin/marketplace.json        Central catalog — Platform Team only
-.gitlab-ci.yml                         CI: JSON validation + scanner on platform-verified (changed files only)
+.gitlab-ci.yml                         CI: JSON validation + skill scanner across all plugins
 CODEOWNERS                             Write-access rules with [Section][1] approval counts
 VENDORED.md                            Upstream SHAs, license notes, update cadence
 CLAUDE.md                              Project context for contributors
@@ -345,18 +340,6 @@ plugins/
     commands/ ← feature-dev.md + review-pr.md
     hooks/    ← superpowers hooks
     assets/   ← superpowers assets
-
-  platform-verified/                   Consolidated reference copy (CI scanner, not in marketplace catalog)
-    .claude-plugin/plugin.json
-    skills/   ← 155 skills from all 11 sources
-    agents/   ← 58 agents
-    commands/ ← 72 commands (including 66 /gsd commands)
-    hooks/    ← superpowers + hookify hooks
-    matchers/ ← hookify matchers
-    utils/    ← hookify utils
-    core/     ← hookify core
-    assets/   ← superpowers assets
-    references/ ← getshitdone reference docs
 
   superpowers/                         Vendored: obra/superpowers (14 skills)
   compound-engineering/                Vendored: EveryInc (38 skills + 50 agents)
@@ -393,7 +376,6 @@ ci/
 |---|---|---|
 | `.claude-plugin/marketplace.json` | Platform Team | 1 |
 | `plugins/essentials/` | Platform Team | 1 |
-| `plugins/platform-verified/` | Platform Team | 1 |
 | `plugins/appsec/` | Platform Team | 1 |
 | `plugins/code-quality/` | Platform Team | 1 |
 | `plugins/<vendored-source>/` | Platform Team | 1 |
