@@ -14,7 +14,7 @@ stages:
 
 validate-json:
   stage: validate
-  image: python:3.12-slim
+  image: python:3.12-slim-bookworm
   script:
     - |
       set -e
@@ -38,7 +38,7 @@ validate-json:
 
 lint-shell:
   stage: validate
-  image: alpine:3
+  image: alpine:3.20
   before_script:
     - apk add --no-cache shellcheck file
   script:

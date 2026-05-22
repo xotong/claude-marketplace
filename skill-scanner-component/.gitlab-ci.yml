@@ -13,7 +13,7 @@ stages:
 
 validate-component:
   stage: validate
-  image: python:3.12-slim
+  image: python:3.12-slim-bookworm
   script:
     - |
       set -e
