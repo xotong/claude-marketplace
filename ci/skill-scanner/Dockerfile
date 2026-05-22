@@ -1,4 +1,4 @@
-FROM cgr.dev/chainguard/python:3.12-dev
+FROM cgr.dev/chainguard/python:latest-dev
 
 LABEL org.opencontainers.image.title="Skill Safety Scanner"
 LABEL org.opencontainers.image.description="Scans Claude Code SKILL.md files for security risks using an LLM-as-judge pattern."
@@ -8,6 +8,7 @@ WORKDIR /scanner
 
 # git is required for the targeted-scan path in CI (git diff to find changed SKILL.md files).
 # Chainguard images use apk (Wolfi/Alpine-compatible).
+USER root
 RUN apk add --no-cache git
 
 COPY requirements.txt .
@@ -18,7 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # without rebuilding this image — see config.yaml for the defaults.
 COPY scanner.py config.yaml ./
 
-# Chainguard images run as nonroot (uid 65532) by default — no adduser needed.
+# Chainguard images run as nonroot (uid 65532) by default.
+USER 65532:65532
 
 # Standalone usage:
 #   docker run --rm \
