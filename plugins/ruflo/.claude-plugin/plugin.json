@@ -1,0 +1,7 @@
+{
+  "name": "ruflo",
+  "version": "1.0.0",
+  "description": "38 skills for AI swarm orchestration, AgentDB memory management, SPARC methodology, GitHub automation, and v3 architecture patterns. Swarm coordination features (flow-nexus, hive-mind) require internet access for npx at runtime.",
+  "author": { "name": "ruvnet (vendored by Platform Team)" },
+  "keywords": ["swarm", "agentdb", "memory", "sparc", "orchestration", "ruflo"]
+}

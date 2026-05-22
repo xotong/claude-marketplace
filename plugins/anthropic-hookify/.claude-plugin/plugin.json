@@ -1,0 +1,7 @@
+{
+  "name": "anthropic-hookify",
+  "version": "1.0.0",
+  "description": "Git hooks framework for Claude Code: pre-commit, post-commit, and custom hook matchers. Includes the writing-rules skill and /hookify command for configuring hooks.",
+  "author": { "name": "Anthropic (vendored by Platform Team)" },
+  "keywords": ["hooks", "git-hooks", "hookify", "anthropic", "automation"]
+}

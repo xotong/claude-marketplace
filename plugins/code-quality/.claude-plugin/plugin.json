@@ -1,0 +1,7 @@
+{
+  "name": "code-quality",
+  "version": "1.0.0",
+  "description": "4 skills for code and documentation quality: lint-and-validate (mandatory pre-commit gate with auto-fix formatters and linters), api-design-principles (REST/GraphQL enforcement, RFC 7807), openapi-spec-generation (keep OpenAPI 3.1 spec in sync), doc-coauthoring (ADRs, design docs, runbooks, postmortems). lint-and-validate is also in essentials.",
+  "author": { "name": "Platform Team" },
+  "keywords": ["lint", "api-design", "openapi", "documentation", "quality"]
+}
