@@ -33,43 +33,6 @@ In any Claude Code session, run:
 
 Claude Code will clone the catalog and register it as `platform-claude-marketplace`. You only need to do this once per machine.
 
-> **Git auth prerequisite:** Claude Code clones the marketplace using your system git.
-> You need git configured to authenticate to internal GitLab before running the command above.
->
-> **macOS**
-> ```bash
-> # Option A — SSH key (recommended)
-> ssh-keygen -t ed25519 -C "your@email.com"
-> # Add ~/.ssh/id_ed25519.pub to your GitLab profile → SSH Keys
->
-> # Option B — Personal Access Token via credential helper
-> git config --global credential.helper osxkeychain
-> # Then `git clone` any internal repo; macOS will prompt for username/PAT and save it
-> ```
->
-> **Ubuntu / Debian**
-> ```bash
-> # Option A — SSH key
-> ssh-keygen -t ed25519 -C "your@email.com"
-> # Add ~/.ssh/id_ed25519.pub to your GitLab profile → SSH Keys
->
-> # Option B — Personal Access Token via credential store
-> git config --global credential.helper store
-> git clone https://gitlab.company.com/skillshub/claude-marketplace.git /tmp/test-clone
-> # Enter your GitLab username and PAT when prompted; credentials are saved to ~/.git-credentials
-> rm -rf /tmp/test-clone
-> ```
->
-> **WSL (Windows Subsystem for Linux)**
-> ```bash
-> # Recommended: delegate to the Windows Git credential manager
-> git config --global credential.helper "/mnt/c/Program\ Files/Git/mingw64/bin/git-credential-manager.exe"
-> # Then authenticate once via the Windows Git Credential Manager dialog
-> ```
->
-> Verify with: `git ls-remote https://gitlab.company.com/skillshub/claude-marketplace.git`
-> If that prints refs without prompting, you're set.
-
 ### Step 2 — Install skills
 
 **Start here (recommended for everyone):**
@@ -142,7 +105,7 @@ Ask your team lead for the exact repo URL and plugin names. Team skill names and
 /reload-plugins
 ```
 
-If a plugin is missing after install, check that your git credentials can reach the marketplace repo and re-run the install command.
+If a plugin is missing after install, re-run the install command.
 
 > **Need a `LITELLM_API_KEY`?** This key is needed if your team runs the skill scanner CI job. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
 
