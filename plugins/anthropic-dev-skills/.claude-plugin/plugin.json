@@ -1,0 +1,7 @@
+{
+  "name": "anthropic-dev-skills",
+  "version": "1.0.0",
+  "description": "4 skills for building with the Anthropic/Claude ecosystem: Claude API development (with prompt caching, tool use, streaming), MCP server building, web application testing, and dual-mode agent patterns.",
+  "author": { "name": "Anthropic (vendored by Platform Team)" },
+  "keywords": ["claude-api", "mcp", "anthropic", "sdk", "testing"]
+}

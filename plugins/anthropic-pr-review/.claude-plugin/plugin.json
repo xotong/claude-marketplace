@@ -1,0 +1,7 @@
+{
+  "name": "anthropic-pr-review",
+  "version": "1.0.0",
+  "description": "6-agent parallel PR review toolkit: code simplicity, comment analysis, conversation context, test coverage, silent failure detection, and type design analysis. Plus the /review-pr slash command. Already bundled in essentials.",
+  "author": { "name": "Anthropic (vendored by Platform Team)" },
+  "keywords": ["pr-review", "code-review", "agents", "anthropic"]
+}

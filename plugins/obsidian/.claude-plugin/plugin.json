@@ -1,0 +1,7 @@
+{
+  "name": "obsidian",
+  "version": "1.0.0",
+  "description": "5 skills for Obsidian knowledge management: Markdown authoring, Bases queries, CLI usage, JSON Canvas diagrams, and content defuddle (simplification).",
+  "author": { "name": "kepano (vendored by Platform Team)" },
+  "keywords": ["obsidian", "markdown", "knowledge-management", "notes"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "getshitdone",
+  "version": "1.0.0",
+  "description": "66 slash commands covering the full Discuss→Plan→Execute→Verify lifecycle: /gsd task, /gsd plan, /gsd execute, /gsd verify, plus project management, context management, and team workflow commands.",
+  "author": { "name": "gsd-build (vendored by Platform Team)" },
+  "keywords": ["commands", "slash-commands", "gsd", "workflow", "productivity"]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "anthropic-feature-dev",
+  "version": "1.0.0",
+  "description": "7-phase feature development workflow with 3 specialised agents (code-architect, code-explorer, code-reviewer) and the /feature-dev slash command. Already bundled in essentials — only install separately if you want feature-dev without the rest of essentials.",
+  "author": { "name": "Anthropic (vendored by Platform Team)" },
+  "keywords": ["feature-dev", "agents", "workflow", "anthropic"]
+}

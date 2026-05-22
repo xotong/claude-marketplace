@@ -1,7 +1,7 @@
 {
-  "name": "claude-marketplace",
-  "version": "0.8.0",
-  "description": "Claude Code plugin marketplace. One URL to configure; all team and platform skills flow from here.",
+  "name": "platform-claude-marketplace",
+  "version": "1.0.0",
+  "description": "Internal Claude Code plugin marketplace. Install essentials to get started, then add individual plugins as your team needs them.",
   "owner": {
     "name": "Platform Team"
   },
@@ -10,23 +10,127 @@
       "name": "essentials",
       "source": "./plugins/essentials",
       "version": "1.0.0",
-      "description": "Curated starter pack — install this first. TDD, debugging, planning, git worktrees (superpowers); 7-phase feature dev; 6-agent parallel PR review.",
-      "author": {
-        "name": "Platform Team"
-      },
+      "description": "Start here. Curated starter pack: superpowers (TDD, debugging, planning, git worktrees), 7-phase feature development, and 6-agent parallel PR review — all in one install.",
+      "author": { "name": "Platform Team" },
       "category": "internal",
       "keywords": ["starter", "tdd", "debugging", "planning", "feature-dev", "pr-review"]
     },
     {
-      "name": "platform-verified",
-      "source": "./plugins/platform-verified",
+      "name": "appsec",
+      "source": "./plugins/appsec",
       "version": "1.0.0",
-      "description": "The full catalog: 149 skills, 58 agents, 72 commands from 11 vendored sources — superpowers, gstack, compound-engineering, getshitdone, ruflo, obsidian, anthropic suite, and more.",
-      "author": {
-        "name": "Platform Team"
-      },
+      "description": "[Platform Team] Security scanning: appsec-scan (Fortify SAST, Parasoft, Pylint, ESLint, Scantist, Trivy — identical images to your CI pipeline) + appsec-dast-sim (LLM DAST following OWASP WSTG v4.2, no running app required).",
+      "author": { "name": "Platform Team" },
       "category": "internal",
-      "keywords": ["platform", "verified", "official", "all", "catalog"]
+      "keywords": ["security", "appsec", "sast", "dast", "fortify", "scantist", "wstg"]
+    },
+    {
+      "name": "code-quality",
+      "source": "./plugins/code-quality",
+      "version": "1.0.0",
+      "description": "[Platform Team] lint-and-validate (pre-commit gate with auto-fix formatters and linters — also in essentials), api-design-principles (REST/GraphQL + RFC 7807), openapi-spec-generation (keep OpenAPI 3.1 in sync), doc-coauthoring (ADRs, design docs, runbooks, postmortems).",
+      "author": { "name": "Platform Team" },
+      "category": "internal",
+      "keywords": ["lint", "api-design", "openapi", "documentation", "quality"]
+    },
+    {
+      "name": "superpowers",
+      "source": "./plugins/superpowers",
+      "version": "1.0.0",
+      "description": "[Vendored: obra/superpowers] 14 core developer skills: TDD, systematic debugging, planning, git worktrees, code review workflows, subagent-driven development, and more. Already bundled in essentials — install separately only if you want superpowers without the rest of essentials.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["tdd", "debugging", "planning", "git", "worktrees", "superpowers"]
+    },
+    {
+      "name": "compound-engineering",
+      "source": "./plugins/compound-engineering",
+      "version": "1.0.0",
+      "description": "[Vendored: EveryInc/compound-engineering-plugin] 38 skills + 50 specialised review agents: code review, architecture strategy, performance analysis, security review, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["agents", "code-review", "architecture", "compound", "engineering"]
+    },
+    {
+      "name": "gstack",
+      "source": "./plugins/gstack",
+      "version": "1.0.0",
+      "description": "[Vendored: garrytan/gstack] 54 developer productivity skills: QA, design consultation, browser automation, production safety gates (canary/guard/ship), context management, planning workflows, code review, benchmarking. Browser skills require Chrome.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["productivity", "qa", "browser", "design", "gstack"]
+    },
+    {
+      "name": "ruflo",
+      "source": "./plugins/ruflo",
+      "version": "1.0.0",
+      "description": "[Vendored: ruvnet/ruflo] 33 skills for AI swarm orchestration, AgentDB memory management (learning, vector-search, optimization), SPARC methodology, GitHub automation, and v3 architecture patterns. Swarm features (flow-nexus, hive-mind) require internet access.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["swarm", "memory", "agentdb", "sparc", "orchestration", "ruflo"]
+    },
+    {
+      "name": "getshitdone",
+      "source": "./plugins/getshitdone",
+      "version": "1.0.0",
+      "description": "[Vendored: gsd-build/get-shit-done] 66 slash commands covering the full Discuss→Plan→Execute→Verify lifecycle: /gsd task, /gsd plan, /gsd execute, /gsd verify, plus context management and team workflow commands.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["commands", "slash-commands", "gsd", "workflow", "productivity"]
+    },
+    {
+      "name": "anthropic-dev-skills",
+      "source": "./plugins/anthropic-dev-skills",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/skills] 4 skills for building with the Anthropic ecosystem: Claude API development (prompt caching, tool use, streaming, batch), MCP server building with vendored SDK reference, web app testing, and dual-mode agent patterns.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["claude-api", "mcp", "sdk", "anthropic", "agents"]
+    },
+    {
+      "name": "obsidian",
+      "source": "./plugins/obsidian",
+      "version": "1.0.0",
+      "description": "[Vendored: kepano/obsidian-skills] 5 skills for Obsidian knowledge management: Markdown authoring, Bases queries, CLI usage, JSON Canvas diagrams, and content defuddle (simplification).",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["obsidian", "markdown", "knowledge-management", "notes"]
+    },
+    {
+      "name": "anthropic-feature-dev",
+      "source": "./plugins/anthropic-feature-dev",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/claude-plugins-official] 7-phase feature development workflow with 3 agents (code-architect, code-explorer, code-reviewer) and the /feature-dev slash command. Already bundled in essentials.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["feature-dev", "agents", "workflow", "anthropic"]
+    },
+    {
+      "name": "anthropic-pr-review",
+      "source": "./plugins/anthropic-pr-review",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/claude-plugins-official] 6-agent parallel PR review toolkit: code simplicity, comment analysis, conversation context, test coverage, silent failure detection, type design. Plus /review-pr slash command. Already bundled in essentials.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["pr-review", "code-review", "agents", "anthropic"]
+    },
+    {
+      "name": "anthropic-hookify",
+      "source": "./plugins/anthropic-hookify",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/claude-plugins-official] Git hooks framework for Claude Code: pre-commit, post-commit, and custom hook matchers. Includes the writing-rules skill and /hookify configuration command.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["hooks", "git-hooks", "hookify", "automation", "anthropic"]
+    },
+    {
+      "name": "frontend-design",
+      "source": "./plugins/frontend-design",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/skills] Frontend design patterns and best practices for building modern web UIs.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["frontend", "design", "ui", "css"]
     }
   ]
 }

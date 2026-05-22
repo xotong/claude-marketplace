@@ -78,9 +78,26 @@ Contains: `.claude-plugin/plugin.json`, `agents/` (50+ specialised review agents
 Dropped: `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json` (other-tool manifests not needed).
 Note: `skills/ce-gemini-imagegen/` requires a Google Gemini API key (`GEMINI_API_KEY`) to function. The skill is included but will not work without the key configured on the user's machine.
 
+### First-party (Platform Team authored)
+
+The following skills were authored by the Platform Team and are not vendored from any upstream repo. They have no upstream SHA or license dependency — they are original works owned by the organisation.
+
+| Skill | Added on | Notes |
+|---|---|---|
+| `appsec-scan` | 2026-05-20 | Container-based CI-mirror: Fortify SAST, Parasoft Jtest, Pylint, ESLint, Scantist SCA, Trivy |
+| `appsec-dast-sim` | 2026-05-20 | LLM-based DAST following WSTG v4.2; no containers required; works at design time |
+| `lint-and-validate` | 2026-05-15 | Pre-commit gate: auto-fix formatters + linters + type checkers |
+| `api-design-principles` | 2026-05-15 | REST/GraphQL design enforcement, RFC 7807, versioning, pagination |
+| `openapi-spec-generation` | 2026-05-15 | Generate/sync OpenAPI 3.1 spec with implementation |
+| `doc-coauthoring` | 2026-05-15 | Interview-first structured docs: ADR, Design Doc, Runbook, Postmortem |
+
+`lint-and-validate` is also included in `plugins/essentials/` as a mandatory pre-commit gate suitable for all developers.
+
+---
+
 ## Updating a vendored source
 
-All upstream sources are now merged into `plugins/platform-verified/` (and `plugins/essentials/` for the curated subset). There are no longer individual `plugins/<name>/` directories.
+Each upstream source lives in its own plugin directory under `plugins/<source-name>/`.
 
 1. Clone the upstream at the new commit:
    ```bash
@@ -88,28 +105,23 @@ All upstream sources are now merged into `plugins/platform-verified/` (and `plug
    NEW_SHA=$(git -C /tmp/<source-name> rev-parse HEAD)
    ```
 
-2. Identify which files in `plugins/platform-verified/` belong to this source. Check the "What was vendored" section above — each source lists exactly which skill directories it contributed. For example, superpowers contributed `skills/tdd/`, `skills/debugging/`, etc.
-
-3. Remove the old files for this source only, then copy in the new ones:
+2. Replace the content in the plugin directory:
    ```bash
-   # Example: updating superpowers skills
-   rm -rf plugins/platform-verified/skills/tdd \
-          plugins/platform-verified/skills/debugging \
-          plugins/platform-verified/skills/planning  # … all superpowers skills
-   cp -r /tmp/<source-name>/skills/. plugins/platform-verified/skills/
+   rm -rf plugins/<source-name>/skills/*
+   cp -r /tmp/<source-name>/skills/. plugins/<source-name>/skills/
 
-   # If this source also contributes to essentials, repeat there:
-   rm -rf plugins/essentials/skills/tdd  # … all superpowers skills in essentials
+   # If this source also contributes to essentials, update that too:
+   rm -rf plugins/essentials/skills/<affected-skill>  # repeat for each skill
    cp -r /tmp/<source-name>/skills/. plugins/essentials/skills/
    ```
 
-4. Reapply any airgap modifications documented in the "What was vendored" section for this source (e.g., anthropic-dev-skills requires removing `live-sources.md` and keeping the vendored SDK READMEs).
+3. Reapply any airgap modifications documented in the "What was vendored" section for this source (e.g., anthropic-dev-skills requires removing `live-sources.md` and keeping the vendored SDK READMEs).
 
-5. Update the SHA and date in the provenance table above.
+4. Update the SHA and date in the provenance table above.
 
-6. Bump `version` in `plugins/platform-verified/.claude-plugin/plugin.json` (and `plugins/essentials/.claude-plugin/plugin.json` if that plugin was also affected).
+5. Bump `version` in `plugins/<source-name>/.claude-plugin/plugin.json` (and `plugins/essentials/.claude-plugin/plugin.json` if that plugin was also affected).
 
-7. Open an MR using the **"Add Skill to Platform-Verified"** template. The Platform Team review covers the diff, not just the version bump.
+6. Open an MR using the **"Add Vendored Plugin"** template. The Platform Team review covers the diff, not just the version bump.
 
 ## Security update cadence
 

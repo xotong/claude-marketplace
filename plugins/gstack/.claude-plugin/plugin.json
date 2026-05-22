@@ -1,0 +1,7 @@
+{
+  "name": "gstack",
+  "version": "1.0.0",
+  "description": "54 developer productivity skills: code review, QA, design consultation, planning workflows, browser automation, production safety gates (canary, guard, ship), context management, and more. Browser skills (browse, connect-chrome) require Chrome on the developer's machine.",
+  "author": { "name": "garrytan (vendored by Platform Team)" },
+  "keywords": ["productivity", "code-review", "qa", "design", "planning", "browser", "gstack"]
+}
