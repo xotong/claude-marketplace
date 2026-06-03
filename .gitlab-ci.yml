@@ -3,7 +3,9 @@
 #
 # Jobs:
 #   validate-json       — Ensures marketplace.json and all plugin.json files parse cleanly.
+#   validate-yaml       — Ensures the skill-scanner-component spec YAML is valid.
 #   lint-shell          — shellcheck on all bash/sh scripts in plugins/ (hooks, bin, scripts).
+#   check-essentials    — Verifies bundled skills in essentials/ match their source plugin dirs.
 #   skill-safety-scan   — LLM-as-judge on changed skills, agents, and commands across all plugins.
 
 stages:
@@ -29,6 +31,53 @@ validate-json:
       echo "All JSON files valid."
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ── YAML validation for component spec ───────────────────────────────────────
+
+validate-yaml:
+  stage: validate
+  image: python:3.12-slim-bookworm
+  variables:
+    COMPONENT_SPEC: "skill-scanner-component/templates/skill-scanner-component.yml"
+  script:
+    - |
+      set -e
+      pip install pyyaml --quiet
+      python3 -c "
+      import yaml, sys, os
+
+      path = os.environ['COMPONENT_SPEC']
+      with open(path) as f:
+          content = f.read()
+
+      # Component files use --- to separate spec from job definition; parse each block.
+      blocks = [b for b in content.split('---') if b.strip()]
+      for i, block in enumerate(blocks):
+          try:
+              yaml.safe_load(block)
+          except yaml.YAMLError as e:
+              print(f'YAML error in block {i+1}: {e}')
+              sys.exit(1)
+
+      # Validate spec.inputs: every input must have type and description.
+      # default is optional — some inputs are intentionally required (no default).
+      spec = yaml.safe_load(blocks[0])
+      inputs = spec.get('spec', {}).get('inputs', {})
+      errors = []
+      for name, defn in inputs.items():
+          for field in ('type', 'description'):
+              if field not in defn:
+                  errors.append(f'Input \"{name}\" missing \"{field}\"')
+      if errors:
+          for e in errors: print(e)
+          sys.exit(1)
+      print(f'OK: {path} ({len(inputs)} inputs validated)')
+      "
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - skill-scanner-component/templates/skill-scanner-component.yml
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ── Shell script linting ─────────────────────────────────────────────────────
@@ -84,6 +133,31 @@ lint-shell:
         - plugins/**/hooks/**/*
         - plugins/**/bin/**/*
         - plugins/**/scripts/**/*
+    - when: never
+
+# ── Essentials drift check ───────────────────────────────────────────────────
+# Verifies that skills bundled in plugins/essentials/ are byte-for-byte identical
+# to their source plugin dirs (superpowers, anthropic-feature-dev, anthropic-pr-review).
+# Fails if any file in essentials is missing or differs from its canonical source.
+
+check-essentials:
+  stage: validate
+  image: python:3.12-slim-bookworm
+  script:
+    - python3 ci/check-essentials-drift.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - plugins/essentials/**/*
+        - plugins/superpowers/skills/**/*
+        - plugins/anthropic-feature-dev/**/*
+        - plugins/anthropic-pr-review/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - plugins/essentials/**/*
+        - plugins/superpowers/skills/**/*
+        - plugins/anthropic-feature-dev/**/*
+        - plugins/anthropic-pr-review/**/*
     - when: never
 
 # ── Skill safety scan across all plugins ─────────────────────────────────────

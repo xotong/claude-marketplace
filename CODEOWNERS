@@ -14,26 +14,33 @@
 # ── Default: everything requires platform-team approval ──────────────────────
 
 [Platform Team][1]
-*                                           @skillshub/platform-team
+*                                               @skillshub/platform-team
 
 # ── Marketplace catalog ───────────────────────────────────────────────────────
-# Adding a team or changing a plugin source requires explicit sign-off.
 
 [Marketplace Catalog][1]
-/.claude-plugin/marketplace.json            @skillshub/platform-team
+/.claude-plugin/marketplace.json                @skillshub/platform-team
 
-# ── Plugin content ────────────────────────────────────────────────────────────
-# Both plugins are Platform Team maintained.
-# platform-verified is officially endorsed — bump threshold to [2] for large changes.
+# ── Platform Team plugins ─────────────────────────────────────────────────────
 
 [Plugin Content][1]
-/plugins/essentials/                        @skillshub/platform-team
-/plugins/platform-verified/                 @skillshub/platform-team
+/plugins/essentials/                            @skillshub/platform-team
+/plugins/appsec/                                @skillshub/platform-team
+/plugins/code-quality/                          @skillshub/platform-team
 
-# ── Governance and CI ─────────────────────────────────────────────────────────
+# ── Vendored plugins ──────────────────────────────────────────────────────────
+# Wildcard covers all current and future vendored plugin dirs.
+# Platform Team plugins (essentials, appsec, code-quality) are listed
+# explicitly above so they get their own named section in approval UIs.
+
+[Vendored Plugins][1]
+/plugins/*/                                     @skillshub/platform-team
+
+# ── Governance, CI, and scanner component ────────────────────────────────────
 
 [Governance][1]
-/CODEOWNERS                                 @skillshub/platform-team
-/VENDORED.md                                @skillshub/platform-team
-/.gitlab-ci.yml                             @skillshub/platform-team
-/ci/                                        @skillshub/platform-team
+/CODEOWNERS                                     @skillshub/platform-team
+/VENDORED.md                                    @skillshub/platform-team
+/.gitlab-ci.yml                                 @skillshub/platform-team
+/ci/                                            @skillshub/platform-team
+/skill-scanner-component/                       @skillshub/platform-team

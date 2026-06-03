@@ -81,7 +81,39 @@ export TRIVY_IMAGE="trivy-scanner:latest"
 
 ---
 
-## Step 1 — Detect project type and set defaults
+## Step 1 — Locate the skill's scanner directory
+
+The scanner scripts are relative to the skill's own directory, not the project
+being scanned. Resolve this path first — subsequent steps depend on `SCANNERS_DIR`.
+
+```bash
+# SKILL_DIR is the absolute path to skills/appsec-scan/
+# Adjust this path if your plugin is installed at a different location.
+SKILL_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+SCANNERS_DIR="$SKILL_DIR/scanners"
+
+if [ ! -d "$SCANNERS_DIR" ]; then
+  echo "ERROR: scanners/ directory not found at $SCANNERS_DIR"
+  echo "Ensure the full appsec-scan skill directory is present, not just SKILL.md"
+  exit 1
+fi
+```
+
+---
+
+## Step 2 — Preflight: validate required environment
+
+Sources `scanners/preflight.sh` — a real shell script that is shellchecked and
+can be run standalone. Checks that required env vars are set and exits with a
+clear message if not.
+
+```bash
+source "$SCANNERS_DIR/preflight.sh"
+```
+
+---
+
+## Step 3 — Detect project type and set defaults
 
 ```bash
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
@@ -108,27 +140,7 @@ grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
 
 ---
 
-## Step 2 — Locate the skill's scanner directory
-
-The scanner scripts are relative to the skill's own directory, not the project
-being scanned. Resolve the path before running any containers.
-
-```bash
-# SKILL_DIR is the absolute path to skills/appsec-scan/
-# Adjust this path if your plugin is installed at a different location.
-SKILL_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-SCANNERS_DIR="$SKILL_DIR/scanners"
-
-if [ ! -d "$SCANNERS_DIR" ]; then
-  echo "ERROR: scanners/ directory not found at $SCANNERS_DIR"
-  echo "Ensure the full appsec-scan skill directory is present, not just SKILL.md"
-  exit 1
-fi
-```
-
----
-
-## Step 3 — Run applicable scanners
+## Step 4 — Run applicable scanners
 
 Each scanner script is mounted read-only into its container at `/runner.sh`.
 The container executes `bash /runner.sh`. All output paths inside the script
@@ -318,7 +330,7 @@ fi
 
 ---
 
-## Step 4 — Parse results and severity gate
+## Step 5 — Parse results and severity gate
 
 ```bash
 echo ""

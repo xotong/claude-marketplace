@@ -15,7 +15,7 @@ threshold: 0.85
 
 # Set this to the model alias registered in your LiteLLM deployment.
 # Tenants should override this in scanner-config.yaml to match their setup.
-model: "hosted-model"
+model: "kimi-k2"
 
 system_prompt: |
   You are a security reviewer for Claude Code plugin instruction files.
