@@ -34,50 +34,23 @@ validate-json:
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ── YAML validation for component spec ───────────────────────────────────────
+# Uses the pre-built scanner image so no runtime pip install is needed —
+# pyyaml is already installed in the image from requirements.lock.
 
 validate-yaml:
   stage: validate
-  image: python:3.12-slim-bookworm
+  image:
+    name: registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest
+    entrypoint: [""]
   variables:
     COMPONENT_SPEC: "skill-scanner-component/templates/skill-scanner-component.yml"
   script:
-    - |
-      set -e
-      pip install pyyaml --quiet
-      python3 -c "
-      import yaml, sys, os
-
-      path = os.environ['COMPONENT_SPEC']
-      with open(path) as f:
-          content = f.read()
-
-      # Component files use --- to separate spec from job definition; parse each block.
-      blocks = [b for b in content.split('---') if b.strip()]
-      for i, block in enumerate(blocks):
-          try:
-              yaml.safe_load(block)
-          except yaml.YAMLError as e:
-              print(f'YAML error in block {i+1}: {e}')
-              sys.exit(1)
-
-      # Validate spec.inputs: every input must have type and description.
-      # default is optional — some inputs are intentionally required (no default).
-      spec = yaml.safe_load(blocks[0])
-      inputs = spec.get('spec', {}).get('inputs', {})
-      errors = []
-      for name, defn in inputs.items():
-          for field in ('type', 'description'):
-              if field not in defn:
-                  errors.append(f'Input \"{name}\" missing \"{field}\"')
-      if errors:
-          for e in errors: print(e)
-          sys.exit(1)
-      print(f'OK: {path} ({len(inputs)} inputs validated)')
-      "
+    - python3 ci/validate-component-spec.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - skill-scanner-component/templates/skill-scanner-component.yml
+        - ci/validate-component-spec.py
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ── Shell script linting ─────────────────────────────────────────────────────

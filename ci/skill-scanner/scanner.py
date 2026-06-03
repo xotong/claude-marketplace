@@ -22,7 +22,7 @@ Optional env vars:
   SCANNER_FAIL_ON_REVIEW  Treat REVIEW_NEEDED verdict as failure (default: false)
   SCANNER_CONFIG_FILE   Explicit path to a config YAML (overrides discovery)
   SCANNER_MAX_RETRIES   API call retries on transient error (default: 3)
-  SCANNER_WORKERS       Parallel LLM workers (default: 10)
+  SCANNER_WORKERS       Parallel LLM workers (default: 5)
   SCANNER_FILES         Comma-separated list of instruction file paths to scan instead of
                         the full directory tree. Paths may be absolute or relative
                         to SCANNER_SKILLS_DIR. When set, only the listed files are
@@ -32,6 +32,7 @@ Optional env vars:
 
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -115,17 +116,17 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
 
         except (APIConnectionError, RateLimitError) as e:
             if attempt == max_retries:
-                raise
-            wait = 2 ** attempt
+                raise RuntimeError(f"Connection/rate-limit error after {max_retries} attempts: {e}") from e
+            wait = 2 ** attempt + random.uniform(0, 1)
             with console_lock:
-                console.print(f"[yellow]  Attempt {attempt} failed ({e}), retrying in {wait}s…[/yellow]")
+                console.print(f"[yellow]  Attempt {attempt} failed ({e}), retrying in {wait:.1f}s…[/yellow]")
             time.sleep(wait)
 
         except APIStatusError as e:
             if e.status_code >= 500 and attempt < max_retries:
-                wait = 2 ** attempt
+                wait = 2 ** attempt + random.uniform(0, 1)
                 with console_lock:
-                    console.print(f"[yellow]  Attempt {attempt} failed (HTTP {e.status_code}), retrying in {wait}s…[/yellow]")
+                    console.print(f"[yellow]  Attempt {attempt} failed (HTTP {e.status_code}), retrying in {wait:.1f}s…[/yellow]")
                 time.sleep(wait)
             else:
                 raise RuntimeError(f"API error {e.status_code}: {e.message}") from e
@@ -257,7 +258,7 @@ def main() -> None:
 
     fail_on_review = os.environ.get("SCANNER_FAIL_ON_REVIEW", "false").lower() in ("1", "true", "yes")
     max_retries = int(os.environ.get("SCANNER_MAX_RETRIES", "3"))
-    max_workers = int(os.environ.get("SCANNER_WORKERS", "10"))
+    max_workers = int(os.environ.get("SCANNER_WORKERS", "5"))
 
     config = load_config(skills_dir)
     threshold: float = config["threshold"]
@@ -330,11 +331,12 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(scan_one, p): p for p in skills}
-        for future in as_completed(futures):
-            result = future.result()
-            results.append(result)
-            with ndjson_partial.open("a") as f:
-                f.write(json.dumps(result) + "\n")
+        with ndjson_partial.open("a") as ndjson_f:
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                ndjson_f.write(json.dumps(result) + "\n")
+                ndjson_f.flush()
 
     results.sort(key=lambda r: r["path"])
     print_summary_table(results, threshold)

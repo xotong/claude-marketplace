@@ -21,20 +21,23 @@
 [Marketplace Catalog][1]
 /.claude-plugin/marketplace.json                @skillshub/platform-team
 
-# ── Platform Team plugins ─────────────────────────────────────────────────────
+# ── Vendored plugins ──────────────────────────────────────────────────────────
+# Wildcard catches all current and future vendored plugin dirs.
+# Rules are evaluated top-to-bottom; last matching rule wins.
+# The explicit [Plugin Content] entries below override this wildcard for
+# Platform Team-owned plugins, so raising their approval count takes effect.
+
+[Vendored Plugins][1]
+/plugins/*/                                     @skillshub/platform-team
+
+# ── Platform Team plugins — these entries come after the wildcard and win ─────
+# Raise the count here (e.g. [Plugin Content][2]) to require stricter review
+# for security-sensitive or user-facing plugins without affecting vendored dirs.
 
 [Plugin Content][1]
 /plugins/essentials/                            @skillshub/platform-team
 /plugins/appsec/                                @skillshub/platform-team
 /plugins/code-quality/                          @skillshub/platform-team
-
-# ── Vendored plugins ──────────────────────────────────────────────────────────
-# Wildcard covers all current and future vendored plugin dirs.
-# Platform Team plugins (essentials, appsec, code-quality) are listed
-# explicitly above so they get their own named section in approval UIs.
-
-[Vendored Plugins][1]
-/plugins/*/                                     @skillshub/platform-team
 
 # ── Governance, CI, and scanner component ────────────────────────────────────
 
