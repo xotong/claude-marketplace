@@ -1,6 +1,6 @@
 ---
 name: ce-commit-push-pr
-description: Commit, push, and open a PR with an adaptive, value-first description. Use when the user says "commit and PR", "push and open a PR", "ship this", "create a PR", "open a pull request", "commit push PR", or wants to go from working changes to an open pull request in one step. Also use when the user says "update the PR description", "refresh the PR description", "freshen the PR", "rewrite the PR body", "write a PR description", "draft a PR description", or "describe this PR" — the skill will produce a description without committing or pushing if that is all the user wants. Produces PR descriptions that scale in depth with the complexity of the change, avoiding cookie-cutter templates.
+description: Commit, push, and open a PR with an adaptive, value-first description that scales in depth with the change. Use when the user says "commit and PR", "ship this", "create a PR", or "open a pull request". Also handles description-only flows ("write a PR description", "rewrite the PR body", "describe this PR") without committing or pushing.
 ---
 
 # Git Commit, Push, and PR
@@ -50,7 +50,7 @@ The remote default branch returns something like `origin/main`; strip the `origi
 Branch routing:
 
 - **Detached HEAD** — explain a branch is required and ask whether to create a feature branch. If yes, derive a name from the change content. If no, stop.
-- **On default branch with work to do** (uncommitted, unpushed, or no upstream) — ask whether to create a feature branch (pushing default directly is not supported). If yes, continue at Step 3 (which handles branch creation safely). If no, stop.
+- **On default branch with work to do** (uncommitted, unpushed, or no upstream) — automatically create a feature branch (pushing the default directly is not supported). Derive a name from the change content and continue at Step 3, which handles branch creation safely. Do not ask whether to branch — committing on the default is not an option here.
 - **On default branch with no work** — report no feature branch work and stop.
 - **Feature branch** — continue.
 
@@ -85,7 +85,7 @@ If the working tree is clean and all commits are already pushed, this step is a 
 
 ## Step 4: Compose the PR title and body
 
-**You MUST read `references/pr-description-writing.md`** and follow it from Pre-A onward. The only input it needs from this skill is the PR ref, if one was identified by mode dispatch (description-only with a pasted URL, or description update).
+**You MUST read `references/pr-description-writing.md`** in full — the core principle at the top governs every step. The only input it needs from this skill is the PR ref, if one was identified by mode dispatch (description-only with a pasted URL, or description update).
 
 **Evidence decision** before composition. Two short-circuits, then the full decision:
 

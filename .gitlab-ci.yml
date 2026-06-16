@@ -3,7 +3,9 @@
 #
 # Jobs:
 #   validate-json       — Ensures marketplace.json and all plugin.json files parse cleanly.
+#   validate-yaml       — Ensures the skill-scanner-component spec YAML is valid.
 #   lint-shell          — shellcheck on all bash/sh scripts in plugins/ (hooks, bin, scripts).
+#   check-essentials    — Verifies bundled skills in essentials/ match their source plugin dirs.
 #   skill-safety-scan   — LLM-as-judge on changed skills, agents, and commands across all plugins.
 
 stages:
@@ -29,6 +31,26 @@ validate-json:
       echo "All JSON files valid."
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+# ── YAML validation for component spec ───────────────────────────────────────
+# Uses the pre-built scanner image so no runtime pip install is needed —
+# pyyaml is already installed in the image from requirements.lock.
+
+validate-yaml:
+  stage: validate
+  image:
+    name: registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest
+    entrypoint: [""]
+  variables:
+    COMPONENT_SPEC: "skill-scanner-component/templates/skill-scanner-component.yml"
+  script:
+    - python3 ci/validate-component-spec.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - skill-scanner-component/templates/skill-scanner-component.yml
+        - ci/validate-component-spec.py
     - if: '$CI_COMMIT_BRANCH == "main"'
 
 # ── Shell script linting ─────────────────────────────────────────────────────
@@ -84,6 +106,33 @@ lint-shell:
         - plugins/**/hooks/**/*
         - plugins/**/bin/**/*
         - plugins/**/scripts/**/*
+    - when: never
+
+# ── Essentials drift check ───────────────────────────────────────────────────
+# Verifies that skills bundled in plugins/essentials/ are byte-for-byte identical
+# to their source plugin dirs (superpowers, anthropic-feature-dev, anthropic-pr-review).
+# Fails if any file in essentials is missing or differs from its canonical source.
+
+check-essentials:
+  stage: validate
+  image: python:3.12-slim-bookworm
+  script:
+    - python3 ci/check-essentials-drift.py
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - plugins/essentials/**/*
+        - plugins/code-quality/**/*
+        - plugins/superpowers/skills/**/*
+        - plugins/anthropic-feature-dev/**/*
+        - plugins/anthropic-pr-review/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - plugins/essentials/**/*
+        - plugins/code-quality/**/*
+        - plugins/superpowers/skills/**/*
+        - plugins/anthropic-feature-dev/**/*
+        - plugins/anthropic-pr-review/**/*
     - when: never
 
 # ── Skill safety scan across all plugins ─────────────────────────────────────

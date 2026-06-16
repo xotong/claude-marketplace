@@ -11,8 +11,8 @@ WORKDIR /scanner
 USER root
 RUN apk add --no-cache git
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements.lock ./
+RUN pip install --no-cache-dir -r requirements.lock
 
 # Copy scanner and built-in default config.
 # Prompts and threshold are tunable via scanner-config.yaml in the tenant's repo

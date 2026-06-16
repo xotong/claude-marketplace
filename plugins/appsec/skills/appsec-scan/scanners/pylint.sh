@@ -37,15 +37,18 @@ pylint2sarif "${RESULTS}/pylint-report.json" \
 # AFTER SCRIPT — mirrors the CI component after_script block.
 # =============================================================================
 
-sed -i '1i\##tool = Pylint' "${RESULTS}/pylint-report.json"
-
 if [ ! -f "${RESULTS}/pylint-report.json" ]; then
   echo "Error: pylint-report.json not found!"
   exit 1
 fi
 
+# Count errors BEFORE adding the tool header — the header makes the file
+# non-JSON and would cause jq to fail if run after sed.
 count=$(jq '[.[] | select(.type == "fatal" or .type == "error")] | length' \
   "${RESULTS}/pylint-report.json")
+
+# Add tool header for CI platform tooling that reads this file.
+sed -i '1i\##tool = Pylint' "${RESULTS}/pylint-report.json"
 
 if [ "$count" -gt 0 ]; then
   echo "Pylint: $count fatal/error issues found"

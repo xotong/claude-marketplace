@@ -27,6 +27,17 @@ cd /workspace
 # When the CI component changes, update only this section.
 # =============================================================================
 
+# Verify npm is not pointed at the public npm registry.
+# The npm install below resolves packages from whichever registry is configured.
+_NPM_REGISTRY=$(npm config get registry 2>/dev/null || true)
+if echo "${_NPM_REGISTRY}" | grep -qiE '(^|[/:])registry\.npmjs\.org([/:]|$)'; then
+  echo "WARNING: npm registry is set to the public npm registry (${_NPM_REGISTRY})."
+  echo "  Configure npm to point at your internal JFrog virtual repo."
+  echo "  Example: npm config set registry <your-jfrog-npm-virtual-url>"
+  echo "  Or add a .npmrc file at the project root or home directory."
+  echo "  npm install will proceed but may fail or resolve wrong packages."
+fi
+
 npm install --save-dev --legacy-peer-deps eslint
 
 npx eslint \

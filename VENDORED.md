@@ -9,14 +9,14 @@ version in `.claude-plugin/marketplace.json`, and update the "Vendored on" date.
 | Plugin | Upstream | Vendored at commit | Vendored on | License |
 |---|---|---|---|---|
 | `superpowers` | https://github.com/obra/superpowers | `f2cbfbefebbfef77321e4c9abc9e949826bea9d7` | 2026-05-08 | MIT |
-| `frontend-design` | https://github.com/anthropics/skills (skills/frontend-design) | `d211d437443a7b2496a3dad9575e7dddd724c585` | 2026-05-08 | See `plugins/frontend-design/skills/frontend-design/LICENSE.txt` |
-| `anthropic-dev-skills` | https://github.com/anthropics/skills (skills/claude-api, webapp-testing, mcp-builder) | `d211d437443a7b2496a3dad9575e7dddd724c585` | 2026-05-08 | See individual `skills/*/LICENSE.txt` |
+| `frontend-design` | https://github.com/anthropics/skills (skills/frontend-design) | `57546260929473d4e0d1c1bb75297be2fdfa1949` | 2026-06-16 | See `plugins/frontend-design/skills/frontend-design/LICENSE.txt` |
+| `anthropic-dev-skills` | https://github.com/anthropics/skills (skills/claude-api, webapp-testing, mcp-builder) | `57546260929473d4e0d1c1bb75297be2fdfa1949` | 2026-06-16 | See individual `skills/*/LICENSE.txt` |
 | `anthropic-feature-dev` | https://github.com/anthropics/claude-plugins-official (plugins/feature-dev) | `76b35e91d1c99c090b1a08dade53bcc5e352c1b2` | 2026-05-08 | MIT |
 | `anthropic-pr-review` | https://github.com/anthropics/claude-plugins-official (plugins/pr-review-toolkit) | `76b35e91d1c99c090b1a08dade53bcc5e352c1b2` | 2026-05-08 | MIT |
 | `anthropic-hookify` | https://github.com/anthropics/claude-plugins-official (plugins/hookify) | `76b35e91d1c99c090b1a08dade53bcc5e352c1b2` | 2026-05-08 | MIT |
-| `compound-engineering` | https://github.com/EveryInc/compound-engineering-plugin (plugins/compound-engineering) | `6fc57c501f2e4a6978a91b41337026cf25086646` | 2026-05-08 | MIT |
+| `compound-engineering` | https://github.com/EveryInc/compound-engineering-plugin (plugins/compound-engineering) | `d8d688b30d97eb5efc3142cec16dd8314ac48e47` | 2026-06-16 | MIT |
 | `obsidian` | https://github.com/kepano/obsidian-skills | `ac9398734fe719565809f7a6048b05c36b1ca38f` | 2026-05-09 | MIT |
-| `gstack` | https://github.com/garrytan/gstack | `06605477e25bf9b302888465baec132fa6093f39` | 2026-05-09 | MIT |
+| `gstack` | https://github.com/garrytan/gstack | `c7ae63201ab193a7dc7fb7e0d81238645111ffac` | 2026-06-16 | MIT |
 | `getshitdone` | https://github.com/gsd-build/get-shit-done | `3aaed8f5d7c3492678b867e6687d42c88fe227e5` | 2026-05-09 | MIT |
 | `ruflo` | https://github.com/ruvnet/ruflo | `b5a57cbf1888cc9bfcc68712d3e4679b0e3d7a75` | 2026-05-09 | MIT |
 
@@ -33,7 +33,7 @@ Added `plugins/frontend-design/.claude-plugin/plugin.json` (authored locally —
 ### anthropic-dev-skills
 `skills/claude-api/`, `skills/webapp-testing/`, `skills/mcp-builder/` from `anthropics/skills` including all reference materials, examples, and language-specific documentation. Added `.claude-plugin/plugin.json` (authored locally).
 Note: `skill-creator` from the same repo was not vendored here as a more featureful version is available in `anthropic-official` (claude-plugins-official).
-Airgap modifications: removed `skills/claude-api/shared/live-sources.md` (dynamic WebFetch URL registry, non-functional offline); updated `skills/claude-api/SKILL.md` to remove references to it. Vendored MCP Python SDK README and TypeScript SDK README into `skills/mcp-builder/reference/` and updated `skills/mcp-builder/SKILL.md` to reference local files instead of raw.githubusercontent.com URLs.
+Airgap modifications: replaced `skills/claude-api/shared/live-sources.md` with an offline stub that tells Claude not to attempt WebFetch and lists the vendored reference files available locally (upstream added many new shared/ files that reference live-sources.md; patching each individually was impractical). Vendored MCP Python SDK README and TypeScript SDK README into `skills/mcp-builder/reference/` and updated `skills/mcp-builder/SKILL.md` to reference local files instead of raw.githubusercontent.com URLs.
 
 ### anthropic-feature-dev
 `plugins/feature-dev/` subtree from `anthropics/claude-plugins-official` verbatim.
@@ -122,6 +122,21 @@ Each upstream source lives in its own plugin directory under `plugins/<source-na
 5. Bump `version` in `plugins/<source-name>/.claude-plugin/plugin.json` (and `plugins/essentials/.claude-plugin/plugin.json` if that plugin was also affected).
 
 6. Open an MR using the **"Add Vendored Plugin"** template. The Platform Team review covers the diff, not just the version bump.
+
+## Revendoring status (as of 2026-06-16)
+
+High-priority plugins revendored on 2026-06-16. Remaining medium/low-priority plugins checked against upstream HEAD.
+
+| Plugin | Status | Priority | Notes |
+|---|---|---|---|
+| `anthropic-dev-skills` / `frontend-design` | ✅ Revendored 2026-06-16 @ `5754626` | **High** | New model support (Fable 5, Opus 4.8), Managed Agents updates |
+| `compound-engineering` | ✅ Revendored 2026-06-16 @ `d8d688b` (v3.13.0) | **High** | 79-commit update; LFG workflow fix, 39 skills + 43 agents |
+| `gstack` | ✅ Revendored 2026-06-16 @ `c7ae632` | **High** | 56-commit update; added iOS skills, diagram, spec, skillify; removed 9 deprecated skills |
+| `obsidian` | Deferred | Low | Minor docs/example additions only |
+| `superpowers` | Deferred | Low | Contributor policy + job posting only; no skill content changes |
+| `anthropic-feature-dev` / `anthropic-pr-review` / `anthropic-hookify` | Deferred | Medium | Check only the vendored subdirs (`plugins/feature-dev`, `plugins/pr-review-toolkit`, `plugins/hookify`) before revendoring |
+| `getshitdone` | Deferred | Medium | Evaluate skill quality before revendoring at this scale |
+| `ruflo` | Deferred | Medium | Evaluate skill quality before revendoring at this scale |
 
 ## Security update cadence
 

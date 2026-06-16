@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 
 # Maps a PR review comment node ID to its parent thread.
-# Fetches thread IDs and first comment IDs to find the match,
-# then returns the matching thread with full comment details.
+# Fetches all review threads (paginated) and their comments, then returns the
+# thread whose comments contain the target ID.
 
 set -e
 
@@ -19,20 +19,31 @@ if [ -n "$3" ]; then
     OWNER=$(echo "$3" | cut -d/ -f1)
     REPO=$(echo "$3" | cut -d/ -f2)
 else
-    OWNER=$(gh repo view --json owner -q .owner.login 2>/dev/null)
-    REPO=$(gh repo view --json name -q .name 2>/dev/null)
+    # `|| true` is load-bearing: under `set -e`, a failed command substitution
+    # in an assignment aborts the script immediately. Run outside a git repo,
+    # `gh repo view` exits 1, its stderr is swallowed by `2>/dev/null`, and the
+    # script would die here with rc=1 and no output -- making the friendly error
+    # below unreachable. Keep `|| true` so detection failure falls through to it.
+    OWNER=$(gh repo view --json owner -q .owner.login 2>/dev/null || true)
+    REPO=$(gh repo view --json name -q .name 2>/dev/null || true)
 fi
 
 if [ -z "$OWNER" ] || [ -z "$REPO" ]; then
-    echo "Error: Could not detect repository. Pass OWNER/REPO as third argument."
+    echo "Error: could not resolve owner/repo. Run get-thread-for-comment from inside the target git repository, or pass OWNER/REPO as the third argument (e.g., get-thread-for-comment $PR_NUMBER $COMMENT_NODE_ID EveryInc/cora)." >&2
     exit 1
 fi
 
-gh api graphql -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" -f query='
-query($owner: String!, $repo: String!, $pr: Int!) {
+# Pagination (issue #798): paginate the reviewThreads connection so PRs with
+# more than one page of threads can still resolve a comment to its parent
+# thread. Per-thread comments are still capped at 100 -- threads exceeding
+# that depth are not paginated here.
+threads_pages=$(gh api graphql --paginate --slurp \
+  -f owner="$OWNER" -f repo="$REPO" -F pr="$PR_NUMBER" \
+  -f query='
+query Threads($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $pr) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $endCursor) {
         nodes {
           id
           isResolved
@@ -52,11 +63,14 @@ query($owner: String!, $repo: String!, $pr: Int!) {
             }
           }
         }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
-}' | jq -e --arg cid "$COMMENT_NODE_ID" '
-  [.data.repository.pullRequest.reviewThreads.nodes[]
-  | select(.comments.nodes | map(.id) | index($cid))]
+}')
+
+echo "$threads_pages" | jq -e --arg cid "$COMMENT_NODE_ID" '
+  [.[].data.repository.pullRequest.reviewThreads.nodes[]
+   | select(.comments.nodes | map(.id) | index($cid))]
   | if length == 0 then error("No thread found for comment \($cid)") else .[0] end
 '

@@ -1,6 +1,6 @@
 {
   "name": "frontend-design",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Frontend design patterns and best practices skill for building modern web UIs.",
   "author": { "name": "Anthropic (vendored by Platform Team)" },
   "keywords": ["frontend", "design", "ui", "css"]

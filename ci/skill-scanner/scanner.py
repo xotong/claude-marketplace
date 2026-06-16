@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Skill Safety Scanner
-Scans all SKILL.md files in a directory tree and evaluates each for security
+Scans all instruction files in a directory tree and evaluates each for security
 risks using an OpenAI-compatible LLM endpoint.
 
 Configuration (highest precedence first):
@@ -22,6 +22,7 @@ Optional env vars:
   SCANNER_FAIL_ON_REVIEW  Treat REVIEW_NEEDED verdict as failure (default: false)
   SCANNER_CONFIG_FILE   Explicit path to a config YAML (overrides discovery)
   SCANNER_MAX_RETRIES   API call retries on transient error (default: 3)
+  SCANNER_WORKERS       Parallel LLM workers (default: 5)
   SCANNER_FILES         Comma-separated list of instruction file paths to scan instead of
                         the full directory tree. Paths may be absolute or relative
                         to SCANNER_SKILLS_DIR. When set, only the listed files are
@@ -29,11 +30,16 @@ Optional env vars:
                         Accepted: SKILL.md files, agents/*.md, commands/**/*.md.
 """
 
+from __future__ import annotations
+
 import json
 import os
+import random
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +50,7 @@ from rich.table import Table
 from rich import box
 
 console = Console()
+console_lock = threading.Lock()
 
 BUILTIN_CONFIG = Path(__file__).parent / "config.yaml"
 
@@ -99,6 +106,7 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
                 ],
                 temperature=0,
                 response_format={"type": "json_object"},
+                timeout=30,
             )
             raw = response.choices[0].message.content
             result = json.loads(raw)
@@ -110,16 +118,17 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
 
         except (APIConnectionError, RateLimitError) as e:
             if attempt == max_retries:
-                raise
-            wait = 2 ** attempt
-            console.print(f"[yellow]  Attempt {attempt} failed ({e}), retrying in {wait}s…[/yellow]")
+                raise RuntimeError(f"Connection/rate-limit error after {max_retries} attempts: {e}") from e
+            wait = 2 ** attempt + random.uniform(0, 1)
+            with console_lock:
+                console.print(f"[yellow]  Attempt {attempt} failed ({e}), retrying in {wait:.1f}s…[/yellow]")
             time.sleep(wait)
 
         except APIStatusError as e:
-            # Retry on transient server errors; surface 4xx immediately.
             if e.status_code >= 500 and attempt < max_retries:
-                wait = 2 ** attempt
-                console.print(f"[yellow]  Attempt {attempt} failed (HTTP {e.status_code}), retrying in {wait}s…[/yellow]")
+                wait = 2 ** attempt + random.uniform(0, 1)
+                with console_lock:
+                    console.print(f"[yellow]  Attempt {attempt} failed (HTTP {e.status_code}), retrying in {wait:.1f}s…[/yellow]")
                 time.sleep(wait)
             else:
                 raise RuntimeError(f"API error {e.status_code}: {e.message}") from e
@@ -133,47 +142,19 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
 def find_instruction_files(root: Path) -> list[Path]:
     """Find all instruction files that need safety scanning:
     - SKILL.md everywhere in the tree (standard skill convention)
-    - Any *.md file under skills/ with a YAML frontmatter name: field
-      (catches non-standard skill naming like dual-mode/*.md)
-    - All *.md files under agents/ (sub-agent definitions)
-    - All *.md files recursively under commands/ (slash command definitions)
+    - Any *.md file under a directory named agents or commands at any depth
     Hidden directories (.git, etc.) are excluded throughout.
     """
     def not_hidden(p: Path) -> bool:
         return not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
 
-    def has_skill_frontmatter(p: Path) -> bool:
-        """Return True if the file starts with --- YAML containing a name: field."""
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-            if not text.startswith("---"):
-                return False
-            end = text.find("---", 3)
-            return end > 0 and "name:" in text[3:end]
-        except OSError:
-            return False
-
     found: set[Path] = set()
 
-    # Skills: SKILL.md anywhere in the tree (standard)
-    found.update(p for p in root.rglob("SKILL.md") if not_hidden(p))
-
-    # Skills: non-standard *.md files inside skills/ that carry skill frontmatter
-    skills_dir = root / "skills"
-    if skills_dir.is_dir():
-        for p in skills_dir.rglob("*.md"):
-            if p.name != "SKILL.md" and not_hidden(p) and has_skill_frontmatter(p):
-                found.add(p)
-
-    # Agents: *.md files under agents/
-    agents_dir = root / "agents"
-    if agents_dir.is_dir():
-        found.update(p for p in agents_dir.rglob("*.md") if not_hidden(p))
-
-    # Commands: *.md files under commands/
-    commands_dir = root / "commands"
-    if commands_dir.is_dir():
-        found.update(p for p in commands_dir.rglob("*.md") if not_hidden(p))
+    for p in root.rglob("*.md"):
+        if not not_hidden(p):
+            continue
+        if p.name == "SKILL.md" or "agents" in p.parts or "commands" in p.parts:
+            found.add(p)
 
     return sorted(found)
 
@@ -229,15 +210,8 @@ def print_summary_table(results: list[dict], threshold: float) -> None:
         score = r.get("confidence_safe", 0)
         verdict = r.get("verdict", "ERROR")
         risks = ", ".join(r.get("risks", [])) or "—"
-
-        if r["passed"]:
-            score_str = f"[green]{score:.2f}[/green]"
-            verdict_str = f"[green]{verdict}[/green]"
-        else:
-            score_str = f"[red]{score:.2f}[/red]"
-            verdict_str = f"[red]{verdict}[/red]"
-
-        table.add_row(r["path"], score_str, verdict_str, risks)
+        color = "green" if r["passed"] else "red"
+        table.add_row(r["path"], f"[{color}]{score:.2f}[/{color}]", f"[{color}]{verdict}[/{color}]", risks)
 
     console.print(table)
 
@@ -256,7 +230,6 @@ def main() -> None:
         console.print(f"[red bold]ERROR:[/red bold] SCANNER_SKILLS_DIR not found: {skills_dir}")
         sys.exit(2)
 
-    # Reports go to a dedicated output dir so they never pollute the repo working tree.
     output_dir = Path(
         os.environ.get("SCANNER_OUTPUT_DIR", str(skills_dir / ".skill-scanner-output"))
     ).resolve()
@@ -264,11 +237,11 @@ def main() -> None:
 
     fail_on_review = os.environ.get("SCANNER_FAIL_ON_REVIEW", "false").lower() in ("1", "true", "yes")
     max_retries = int(os.environ.get("SCANNER_MAX_RETRIES", "3"))
+    max_workers = int(os.environ.get("SCANNER_WORKERS", "5"))
 
     config = load_config(skills_dir)
     threshold: float = config["threshold"]
 
-    # Resolve skills list before printing header so Mode appears in the header block.
     scanner_files_env = os.environ.get("SCANNER_FILES", "").strip()
     if scanner_files_env:
         explicit_paths = [p.strip() for p in scanner_files_env.split(",") if p.strip()]
@@ -296,61 +269,84 @@ def main() -> None:
     console.print(f"  Endpoint  : {endpoint}")
     console.print(f"  Model     : {config['model']}")
     console.print(f"  Threshold : {threshold}")
+    console.print(f"  Workers   : {max_workers}")
     console.print(f"  Fail on REVIEW_NEEDED: {fail_on_review}")
     console.print(f"  Mode      : {mode_str}")
     console.rule()
 
     if not skills:
-        console.print(f"[yellow]No SKILL.md files found to scan. Nothing to do.[/yellow]")
+        console.print("[yellow]No instruction files found to scan. Nothing to do.[/yellow]")
         sys.exit(0)
 
-    console.print(f"\nFound [bold]{len(skills)}[/bold] skill(s) to scan.\n")
+    console.print(f"\nFound [bold]{len(skills)}[/bold] file(s) to scan.\n")
 
     client = OpenAI(base_url=endpoint, api_key=api_key)
     results: list[dict] = []
 
-    for skill_path in skills:
+    # NDJSON sidecar: one JSON line per completed file, appended as each worker
+    # finishes. If the CI job is killed mid-scan the partial results are readable.
+    # The canonical scan-report.json is written once at the end, sorted by path.
+    ndjson_partial = output_dir / "scan-report-partial.ndjson"
+    ndjson_partial.unlink(missing_ok=True)
+
+    def scan_one(skill_path: Path) -> dict:
         rel = str(skill_path.relative_to(skills_dir))
-        console.print(f"  Scanning [cyan]{rel}[/cyan] …", end=" ")
         try:
             assessment = scan_skill(client, config, skill_path, max_retries)
-            score = assessment["confidence_safe"]
-            verdict = assessment["verdict"]
-
-            is_failure = score < threshold or (fail_on_review and verdict == "REVIEW_NEEDED")
-            passed = not is_failure and assessment.get("error") is None
-
+            try:
+                score = float(assessment.get("confidence_safe", 0.0))
+            except (TypeError, ValueError):
+                score = 0.0
+            assessment["confidence_safe"] = score
+            verdict = assessment.get("verdict", "ERROR")
+            passed = (
+                verdict != "UNSAFE"
+                and score >= threshold
+                and not (fail_on_review and verdict == "REVIEW_NEEDED")
+            )
             color = "green" if passed else "red"
-            console.print(f"[{color}]{score:.2f}[/{color}] — [{color}]{verdict}[/{color}]")
-
-            results.append({"path": rel, "passed": passed, "error": None, **assessment})
+            with console_lock:
+                console.print(f"  [cyan]{rel}[/cyan] [{color}]{score:.2f}[/{color}] — [{color}]{verdict}[/{color}]")
+            return {"path": rel, "passed": passed, **assessment}
         except Exception as e:
-            console.print(f"[red]ERROR — {e}[/red]")
-            results.append({
+            with console_lock:
+                console.print(f"  [cyan]{rel}[/cyan] [red]ERROR — {e}[/red]")
+            return {
                 "path": rel, "passed": False, "error": str(e),
                 "confidence_safe": 0.0, "verdict": "ERROR", "risks": [], "reasoning": "",
-            })
+            }
 
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(scan_one, p): p for p in skills}
+        with ndjson_partial.open("a") as ndjson_f:
+            for future in as_completed(futures):
+                result = future.result()
+                results.append(result)
+                ndjson_f.write(json.dumps(result) + "\n")
+                ndjson_f.flush()
+
+    results.sort(key=lambda r: r["path"])
     print_summary_table(results, threshold)
 
     json_report = output_dir / "scan-report.json"
     junit_report = output_dir / "scan-results.xml"
     write_json_report(results, threshold, json_report)
     write_junit_report(results, threshold, junit_report)
-    console.print(f"\n  JSON report : {json_report}")
-    console.print(f"  JUnit XML   : {junit_report}")
+    console.print(f"\n  JSON report  : {json_report}")
+    console.print(f"  Partial NDJSON: {ndjson_partial}")
+    console.print(f"  JUnit XML    : {junit_report}")
 
     failures = [r for r in results if not r["passed"]]
     console.rule()
     if failures:
-        console.print(f"\n[red bold]FAILED[/red bold] — {len(failures)}/{len(results)} skill(s) did not pass.\n")
+        console.print(f"\n[red bold]FAILED[/red bold] — {len(failures)}/{len(results)} file(s) did not pass.\n")
         for r in failures:
             detail = r.get("reasoning") or r.get("error") or "no detail"
             console.print(f"  [red]✗[/red] {r['path']}")
             console.print(f"    {detail}\n")
         sys.exit(1)
     else:
-        console.print(f"\n[green bold]PASSED[/green bold] — all {len(results)} skill(s) cleared threshold {threshold}.\n")
+        console.print(f"\n[green bold]PASSED[/green bold] — all {len(results)} file(s) cleared threshold {threshold}.\n")
         sys.exit(0)
 
 

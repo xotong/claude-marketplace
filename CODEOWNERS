@@ -14,26 +14,36 @@
 # ── Default: everything requires platform-team approval ──────────────────────
 
 [Platform Team][1]
-*                                           @skillshub/platform-team
+*                                               @skillshub/platform-team
 
 # ── Marketplace catalog ───────────────────────────────────────────────────────
-# Adding a team or changing a plugin source requires explicit sign-off.
 
 [Marketplace Catalog][1]
-/.claude-plugin/marketplace.json            @skillshub/platform-team
+/.claude-plugin/marketplace.json                @skillshub/platform-team
 
-# ── Plugin content ────────────────────────────────────────────────────────────
-# Both plugins are Platform Team maintained.
-# platform-verified is officially endorsed — bump threshold to [2] for large changes.
+# ── Vendored plugins ──────────────────────────────────────────────────────────
+# Wildcard catches all current and future vendored plugin dirs.
+# Rules are evaluated top-to-bottom; last matching rule wins.
+# The explicit [Plugin Content] entries below override this wildcard for
+# Platform Team-owned plugins, so raising their approval count takes effect.
+
+[Vendored Plugins][1]
+/plugins/*/                                     @skillshub/platform-team
+
+# ── Platform Team plugins — these entries come after the wildcard and win ─────
+# Raise the count here (e.g. [Plugin Content][2]) to require stricter review
+# for security-sensitive or user-facing plugins without affecting vendored dirs.
 
 [Plugin Content][1]
-/plugins/essentials/                        @skillshub/platform-team
-/plugins/platform-verified/                 @skillshub/platform-team
+/plugins/essentials/                            @skillshub/platform-team
+/plugins/appsec/                                @skillshub/platform-team
+/plugins/code-quality/                          @skillshub/platform-team
 
-# ── Governance and CI ─────────────────────────────────────────────────────────
+# ── Governance, CI, and scanner component ────────────────────────────────────
 
 [Governance][1]
-/CODEOWNERS                                 @skillshub/platform-team
-/VENDORED.md                                @skillshub/platform-team
-/.gitlab-ci.yml                             @skillshub/platform-team
-/ci/                                        @skillshub/platform-team
+/CODEOWNERS                                     @skillshub/platform-team
+/VENDORED.md                                    @skillshub/platform-team
+/.gitlab-ci.yml                                 @skillshub/platform-team
+/ci/                                            @skillshub/platform-team
+/skill-scanner-component/                       @skillshub/platform-team

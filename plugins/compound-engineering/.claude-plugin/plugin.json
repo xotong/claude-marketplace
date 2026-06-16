@@ -1,7 +1,7 @@
 {
   "name": "compound-engineering",
-  "version": "1.0.0",
-  "description": "38 skills and 50+ specialised review agents for compound AI engineering workflows: code review, architecture, performance, security, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY.",
+  "version": "3.13.0",
+  "description": "39 skills and 43 specialised review agents for compound AI engineering workflows: code review, architecture, performance, security, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY.",
   "author": { "name": "EveryInc (vendored by Platform Team)" },
   "keywords": ["code-review", "architecture", "agents", "compound", "engineering"]
 }
