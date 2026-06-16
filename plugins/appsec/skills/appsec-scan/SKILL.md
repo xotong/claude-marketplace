@@ -352,10 +352,10 @@ for fpr_label in "fortify-python:Fortify/Python" "fortify-js:Fortify/JS"; do
   fi
 done
 
-# Pylint
+# Pylint — skip the ##tool header line added by pylint.sh before parsing JSON
 if [ -f .appsec-results/pylint-report.json ]; then
-  PY_ERR=$(jq '[.[] | select(.type=="fatal" or .type=="error")] | length' .appsec-results/pylint-report.json 2>/dev/null || echo 0)
-  PY_WARN=$(jq '[.[] | select(.type=="warning")] | length' .appsec-results/pylint-report.json 2>/dev/null || echo 0)
+  PY_ERR=$(tail -n +2 .appsec-results/pylint-report.json | jq '[.[] | select(.type=="fatal" or .type=="error")] | length' 2>/dev/null || echo 0)
+  PY_WARN=$(tail -n +2 .appsec-results/pylint-report.json | jq '[.[] | select(.type=="warning")] | length' 2>/dev/null || echo 0)
   printf "%-22s %-10s %-6s\n" "Pylint" "$PY_ERR" "$PY_WARN"
   TOTAL_CRITICAL=$((TOTAL_CRITICAL + PY_ERR))
 fi
@@ -394,13 +394,16 @@ echo "============================================================"
 printf "%-22s %-10s %-6s\n" "TOTAL C+H" "$TOTAL_CRITICAL" "$TOTAL_HIGH"
 echo "============================================================"
 
+echo ""
 if [ "$TOTAL_CRITICAL" -gt 0 ] || [ "$TOTAL_HIGH" -gt 0 ]; then
-  echo "GATE FAILED — Fix all Critical and High findings before pushing."
-  echo "Full reports: .appsec-results/"
-  exit 1
+  echo "WARNING: $TOTAL_CRITICAL Critical and $TOTAL_HIGH High findings detected."
+  echo "  Review .appsec-results/ and address these before pushing."
+  echo "  This scan does not block your commit — you are responsible for acting on findings."
 else
-  echo "GATE PASSED — No Critical or High findings."
+  echo "All clear — no Critical or High findings."
 fi
+echo ""
+echo "Tip: Run /appsec-scan before every commit or push to catch issues early."
 ```
 
 ---

@@ -2,7 +2,8 @@
 # Preflight checks for appsec-scan.
 # Source this script at the start of a scan run:
 #   source "$SCANNERS_DIR/preflight.sh"
-# Exits non-zero with a clear message if any required variable is missing.
+# Uses 'return' (not 'exit') so that sourcing does not kill the caller's shell
+# on failure. Fails fast with a clear message if required vars are missing.
 set -euo pipefail
 
 ERRORS=()
@@ -29,5 +30,5 @@ if [ ${#ERRORS[@]} -gt 0 ]; then
   done
   echo ""
   echo "Set these in your shell profile (~/.bashrc or ~/.zshrc). See Prerequisites table in SKILL.md."
-  exit 1
+  return 1
 fi

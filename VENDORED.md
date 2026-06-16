@@ -123,6 +123,21 @@ Each upstream source lives in its own plugin directory under `plugins/<source-na
 
 6. Open an MR using the **"Add Vendored Plugin"** template. The Platform Team review covers the diff, not just the version bump.
 
+## Revendoring status (as of 2026-06-16)
+
+Checked against upstream HEAD on 2026-06-16. All repos have new commits since the May 2026 vendor date.
+
+| Plugin | Commits since vendor | Priority | Notes |
+|---|---|---|---|
+| `anthropic-dev-skills` / `frontend-design` | 8 | **High** | New model support (Fable 5, Opus 4.8), Managed Agents updates |
+| `compound-engineering` | 79 | **High** | Actively maintained; latest fixes LFG skill workflow |
+| `gstack` | 56 | **High** | Solid update cadence |
+| `obsidian` | 7 | Low | Minor docs/example additions |
+| `superpowers` | 2 | Low | Contributor policy + job posting only; no skill content changes |
+| `anthropic-feature-dev` / `anthropic-pr-review` / `anthropic-hookify` | 737 (whole repo) | Medium | Check only the vendored subdirs (`plugins/feature-dev`, `plugins/pr-review-toolkit`, `plugins/hookify`) before revendoring |
+| `getshitdone` | 418 | Medium | Evaluate skill quality before revendoring at this scale |
+| `ruflo` | 363 | Medium | Evaluate skill quality before revendoring at this scale |
+
 ## Security update cadence
 
 - Review each upstream for new releases **quarterly** (first Monday of March, June, September, December).

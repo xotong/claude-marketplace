@@ -25,6 +25,16 @@ SOURCE_PATH="${SOURCE_PATH:-src}"
 
 cd /workspace
 
+# Verify npm is pointing to the internal JFrog registry, not the public npmjs.
+_NPM_REGISTRY=$(npm config get registry 2>/dev/null || true)
+if echo "${_NPM_REGISTRY}" | grep -qiE "registry\.npmjs\.org|npmjs\.com"; then
+  echo "WARNING: npm registry is set to the public npm registry (${_NPM_REGISTRY})."
+  echo "  Expected: internal JFrog Artifactory registry."
+  echo "  Configure: npm config set registry <your-jfrog-npm-url>"
+  echo "  Or add a .npmrc file at the project root or home directory."
+  echo "  npm install will proceed but may fail or resolve wrong packages."
+fi
+
 if [ -f package-lock.json ]; then
   npm ci --silent 2>/dev/null || true
 elif [ -f yarn.lock ]; then
