@@ -15,6 +15,8 @@ Usage:
 Exit codes: 0 = valid, 1 = validation error, 2 = usage/file error.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 from pathlib import Path
@@ -35,20 +37,16 @@ def main() -> None:
 
     content = path.read_text(encoding="utf-8")
 
-    # Split on --- document separators; drop empty fragments.
-    blocks = [b for b in content.split("---") if b.strip()]
-    if not blocks:
-        print(f"ERROR: {path} is empty or contains no YAML documents")
+    try:
+        parsed = list(yaml.safe_load_all(content))
+    except yaml.YAMLError as e:
+        print(f"YAML error in block 1: {e}")
         sys.exit(1)
 
-    # Validate every block parses cleanly.
-    parsed = []
-    for i, block in enumerate(blocks):
-        try:
-            parsed.append(yaml.safe_load(block))
-        except yaml.YAMLError as e:
-            print(f"YAML error in block {i + 1}: {e}")
-            sys.exit(1)
+    parsed = [doc for doc in parsed if doc is not None]
+    if not parsed:
+        print(f"ERROR: {path} is empty or contains no YAML documents")
+        sys.exit(1)
 
     # Locate the spec block — must be a dict containing a 'spec' key.
     spec_doc = None
@@ -61,7 +59,16 @@ def main() -> None:
         print(f"ERROR: no 'spec:' document found in {path}")
         sys.exit(1)
 
-    inputs = spec_doc.get("spec", {}).get("inputs", {})
+    spec = spec_doc.get("spec", {})
+    if not isinstance(spec, dict):
+        print(f"ERROR: spec must be a mapping, got {type(spec).__name__}")
+        sys.exit(1)
+
+    if "inputs" not in spec:
+        print("ERROR: spec.inputs is required")
+        sys.exit(1)
+
+    inputs = spec["inputs"]
     if not isinstance(inputs, dict):
         print(f"ERROR: spec.inputs must be a mapping, got {type(inputs).__name__}")
         sys.exit(1)

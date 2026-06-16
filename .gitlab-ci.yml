@@ -122,12 +122,14 @@ check-essentials:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
         - plugins/essentials/**/*
+        - plugins/code-quality/**/*
         - plugins/superpowers/skills/**/*
         - plugins/anthropic-feature-dev/**/*
         - plugins/anthropic-pr-review/**/*
     - if: '$CI_COMMIT_BRANCH == "main"'
       changes:
         - plugins/essentials/**/*
+        - plugins/code-quality/**/*
         - plugins/superpowers/skills/**/*
         - plugins/anthropic-feature-dev/**/*
         - plugins/anthropic-pr-review/**/*

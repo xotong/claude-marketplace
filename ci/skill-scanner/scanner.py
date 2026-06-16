@@ -30,6 +30,8 @@ Optional env vars:
                         Accepted: SKILL.md files, agents/*.md, commands/**/*.md.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import random
@@ -140,42 +142,19 @@ def scan_skill(client: OpenAI, config: dict, skill_path: Path, max_retries: int)
 def find_instruction_files(root: Path) -> list[Path]:
     """Find all instruction files that need safety scanning:
     - SKILL.md everywhere in the tree (standard skill convention)
-    - Any *.md file under skills/ with a YAML frontmatter name: field
-      (catches non-standard skill naming like dual-mode/*.md)
-    - All *.md files under agents/ (sub-agent definitions)
-    - All *.md files recursively under commands/ (slash command definitions)
+    - Any *.md file under a directory named agents or commands at any depth
     Hidden directories (.git, etc.) are excluded throughout.
     """
     def not_hidden(p: Path) -> bool:
         return not any(part.startswith(".") for part in p.relative_to(root).parts[:-1])
 
-    def has_skill_frontmatter(p: Path) -> bool:
-        try:
-            text = p.read_text(encoding="utf-8", errors="ignore")
-            if not text.startswith("---"):
-                return False
-            end = text.find("---", 3)
-            return end > 0 and "name:" in text[3:end]
-        except OSError:
-            return False
-
     found: set[Path] = set()
 
-    found.update(p for p in root.rglob("SKILL.md") if not_hidden(p))
-
-    skills_dir = root / "skills"
-    if skills_dir.is_dir():
-        for p in skills_dir.rglob("*.md"):
-            if p.name != "SKILL.md" and not_hidden(p) and has_skill_frontmatter(p):
-                found.add(p)
-
-    agents_dir = root / "agents"
-    if agents_dir.is_dir():
-        found.update(p for p in agents_dir.rglob("*.md") if not_hidden(p))
-
-    commands_dir = root / "commands"
-    if commands_dir.is_dir():
-        found.update(p for p in commands_dir.rglob("*.md") if not_hidden(p))
+    for p in root.rglob("*.md"):
+        if not not_hidden(p):
+            continue
+        if p.name == "SKILL.md" or "agents" in p.parts or "commands" in p.parts:
+            found.add(p)
 
     return sorted(found)
 
@@ -314,9 +293,17 @@ def main() -> None:
         rel = str(skill_path.relative_to(skills_dir))
         try:
             assessment = scan_skill(client, config, skill_path, max_retries)
-            score = assessment["confidence_safe"]
-            verdict = assessment["verdict"]
-            passed = score >= threshold and not (fail_on_review and verdict == "REVIEW_NEEDED")
+            try:
+                score = float(assessment.get("confidence_safe", 0.0))
+            except (TypeError, ValueError):
+                score = 0.0
+            assessment["confidence_safe"] = score
+            verdict = assessment.get("verdict", "ERROR")
+            passed = (
+                verdict != "UNSAFE"
+                and score >= threshold
+                and not (fail_on_review and verdict == "REVIEW_NEEDED")
+            )
             color = "green" if passed else "red"
             with console_lock:
                 console.print(f"  [cyan]{rel}[/cyan] [{color}]{score:.2f}[/{color}] — [{color}]{verdict}[/{color}]")

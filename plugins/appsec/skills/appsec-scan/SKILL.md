@@ -47,6 +47,9 @@ detection block in Step 3 below. See UPDATE-GUIDE.md for full instructions.
 
 ## Prerequisites
 
+Tenants must configure `npm`/`pip` and container image pulls to their internal
+JFrog virtual repos. Network access to JFrog is required.
+
 | Variable | Description | Default |
 |---|---|---|
 | `APPSEC_REGISTRY` | Registry prefix for all scanner images | `registry.company.com/security` |
@@ -103,12 +106,12 @@ fi
 
 ## Step 2 — Preflight: validate required environment
 
-Sources `scanners/preflight.sh` — a real shell script that is shellchecked and
-can be run standalone. Checks that required env vars are set and exits with a
-clear message if not.
+Runs `scanners/preflight.sh` in its own process — a real shell script that is
+shellchecked and can be run standalone. Checks that required env vars are set
+and exits with a clear message if not.
 
 ```bash
-source "$SCANNERS_DIR/preflight.sh"
+bash "$SCANNERS_DIR/preflight.sh" || return 1
 ```
 
 ---
@@ -121,6 +124,7 @@ BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
 SOURCE_PATH="${SOURCE_PATH:-src}"
 CI_PROJECT_DIR="${CI_PROJECT_DIR:-$PWD}"
 APPSEC_REGISTRY="${APPSEC_REGISTRY:-registry.company.com/security}"
+FORTIFY_PY_PID=""; FORTIFY_JS_PID=""; PYLINT_PID=""; ESLINT_PID=""; SCANTIST_JS_PID=""
 
 HAS_POM=false; HAS_GRADLE=false; HAS_PACKAGE_JSON=false
 HAS_REQUIREMENTS=false; HAS_DOCKERFILE=false
@@ -152,7 +156,7 @@ Run the parallel scanners first (background `&`), then the sequential ones.
 *Applies when: Python project detected. Runner: `scanners/fortify-python.sh`.*
 
 ```bash
-if $HAS_REQUIREMENTS && [ -n "$FORTIFY_PY_IMAGE" ]; then
+if $HAS_REQUIREMENTS && [ -n "${FORTIFY_PY_IMAGE:-}" ]; then
   echo "[Fortify/Python] Starting in background..."
   docker run --rm \
     -v "$PWD:/workspace" \
@@ -160,7 +164,7 @@ if $HAS_REQUIREMENTS && [ -n "$FORTIFY_PY_IMAGE" ]; then
     -w /workspace \
     -e APP_NAME="$APP_NAME" \
     -e SOURCE_PATH="$SOURCE_PATH" \
-    "${APPSEC_REGISTRY}/${FORTIFY_PY_IMAGE}" \
+    "${APPSEC_REGISTRY}/${FORTIFY_PY_IMAGE:-}" \
     bash /runner.sh > .appsec-results/fortify-python.log 2>&1 &
   FORTIFY_PY_PID=$!
 fi
@@ -170,7 +174,7 @@ fi
 *Applies when: JS/TS project detected. Runner: `scanners/fortify-js.sh`.*
 
 ```bash
-if $HAS_PACKAGE_JSON && [ -n "$FORTIFY_JS_IMAGE" ]; then
+if $HAS_PACKAGE_JSON && [ -n "${FORTIFY_JS_IMAGE:-}" ]; then
   echo "[Fortify/JS] Starting in background..."
   docker run --rm \
     -v "$PWD:/workspace" \
@@ -178,7 +182,7 @@ if $HAS_PACKAGE_JSON && [ -n "$FORTIFY_JS_IMAGE" ]; then
     -w /workspace \
     -e APP_NAME="$APP_NAME" \
     -e SOURCE_PATH="$SOURCE_PATH" \
-    "${APPSEC_REGISTRY}/${FORTIFY_JS_IMAGE}" \
+    "${APPSEC_REGISTRY}/${FORTIFY_JS_IMAGE:-}" \
     bash /runner.sh > .appsec-results/fortify-js.log 2>&1 &
   FORTIFY_JS_PID=$!
 fi
@@ -188,7 +192,7 @@ fi
 *Applies when: Python project. Entrypoint overridden to `""`. Runner: `scanners/pylint.sh`.*
 
 ```bash
-if $HAS_REQUIREMENTS && [ -n "$PYLINT_IMAGE" ]; then
+if $HAS_REQUIREMENTS && [ -n "${PYLINT_IMAGE:-}" ]; then
   echo "[Pylint] Starting in background..."
   docker run --rm \
     --entrypoint "" \
@@ -196,7 +200,7 @@ if $HAS_REQUIREMENTS && [ -n "$PYLINT_IMAGE" ]; then
     -v "$SCANNERS_DIR/pylint.sh:/runner.sh:ro" \
     -w /workspace \
     -e SOURCE_PATH="$SOURCE_PATH" \
-    "${APPSEC_REGISTRY}/${PYLINT_IMAGE}" \
+    "${APPSEC_REGISTRY}/${PYLINT_IMAGE:-}" \
     bash /runner.sh > .appsec-results/pylint.log 2>&1 &
   PYLINT_PID=$!
 fi
@@ -206,14 +210,14 @@ fi
 *Applies when: JS/TS project and `ESLINT_CONFIG_FILE` is set. Runner: `scanners/eslint.sh`.*
 
 ```bash
-if $HAS_PACKAGE_JSON && [ -n "$ESLINT_IMAGE" ] && [ -n "$ESLINT_CONFIG_FILE" ]; then
+if $HAS_PACKAGE_JSON && [ -n "${ESLINT_IMAGE:-}" ] && [ -n "${ESLINT_CONFIG_FILE:-}" ]; then
   echo "[ESLint] Starting in background..."
   docker run --rm \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/eslint.sh:/runner.sh:ro" \
     -w /workspace \
-    -e ESLINT_CONFIG_FILE="$ESLINT_CONFIG_FILE" \
-    "${APPSEC_REGISTRY}/${ESLINT_IMAGE}" \
+    -e ESLINT_CONFIG_FILE="${ESLINT_CONFIG_FILE:-}" \
+    "${APPSEC_REGISTRY}/${ESLINT_IMAGE:-}" \
     bash /runner.sh > .appsec-results/eslint.log 2>&1 &
   ESLINT_PID=$!
 fi
@@ -223,16 +227,16 @@ fi
 *Applies when: JS/TS project. Needs `--network=host` to reach DTP. Runner: `scanners/scantist-js.sh`.*
 
 ```bash
-if $HAS_PACKAGE_JSON && [ -n "$SCANTIST_IMAGE" ] && [ -n "$DEVSECOPS_IMPORT_URL" ]; then
+if $HAS_PACKAGE_JSON && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ]; then
   echo "[Scantist/JS] Starting in background..."
   docker run --rm \
     --network=host \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/scantist-js.sh:/runner.sh:ro" \
     -w /workspace \
-    -e DEVSECOPS_IMPORT_URL="$DEVSECOPS_IMPORT_URL" \
+    -e DEVSECOPS_IMPORT_URL="${DEVSECOPS_IMPORT_URL:-}" \
     -e BRANCH="$BRANCH" \
-    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE}" \
+    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE:-}" \
     bash /runner.sh > .appsec-results/scantist-js.log 2>&1 &
   SCANTIST_JS_PID=$!
 fi
@@ -243,7 +247,7 @@ fi
 ```bash
 echo "Waiting for parallel scanners..."
 for pid_var in FORTIFY_PY_PID FORTIFY_JS_PID PYLINT_PID ESLINT_PID SCANTIST_JS_PID; do
-  pid="${!pid_var}"
+  pid="${!pid_var:-}"
   if [ -n "$pid" ]; then
     if wait "$pid"; then
       echo "[${pid_var/_PID/}] Done"
@@ -258,7 +262,7 @@ done
 *Sequential. Applies when: Gradle project. Runner: `scanners/parasoft-gradle.sh`.*
 
 ```bash
-if $HAS_GRADLE && [ -n "$PARASOFT_IMAGE" ]; then
+if $HAS_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ]; then
   echo "[Parasoft/Gradle] Running..."
   docker run --rm \
     -v "$PWD:/workspace" \
@@ -267,7 +271,7 @@ if $HAS_GRADLE && [ -n "$PARASOFT_IMAGE" ]; then
     -e BRANCH="$BRANCH" \
     -e CI_PROJECT_URL="${CI_PROJECT_URL:-$(git remote get-url origin 2>/dev/null || echo local)}" \
     -e CI_PROJECT_DIR="/workspace" \
-    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE}" \
+    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE:-}" \
     bash /runner.sh 2>&1 | tee .appsec-results/parasoft-gradle.log
 fi
 ```
@@ -276,7 +280,7 @@ fi
 *Sequential. Applies when: Maven project (no Gradle). Runner: `scanners/parasoft-maven.sh`.*
 
 ```bash
-if $HAS_POM && ! $HAS_GRADLE && [ -n "$PARASOFT_IMAGE" ] && [ -n "$MAVEN_SETTINGS_XML" ]; then
+if $HAS_POM && ! $HAS_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
   echo "[Parasoft/Maven] Running..."
   docker run --rm \
     -v "$PWD:/workspace" \
@@ -285,8 +289,8 @@ if $HAS_POM && ! $HAS_GRADLE && [ -n "$PARASOFT_IMAGE" ] && [ -n "$MAVEN_SETTING
     -e BRANCH="$BRANCH" \
     -e CI_PROJECT_URL="${CI_PROJECT_URL:-$(git remote get-url origin 2>/dev/null || echo local)}" \
     -e CI_PROJECT_DIR="/workspace" \
-    -e MAVEN_SETTINGS_XML="$MAVEN_SETTINGS_XML" \
-    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE}" \
+    -e MAVEN_SETTINGS_XML="${MAVEN_SETTINGS_XML:-}" \
+    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE:-}" \
     bash /runner.sh 2>&1 | tee .appsec-results/parasoft-maven.log
 fi
 ```
@@ -295,17 +299,17 @@ fi
 *Sequential — runs after Parasoft Maven (needs compiled artifacts). Runner: `scanners/scantist-maven.sh`.*
 
 ```bash
-if $HAS_POM && ! $HAS_GRADLE && [ -n "$SCANTIST_IMAGE" ] && [ -n "$DEVSECOPS_IMPORT_URL" ] && [ -n "$MAVEN_SETTINGS_XML" ]; then
+if $HAS_POM && ! $HAS_GRADLE && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
   echo "[Scantist/Maven] Running..."
   docker run --rm \
     --network=host \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/scantist-maven.sh:/runner.sh:ro" \
     -w /workspace \
-    -e DEVSECOPS_IMPORT_URL="$DEVSECOPS_IMPORT_URL" \
+    -e DEVSECOPS_IMPORT_URL="${DEVSECOPS_IMPORT_URL:-}" \
     -e BRANCH="$BRANCH" \
-    -e MAVEN_SETTINGS_XML="$MAVEN_SETTINGS_XML" \
-    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE}" \
+    -e MAVEN_SETTINGS_XML="${MAVEN_SETTINGS_XML:-}" \
+    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE:-}" \
     bash /runner.sh 2>&1 | tee .appsec-results/scantist-maven.log
 fi
 ```
@@ -314,14 +318,14 @@ fi
 *Run if `TRIVY_TARGET` is set. Runner: `scanners/trivy.sh`.*
 
 ```bash
-if [ -n "$TRIVY_TARGET" ] && [ -n "$TRIVY_IMAGE" ]; then
-  echo "[Trivy] Scanning $TRIVY_TARGET..."
+if [ -n "${TRIVY_TARGET:-}" ] && [ -n "${TRIVY_IMAGE:-}" ]; then
+  echo "[Trivy] Scanning ${TRIVY_TARGET:-}..."
   docker run --rm \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/trivy.sh:/runner.sh:ro" \
-    -e TRIVY_TARGET="$TRIVY_TARGET" \
-    "${APPSEC_REGISTRY}/${TRIVY_IMAGE}" \
+    -e TRIVY_TARGET="${TRIVY_TARGET:-}" \
+    "${APPSEC_REGISTRY}/${TRIVY_IMAGE:-}" \
     bash /runner.sh
 else
   echo "[Trivy] Skipped — set TRIVY_TARGET=<image:tag> to enable"
@@ -341,53 +345,115 @@ printf "%-22s %-10s %-6s %-8s %-5s\n" "Scanner" "Critical" "High" "Medium" "Low"
 printf "%-22s %-10s %-6s %-8s %-5s\n" "-------" "--------" "----" "------" "---"
 
 TOTAL_CRITICAL=0; TOTAL_HIGH=0
+HAS_SUMMARY_UNKNOWN=false
+
+HAS_JQ=true
+HAS_UNZIP=true
+HAS_XMLLINT=true
+command -v jq >/dev/null 2>&1 || HAS_JQ=false
+command -v unzip >/dev/null 2>&1 || HAS_UNZIP=false
+command -v xmllint >/dev/null 2>&1 || HAS_XMLLINT=false
+
+if ! $HAS_JQ || ! $HAS_UNZIP || ! $HAS_XMLLINT; then
+  echo "WARNING: One or more summary parsers are unavailable; some counts may show as UNKNOWN."
+  ! $HAS_JQ && echo "  - jq not found: Pylint, ESLint, and Trivy counts may be unavailable."
+  ! $HAS_UNZIP && echo "  - unzip not found: Fortify FPR counts may be unavailable."
+  ! $HAS_XMLLINT && echo "  - xmllint not found: Parasoft XML counts may be unavailable."
+fi
+
+print_missing_report() {
+  printf "%-22s %s\n" "$1" "WARNING: report file not present"
+}
+
+print_unknown_report() {
+  printf "%-22s %s\n" "$1" "UNKNOWN (failed to parse report)"
+  HAS_SUMMARY_UNKNOWN=true
+}
 
 # Fortify: count <Vulnerability> tags in the embedded fvdl
 for fpr_label in "fortify-python:Fortify/Python" "fortify-js:Fortify/JS"; do
   fpr_file=".appsec-results/${fpr_label%%:*}.fpr"
   label="${fpr_label##*:}"
   if [ -f "$fpr_file" ]; then
-    count=$(unzip -p "$fpr_file" audit.fvdl 2>/dev/null | grep -c '<Vulnerability>' || echo 0)
-    printf "%-22s %-10s\n" "$label" "$count total (see .fpr for severity breakdown)"
+    if ! $HAS_UNZIP; then
+      print_unknown_report "$label"
+    elif unzip -p "$fpr_file" audit.fvdl >/dev/null 2>&1; then
+      count=$(unzip -p "$fpr_file" audit.fvdl 2>/dev/null | grep -c '<Vulnerability>' || true)
+      printf "%-22s %-10s\n" "$label" "$count total (see .fpr for severity breakdown)"
+    else
+      print_unknown_report "$label"
+    fi
+  else
+    print_missing_report "$label"
   fi
 done
 
-# Pylint — skip the ##tool header line added by pylint.sh before parsing JSON
+# Pylint — drop the ##tool header line added by pylint.sh before parsing JSON
 if [ -f .appsec-results/pylint-report.json ]; then
-  PY_ERR=$(tail -n +2 .appsec-results/pylint-report.json | jq '[.[] | select(.type=="fatal" or .type=="error")] | length' 2>/dev/null || echo 0)
-  PY_WARN=$(tail -n +2 .appsec-results/pylint-report.json | jq '[.[] | select(.type=="warning")] | length' 2>/dev/null || echo 0)
-  printf "%-22s %-10s %-6s\n" "Pylint" "$PY_ERR" "$PY_WARN"
-  TOTAL_CRITICAL=$((TOTAL_CRITICAL + PY_ERR))
+  if ! $HAS_JQ; then
+    print_unknown_report "Pylint"
+  else
+    PYLINT_JSON=$(grep -v '^##tool' .appsec-results/pylint-report.json || true)
+    if PY_ERR=$(printf '%s\n' "$PYLINT_JSON" | jq '[.[] | select(.type=="fatal" or .type=="error")] | length' 2>/dev/null) && \
+       PY_WARN=$(printf '%s\n' "$PYLINT_JSON" | jq '[.[] | select(.type=="warning")] | length' 2>/dev/null); then
+      printf "%-22s %-10s %-6s\n" "Pylint" "$PY_ERR" "$PY_WARN"
+      TOTAL_CRITICAL=$((TOTAL_CRITICAL + PY_ERR))
+    else
+      print_unknown_report "Pylint"
+    fi
+  fi
+else
+  print_missing_report "Pylint"
 fi
 
 # ESLint
 if [ -f .appsec-results/eslint.json ]; then
-  ES_ERR=$(jq '[.[].messages[] | select(.severity==2)] | length' .appsec-results/eslint.json 2>/dev/null || echo 0)
-  ES_WARN=$(jq '[.[].messages[] | select(.severity==1)] | length' .appsec-results/eslint.json 2>/dev/null || echo 0)
-  printf "%-22s %-10s %-6s\n" "ESLint" "$ES_ERR" "$ES_WARN"
-  TOTAL_CRITICAL=$((TOTAL_CRITICAL + ES_ERR))
+  if ! $HAS_JQ; then
+    print_unknown_report "ESLint"
+  elif ES_ERR=$(jq '[.[].messages[] | select(.severity==2)] | length' .appsec-results/eslint.json 2>/dev/null) && \
+       ES_WARN=$(jq '[.[].messages[] | select(.severity==1)] | length' .appsec-results/eslint.json 2>/dev/null); then
+    printf "%-22s %-10s %-6s\n" "ESLint" "$ES_ERR" "$ES_WARN"
+    TOTAL_CRITICAL=$((TOTAL_CRITICAL + ES_ERR))
+  else
+    print_unknown_report "ESLint"
+  fi
+else
+  print_missing_report "ESLint"
 fi
 
 # Parasoft
-for report in .appsec-results/parasoft-reports/report.xml; do
-  if [ -f "$report" ]; then
-    PARA_CRIT=$(xmllint --xpath "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=1])" "$report" 2>/dev/null || echo 0)
-    PARA_HIGH=$(xmllint --xpath "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=2])" "$report" 2>/dev/null || echo 0)
-    PARA_MED=$(xmllint --xpath  "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=3])" "$report" 2>/dev/null || echo 0)
-    PARA_LOW=$(xmllint --xpath  "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=4])" "$report" 2>/dev/null || echo 0)
+PARASOFT_REPORT=".appsec-results/parasoft-reports/report.xml"
+if [ -f "$PARASOFT_REPORT" ]; then
+  if ! $HAS_XMLLINT; then
+    print_unknown_report "Parasoft"
+  elif PARA_CRIT=$(xmllint --xpath "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=1])" "$PARASOFT_REPORT" 2>/dev/null) && \
+       PARA_HIGH=$(xmllint --xpath "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=2])" "$PARASOFT_REPORT" 2>/dev/null) && \
+       PARA_MED=$(xmllint --xpath  "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=3])" "$PARASOFT_REPORT" 2>/dev/null) && \
+       PARA_LOW=$(xmllint --xpath  "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=4])" "$PARASOFT_REPORT" 2>/dev/null); then
     printf "%-22s %-10s %-6s %-8s %-5s\n" "Parasoft" "$PARA_CRIT" "$PARA_HIGH" "$PARA_MED" "$PARA_LOW"
     TOTAL_CRITICAL=$((TOTAL_CRITICAL + PARA_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + PARA_HIGH))
+  else
+    print_unknown_report "Parasoft"
   fi
-done
+else
+  print_missing_report "Parasoft"
+fi
 
 # Trivy
 if [ -f .appsec-results/trivy-results.json ]; then
-  TRIVY_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' .appsec-results/trivy-results.json 2>/dev/null || echo 0)
-  TRIVY_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")]    | length' .appsec-results/trivy-results.json 2>/dev/null || echo 0)
-  TRIVY_MED=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")]  | length' .appsec-results/trivy-results.json 2>/dev/null || echo 0)
-  TRIVY_LOW=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")]     | length' .appsec-results/trivy-results.json 2>/dev/null || echo 0)
-  printf "%-22s %-10s %-6s %-8s %-5s\n" "Trivy" "$TRIVY_CRIT" "$TRIVY_HIGH" "$TRIVY_MED" "$TRIVY_LOW"
-  TOTAL_CRITICAL=$((TOTAL_CRITICAL + TRIVY_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + TRIVY_HIGH))
+  if ! $HAS_JQ; then
+    print_unknown_report "Trivy"
+  elif TRIVY_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' .appsec-results/trivy-results.json 2>/dev/null) && \
+       TRIVY_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")]    | length' .appsec-results/trivy-results.json 2>/dev/null) && \
+       TRIVY_MED=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")]  | length' .appsec-results/trivy-results.json 2>/dev/null) && \
+       TRIVY_LOW=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")]     | length' .appsec-results/trivy-results.json 2>/dev/null); then
+    printf "%-22s %-10s %-6s %-8s %-5s\n" "Trivy" "$TRIVY_CRIT" "$TRIVY_HIGH" "$TRIVY_MED" "$TRIVY_LOW"
+    TOTAL_CRITICAL=$((TOTAL_CRITICAL + TRIVY_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + TRIVY_HIGH))
+  else
+    print_unknown_report "Trivy"
+  fi
+else
+  print_missing_report "Trivy"
 fi
 
 echo "============================================================"
@@ -395,7 +461,11 @@ printf "%-22s %-10s %-6s\n" "TOTAL C+H" "$TOTAL_CRITICAL" "$TOTAL_HIGH"
 echo "============================================================"
 
 echo ""
-if [ "$TOTAL_CRITICAL" -gt 0 ] || [ "$TOTAL_HIGH" -gt 0 ]; then
+if $HAS_SUMMARY_UNKNOWN; then
+  echo "WARNING: One or more scanner summaries are UNKNOWN."
+  echo "  Review .appsec-results/ and the warnings above before pushing."
+  echo "  This scan does not block your commit — you are responsible for acting on findings."
+elif [ "$TOTAL_CRITICAL" -gt 0 ] || [ "$TOTAL_HIGH" -gt 0 ]; then
   echo "WARNING: $TOTAL_CRITICAL Critical and $TOTAL_HIGH High findings detected."
   echo "  Review .appsec-results/ and address these before pushing."
   echo "  This scan does not block your commit — you are responsible for acting on findings."
