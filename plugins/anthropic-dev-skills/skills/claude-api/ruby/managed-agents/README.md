@@ -1,8 +1,8 @@
 # Managed Agents — Ruby
 
-> **Bindings not shown here:** This README covers the most common managed-agents flows for Ruby. If you need a class, method, namespace, field, or behavior that isn't shown, refer to the SDK's official repository or documentation rather than guess. Do not extrapolate from cURL shapes or another language's SDK.
+> **Bindings not shown here:** This README covers the most common managed-agents flows for Ruby. If you need a class, method, namespace, field, or behavior that isn't shown, WebFetch the Ruby SDK repo **or the relevant docs page** from `shared/live-sources.md` rather than guess. Do not extrapolate from cURL shapes or another language's SDK.
 
-> **Agents are persistent — create once, reference by ID.** Store the agent ID returned by `client.beta.agents.create` and pass it to every subsequent `client.beta.sessions.create`; do not call `agents.create` in the request path. The examples below show in-code creation for completeness; in production the create call belongs in setup, not in the request path.
+> **Agents are persistent — create once, reference by ID.** Store the agent ID returned by `client.beta.agents.create` and pass it to every subsequent `client.beta.sessions.create`; do not call `agents.create` in the request path. The Anthropic CLI is one convenient way to create agents and environments from version-controlled YAML — its URL is in `shared/live-sources.md`. The examples below show in-code creation for completeness; in production the create call belongs in setup, not in the request path.
 
 ## Installation
 
@@ -51,7 +51,7 @@ puts "Environment ID: #{environment.id}" # env_...
 # 1. Create the agent (reusable, versioned)
 agent = client.beta.agents.create(
   name: "Coding Assistant",
-  model: :"claude-opus-4-7",
+  model: :"claude-opus-4-8",
   system_: "You are a helpful coding assistant.",
   tools: [{type: "agent_toolset_20260401"}]
 )
@@ -260,7 +260,7 @@ client.beta.sessions.delete(session.id)
 # Agent declares MCP server (no auth here — auth goes in a vault)
 agent = client.beta.agents.create(
   name: "GitHub Assistant",
-  model: :"claude-opus-4-7",
+  model: :"claude-opus-4-8",
   mcp_servers: [
     {
       type: "url",

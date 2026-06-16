@@ -13,7 +13,7 @@ The SDK sets the `managed-agents-2026-04-01` beta header automatically on all `c
 ```python
 orchestrator = client.beta.agents.create(
     name="Engineering Lead",
-    model="{{OPUS_ID}}",
+    model="claude-opus-4-8",
     system="You coordinate engineering work. Delegate code review to the reviewer and test writing to the test agent.",
     tools=[{"type": "agent_toolset_20260401"}],
     multiagent={
@@ -96,3 +96,4 @@ The same pattern applies to `user.custom_tool_result`.
 - **Don't assume shared context.** Threads share the filesystem but not conversation history or tools. If the coordinator needs a subagent to act on something, it must say so in the delegated message (or write it to disk).
 - **Depth > 1 is ignored.** A subagent's own `multiagent` roster (if any) doesn't cascade — only the session's coordinator delegates.
 
+For per-language bindings beyond Python, refer to the Anthropic platform documentation (internet access required; not available in airgapped environments).
