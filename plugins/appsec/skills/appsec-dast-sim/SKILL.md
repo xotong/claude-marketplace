@@ -6,11 +6,12 @@ description: >
   and routes, walks every WSTG v4.2 test category, inspects relevant code (auth
   middleware, input handling, session logic, business rules), generates specific test
   probes (curl commands, payload examples), and reports findings grouped by severity.
-  Use when the user says: "DAST scan", "OWASP security review", "WSTG check",
-  "web security audit", "find injection vulnerabilities", "check auth security",
-  "security code review", "find XSS or SQLi", "check session handling",
-  "API security audit", "business logic vulnerabilities", "OWASP top 10 check".
-  Do NOT activate for general code review, unit testing, linting, or container scanning.
+  Use when the user asks for a design-time or code-based DAST simulation, OWASP
+  WSTG review, "web security audit", "find injection vulnerabilities", "check
+  auth security", "security code review", "find XSS or SQLi", "check session
+  handling", "API security audit", "business logic vulnerabilities", or "OWASP
+  top 10 check" without a running target. Do NOT activate for real Fortify DAST,
+  live DAST execution, general code review, unit testing, linting, or container scanning.
 ---
 
 # AppSec DAST Sim — OWASP WSTG v4.2
@@ -19,6 +20,11 @@ LLM-based Dynamic Application Security Testing simulation. Works entirely from t
 source tree — no running app, no scanner containers required. Walks the full OWASP
 Web Security Testing Guide v4.2 checklist and produces actionable findings with curl
 probes and remediation guidance.
+
+This skill is intentionally separate from `appsec-scan`. Use it to cover
+design-time WSTG gaps and logic issues that live scanners can miss. Do not use it
+as a local replacement for real Fortify DAST; real DAST still belongs in CI or a
+deployed test environment with scan settings, auth state, and target connectivity.
 
 WSTG quick reference: `reference/wstg-v42-checklist.md` (vendored locally).
 

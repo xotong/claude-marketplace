@@ -1,227 +1,102 @@
-# AppSec Scan — Update Guide
+# AppSec Scan Update Guide
 
-This guide explains how to keep `appsec-scan` in sync with your GitLab CI components.
+`appsec-scan` no longer vendors one shell runner per scanner as the primary
+source of truth. The skill resolves current Chronicle GitLab component templates
+at scan time, then uses `scripts/appsec_harness.py` to render local Docker runs.
 
----
+## What To Update
 
-## File structure
+### Chronicle changes a component script
 
-```
-skills/appsec-scan/
-├── SKILL.md                ← orchestration only — edit rarely (see "When to edit SKILL.md")
-├── UPDATE-GUIDE.md         ← this file
-└── scanners/
-    ├── fortify-python.sh   ← mirrors devops/ci-catalogue/fortify-scan-python3
-    ├── fortify-js.sh       ← mirrors devops/ci-catalogue/fortify-scan-js
-    ├── parasoft-gradle.sh  ← mirrors devops/ci-catalogue/parasoft-scan-gradle
-    ├── parasoft-maven.sh   ← mirrors devops/ci-catalogue/parasoft-scan-maven
-    ├── pylint.sh           ← mirrors devops/ci-catalogue/pylint
-    ├── eslint.sh           ← mirrors devops/ci-catalogue/eslint
-    ├── scantist-js.sh      ← mirrors devops/ci-catalogue/scantist-js-scan
-    ├── scantist-maven.sh   ← mirrors devops/ci-catalogue/scantist-maven-scan (post-Maven)
-    └── trivy.sh            ← mirrors devops/ci-catalogue/trivy-scan
-```
+Usually no marketplace change is required. Tenants pick up the change the next
+time the helper fetches the template from Chronicle.
 
-Each scanner file has a header block:
-```bash
-# Scanner      : <tool name>
-# CI component : <component path>@~latest
-# Last synced  : <date>
-# Image env var: <env var name>
-```
+If the component output format changes, update:
 
-This header is your change log for that scanner. Update `Last synced` every time you sync.
+- `scripts/appsec_harness.py` parser logic
+- `tests/test_appsec_harness.py` fixtures
+- `references/chronicle-components.yaml` artifact or input hints if needed
 
----
+### Chronicle adds a scanner component
 
-## Scenario 1 — CI component script changed
+Add one entry to `references/chronicle-components.yaml`:
 
-A CI component had its `script:` block updated (new flags, new steps, different commands).
+- `template_path`
+- `scanner`
+- `kind`
+- detector rules
+- input defaults
+- required env vars
 
-**Steps:**
+Add parser support only if the scanner emits a new report format.
 
-1. Open the corresponding `scanners/<name>.sh` file.
-2. Find the `# SCAN — mirrors the CI component script exactly` section.
-3. Replace the commands inside that section with the new CI component commands.
-4. If the component added `before_script` or `after_script` blocks, add them to
-   the SETUP section or the AFTER SCRIPT section respectively.
-5. Update the `# Last synced` header line to today's date.
-6. Commit: `git commit -m "sync: update <scanner> to match CI component change"`
+### Chronicle retires a scanner
 
-**Example — Fortify Python added a new `-python-path` flag:**
-```bash
-# Before (in fortify-python.sh SCAN section):
-sourceanalyzer -b "$APP_NAME" -debug-verbose -python-version 3 "$SOURCE_PATH"
+Remove or disable the registry entry. Do not leave stale default-enabled
+components in the registry.
 
-# After:
-sourceanalyzer -b "$APP_NAME" -debug-verbose -python-version 3 \
-  -python-path "$(python3 -c 'import sys; print(":".join(sys.path))')" \
-  "$SOURCE_PATH"
-```
+### A scanner needs different local behavior
 
----
+Prefer registry metadata first. Change Python only when behavior cannot be
+expressed as template path, inputs, detection rules, required env vars, or image
+override.
 
-## Scenario 2 — New language added to an existing scanner
+## Local Validation
 
-The CI team ships a new component variant for a language that wasn't supported before
-(e.g. Fortify for Go, Scantist for Gradle).
-
-**Steps:**
-
-1. Create a new file in `scanners/` following the naming pattern:
-   `<scanner>-<language>.sh` (e.g. `fortify-go.sh`, `scantist-gradle.sh`)
-
-2. Use an existing scanner file as a template. Copy the header block and update:
-   - `Scanner`, `Language`, `CI component`, `Last synced`, `Image env var`
-
-3. Fill in the SETUP and SCAN sections with the CI component's script commands.
-
-4. Open `SKILL.md` and add a detection block in **Step 3** for the new scanner.
-   Copy an existing block (e.g. the Fortify Python block) and adjust:
-   - The detection condition (`HAS_GO`, `HAS_GRADLE`, etc.)
-   - The image env var name
-   - The scanner file name
-   - The PID variable name
-
-   **Example — adding Fortify Go:**
-   ```bash
-   ### Fortify SAST — Go
-   # Applies when: Go project detected. Runner: scanners/fortify-go.sh.
-   if $HAS_GO && [ -n "$FORTIFY_GO_IMAGE" ]; then
-     echo "[Fortify/Go] Starting in background..."
-     docker run --rm \
-       -v "$PWD:/workspace" \
-       -v "$SCANNERS_DIR/fortify-go.sh:/runner.sh:ro" \
-       -w /workspace \
-       -e APP_NAME="$APP_NAME" \
-       -e SOURCE_PATH="$SOURCE_PATH" \
-       "${APPSEC_REGISTRY}/${FORTIFY_GO_IMAGE}" \
-       bash /runner.sh > .appsec-results/fortify-go.log 2>&1 &
-     FORTIFY_GO_PID=$!
-   fi
-   ```
-
-5. Add the new PID to the `wait` loop in Step 3 of SKILL.md:
-   ```bash
-   for pid_var in FORTIFY_PY_PID FORTIFY_JS_PID FORTIFY_GO_PID ...
-   ```
-
-6. Add the new env var to the Prerequisites table in SKILL.md.
-
-7. If the new scanner produces output, add a parse block in Step 4 of SKILL.md.
-
-8. Commit: `git commit -m "feat: add Fortify Go scanner to appsec-scan"`
-
----
-
-## Scenario 3 — Scanner image name or tag changed
-
-The Platform Team renamed or retagged a scanner image.
-
-**Steps:**
-
-1. Update the env var default in the Prerequisites table in `SKILL.md`.
-2. No change needed to the scanner files — they use env vars, not hardcoded names.
-3. Remind developers to update their shell profile export:
-   ```bash
-   export FORTIFY_PY_IMAGE="fortify-sast-python:v2-jdk21"
-   ```
-
----
-
-## Scenario 4 — New setup step required before scanning
-
-The CI component now requires a build step before the scan
-(e.g. Python Fortify needs `uv sync`, Go Fortify needs `go build`).
-
-**Steps:**
-
-1. Open the relevant `scanners/<name>.sh`.
-2. Add the step to the `# SETUP` section — the block that runs before the SCAN section.
-3. Document WHY the setup step is needed with a comment.
-4. Update `Last synced`.
-
-**Example — Python Fortify adding uv sync (already done):**
-```bash
-# SETUP — sync dependencies for full data flow analysis
-if command -v uv >/dev/null 2>&1; then
-  uv sync --all-extras 2>/dev/null || true
-elif [ -f requirements.txt ]; then
-  pip install -r requirements.txt --quiet 2>/dev/null || true
-fi
-```
-
----
-
-## Scenario 5 — Scanner removed from CI pipeline
-
-The CI team retires a scanner entirely.
-
-**Steps:**
-
-1. Remove the `scanners/<name>.sh` file.
-2. Remove the corresponding detection block from SKILL.md Step 3.
-3. Remove the PID variable from the `wait` loop.
-4. Remove the parse block from SKILL.md Step 4.
-5. Remove the env var from the Prerequisites table.
-6. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
-
----
-
-## When to edit SKILL.md vs. scanner files
-
-| Change | Edit |
-|---|---|
-| CI component script changed | `scanners/<name>.sh` only |
-| New language variant for existing scanner | New `scanners/<name>-<lang>.sh` + one block in SKILL.md |
-| New scanner entirely | New `scanners/<name>.sh` + detection + wait + parse in SKILL.md |
-| Scanner image renamed/retagged | SKILL.md Prerequisites table only |
-| New setup step before scan | `scanners/<name>.sh` SETUP section only |
-| Scanner retired | Remove scanner file + remove blocks from SKILL.md |
-
-**Never embed scanner commands directly in SKILL.md.** All commands go in `scanners/`.
-
----
-
-## Testing your changes locally
-
-Before committing a scanner update, verify it works end-to-end:
+Run without Docker or credentials:
 
 ```bash
-# 1. Set required env vars
-export APPSEC_REGISTRY="registry.company.com/security"
-export FORTIFY_PY_IMAGE="fortify-sast:latest-jdk17"
-export DEVSECOPS_IMPORT_URL="https://dtp.company.com"
-
-# 2. Resolve scanner dir
-SKILL_DIR="path/to/skills/appsec-scan"
-SCANNERS_DIR="$SKILL_DIR/scanners"
-
-# 3. Run just the updated scanner in isolation
-docker run --rm \
-  -v "$PWD:/workspace" \
-  -v "$SCANNERS_DIR/fortify-python.sh:/runner.sh:ro" \
-  -w /workspace \
-  -e APP_NAME="test-app" \
-  -e SOURCE_PATH="src" \
-  "${APPSEC_REGISTRY}/${FORTIFY_PY_IMAGE}" \
-  bash /runner.sh
-
-# 4. Check the output
-ls -la .appsec-results/
+python3 -m py_compile plugins/appsec/skills/appsec-scan/scripts/appsec_harness.py
+python3 -m pytest plugins/appsec/skills/appsec-scan/tests
 ```
 
-If the isolated run passes, run the full `appsec-scan` skill to confirm the
-orchestration still works end-to-end.
+Run resolution against a local Chronicle checkout:
 
----
+```bash
+export APPSEC_CHRONICLE_LOCAL_DIR=/path/to/chronicle
+python3 plugins/appsec/skills/appsec-scan/scripts/appsec_harness.py \
+  --project-dir /path/to/project \
+  run --dry-run --include-unconfigured
+```
 
-## Quarterly sync reminder
+Run remote resolution with a pinned Chronicle commit:
 
-Review all scanner files against their CI components on the first Monday of
-March, June, September, and December. Check for:
+```bash
+export APPSEC_COMPONENT_REF=<chronicle-commit-sha>
+export APPSEC_COMPONENT_RAW_BASE="https://gitlab.example.com/group/chronicle/-/raw/{ref}"
+export APPSEC_ALLOWED_COMPONENT_HOSTS=gitlab.example.com
+python3 plugins/appsec/skills/appsec-scan/scripts/appsec_harness.py \
+  --project-dir /path/to/project \
+  resolve
+```
 
-- New flags added to the component's script block
-- Changes to the gate conditions (severity thresholds)
-- New `before_script` or `after_script` steps
-- Image tag updates
+Run a real local scan only when scanner images, Docker, network, and credentials
+are available:
+
+```bash
+python3 plugins/appsec/skills/appsec-scan/scripts/appsec_harness.py \
+  --project-dir /path/to/project \
+  run --gate ci
+```
+
+Production validation should check these failure modes:
+
+- missing required scanner environment variables create `scan-coverage.json` and
+  high-severity configuration findings
+- malformed scanner reports fail the CI gate
+- remote templates without a pinned commit SHA are refused unless explicitly
+  allowed for development
+- raw GitLab URL mode requires `{ref}` in `APPSEC_COMPONENT_RAW_BASE`
+- stale cache fallback requires `--allow-stale-cache`
+- stale cache files require matching metadata and SHA-256
+- real scanner runs require digest-pinned images unless mutable image risk is
+  explicitly accepted
+- scanner reports must be declared as artifacts and collected under
+  `.appsec-results/reports/<component>/`
+- `prepare-branch` refuses a dirty worktree unless `--allow-dirty` is supplied
+
+## Legacy Runners
+
+The `scanners/` shell scripts are retained for compatibility while teams migrate
+to the Chronicle resolver. Do not add new scanner logic there unless a tenant
+still depends on the legacy path.

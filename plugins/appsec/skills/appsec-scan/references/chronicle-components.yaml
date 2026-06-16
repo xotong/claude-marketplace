@@ -1,0 +1,195 @@
+defaults:
+  ref_env: APPSEC_COMPONENT_REF
+  ref: main
+  output_dir: .appsec-results
+  cache_dir: ${HOME}/.cache/claude-appsec/component-cache
+  source_path: src
+  ci_gate:
+    severities: [CRITICAL, HIGH]
+    include_fatal_error: true
+
+components:
+  fortify-python:
+    template_path: fortify-python/templates/fortify-python.yml
+    kind: sast
+    scanner: fortify
+    default_enabled: true
+    detect:
+      any_exists: [requirements.txt, pyproject.toml, setup.py]
+    inputs:
+      source-path: "${SOURCE_PATH:-src}"
+      upload-srm-option: "false"
+      application-name: "${FORTIFY_APPLICATION_NAME:-$CI_PROJECT_NAME}"
+      fortify-application-name: "${FORTIFY_APPLICATION_NAME:-$CI_PROJECT_ROOT_NAMESPACE}"
+      fortify-application-version: "${FORTIFY_APPLICATION_VERSION:-$CI_PROJECT_NAME}"
+      fortify-server: "${FORTIFY_SERVER:-https://FORTIFY_SERVER_URL}"
+    required_env: [CI_TOKEN, ANALYSIS_DOWNLOAD_TOKEN, FORTIFY_SERVER]
+
+  fortify-js:
+    template_path: fortify-js/templates/fortify-js.yml
+    kind: sast
+    scanner: fortify
+    default_enabled: true
+    detect:
+      any_exists: [package.json]
+    inputs:
+      source-path: "${SOURCE_PATH:-src}"
+      upload-srm-option: "false"
+      application-name: "${FORTIFY_APPLICATION_NAME:-$CI_PROJECT_NAME}"
+      fortify-application-name: "${FORTIFY_APPLICATION_NAME:-$CI_PROJECT_ROOT_NAMESPACE}"
+      fortify-application-version: "${FORTIFY_APPLICATION_VERSION:-$CI_PROJECT_NAME}"
+      fortify-server: "${FORTIFY_SERVER:-https://FORTIFY_SERVER_URL}"
+    required_env: [CI_TOKEN, ANALYSIS_DOWNLOAD_TOKEN, FORTIFY_SERVER]
+
+  fortify-sca:
+    template_path: fortify-sca/templates/fortify-sca.yml
+    kind: sast
+    scanner: fortify
+    default_enabled: false
+    enable_env: APPSEC_ENABLE_FORTIFY_SCA
+    detect:
+      any_exists: [pom.xml, build.gradle, build.gradle.kts, package.json, requirements.txt, pyproject.toml]
+    inputs:
+      source-path: "${SOURCE_PATH:-src}"
+      upload-srm-option: "false"
+      fortify-application-name: "${FORTIFY_APPLICATION_NAME:-$CI_PROJECT_ROOT_NAMESPACE}"
+      fortify-application-version: "${FORTIFY_APPLICATION_VERSION:-$CI_PROJECT_NAME}"
+      fortify-server: "${FORTIFY_SERVER:-https://FORTIFY_SERVER_URL}"
+    required_env: [CI_TOKEN, ANALYSIS_DOWNLOAD_TOKEN, FORTIFY_SERVER]
+
+  parasoft-maven:
+    template_path: parasoft-maven/templates/parasoft-maven.yml
+    kind: sast
+    scanner: parasoft
+    default_enabled: true
+    detect:
+      all_exists: [pom.xml]
+      none_exists: [build.gradle, build.gradle.kts]
+    inputs:
+      maven-settings-file: "${MAVEN_SETTINGS_XML:-$CI_PROJECT_DIR/.m2/settings.xml}"
+      git-project-url: "${CI_PROJECT_URL:-local}"
+      git-workspace-dir: "$CI_PROJECT_DIR"
+      git-branch-name: "${BRANCH:-$CI_COMMIT_REF_NAME}"
+      upload-srm-option: "false"
+
+  parasoft-gradle:
+    template_path: parasoft-gradle/templates/parasoft-gradle.yml
+    kind: sast
+    scanner: parasoft
+    default_enabled: true
+    detect:
+      any_exists: [build.gradle, build.gradle.kts]
+    inputs:
+      git-project-url: "${CI_PROJECT_URL:-local}"
+      git-workspace-dir: "$CI_PROJECT_DIR"
+      git-branch-name: "${BRANCH:-$CI_COMMIT_REF_NAME}"
+      upload-srm-option: "false"
+
+  pylint:
+    template_path: pylint/templates/pylint.yml
+    kind: lint
+    scanner: pylint
+    default_enabled: true
+    detect:
+      any_exists: [requirements.txt, pyproject.toml, setup.py]
+    inputs:
+      source: "${PYLINT_SOURCE:-$CI_PROJECT_DIR/.}"
+      scan-options: "${PYLINT_OPTIONS:-}"
+      upload-srm-option: "false"
+
+  eslint:
+    template_path: eslint/templates/eslint.yml
+    kind: lint
+    scanner: eslint
+    default_enabled: true
+    detect:
+      any_exists: [package.json]
+    inputs:
+      source: "${ESLINT_SOURCE:-./}"
+      config-file-name: "${ESLINT_CONFIG_FILE:-.eslintrc.js}"
+      scan-options: "${ESLINT_OPTIONS:-}"
+      upload-srm-option: "false"
+
+  scantist:
+    template_path: scantist/templates/scantist.yml
+    kind: sca
+    scanner: scantist
+    default_enabled: false
+    enable_env: APPSEC_ENABLE_SCANTIST_GENERIC
+    detect:
+      any_exists: [pom.xml, build.gradle, build.gradle.kts, package.json]
+    inputs:
+      source: "${SCANTIST_SOURCE:-./}"
+      scan-options: "${SCANTIST_OPTIONS:-}"
+      upload-srm-option: "false"
+    required_env: [DEVSECOPS_TOKEN]
+
+  scantist-js:
+    template_path: scantist-js/templates/scantist-js.yml
+    kind: sca
+    scanner: scantist
+    default_enabled: true
+    detect:
+      any_exists: [package.json]
+      none_exists: [pnpm-workspace.yaml, lerna.json, nx.json]
+    inputs:
+      source: "${SCANTIST_SOURCE:-./}"
+      scan-options: "${SCANTIST_OPTIONS:-}"
+      upload-srm-option: "false"
+    required_env: [DEVSECOPS_TOKEN]
+
+  scantist-js-mono:
+    template_path: scantist-js-mono/templates/scantist-js-mono.yml
+    kind: sca
+    scanner: scantist
+    default_enabled: true
+    detect:
+      any_exists: [pnpm-workspace.yaml, lerna.json, nx.json]
+    inputs:
+      source: "${SCANTIST_SOURCE:-./}"
+      scan-options: "${SCANTIST_OPTIONS:-}"
+      upload-srm-option: "false"
+    required_env: [DEVSECOPS_TOKEN]
+
+  scantist-maven:
+    template_path: scantist-maven/templates/scantist-maven.yml
+    kind: sca
+    scanner: scantist
+    default_enabled: true
+    detect:
+      all_exists: [pom.xml]
+      none_exists: [build.gradle, build.gradle.kts]
+    inputs:
+      source: "${SCANTIST_SOURCE:-./}"
+      scan-options: "${SCANTIST_OPTIONS:-}"
+      upload-srm-option: "false"
+    required_env: [DEVSECOPS_TOKEN]
+
+  scantist-gradle:
+    template_path: scantist-gradle/templates/scantist-gradle.yml
+    kind: sca
+    scanner: scantist
+    default_enabled: true
+    detect:
+      any_exists: [build.gradle, build.gradle.kts]
+    inputs:
+      source: "${SCANTIST_SOURCE:-./}"
+      scan-options: "${SCANTIST_OPTIONS:-}"
+      upload-srm-option: "false"
+    required_env: [DEVSECOPS_TOKEN]
+
+  prisma-cloud:
+    template_path: prisma-cloud/templates/prisma-cloud.yml
+    kind: container
+    scanner: prisma-cloud
+    default_enabled: true
+    detect:
+      env_any_set: [JFROG_REPO]
+    inputs:
+      prisma-cloud-url: "${PRISMA_CLOUD_URL:-}"
+      jfrog-repo: "${JFROG_REPO:-}"
+      jfrog-image-name: "${JFROG_IMAGE_NAME:-$CI_PROJECT_NAME}"
+      jfrog-image-tag: "${JFROG_IMAGE_TAG:-$CI_COMMIT_SHORT_SHA}"
+      scan-report-name: prisma-cloud-scan
+      upload-srm-option: "false"
+    required_env: [PRISMA_CLOUD_URL, PRISMA_CLOUD_USER, PRISMA_CLOUD_PASSWORD, PRISMA_CLOUD_AUTH, JFROG_USER, JFROG_PASSWORD]
