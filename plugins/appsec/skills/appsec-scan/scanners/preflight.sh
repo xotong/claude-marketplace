@@ -14,6 +14,12 @@ if [ -n "${SCANTIST_IMAGE:-}" ]; then
     ERRORS+=("DEVSECOPS_IMPORT_URL must be set when SCANTIST_IMAGE is configured (needed for JAR download)")
 fi
 
+if [ -n "${CATALOG_AUTH_ENV:-}" ]; then
+  catalog_auth_value="$(printenv "$CATALOG_AUTH_ENV" 2>/dev/null || true)"
+  [ -z "$catalog_auth_value" ] && \
+    ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by the active profile's catalog_auth) is not set")
+fi
+
 # Secret Detection derives its image from APPSEC_REGISTRY when no explicit image
 # is set, so it is always available as long as Docker can pull the configured
 # registry path. Legacy scanner images remain opt-in.
