@@ -10,6 +10,13 @@ This guide explains how to keep `appsec-scan` in sync with your GitLab CI compon
 skills/appsec-scan/
 ├── SKILL.md                ← orchestration only — edit rarely (see "When to edit SKILL.md")
 ├── UPDATE-GUIDE.md         ← this file
+├── config/
+│   ├── scanner-preferences.yaml
+│   └── PREFERENCES.md
+├── reference/
+│   └── catalog/
+├── scripts/
+│   └── catalog.sh
 └── scanners/
     ├── fortify-python.sh   ← mirrors devops/ci-catalogue/fortify-scan-python3
     ├── fortify-js.sh       ← mirrors devops/ci-catalogue/fortify-scan-js
@@ -19,6 +26,9 @@ skills/appsec-scan/
     ├── eslint.sh           ← mirrors devops/ci-catalogue/eslint
     ├── scantist-js.sh      ← mirrors devops/ci-catalogue/scantist-js-scan
     ├── scantist-maven.sh   ← mirrors devops/ci-catalogue/scantist-maven-scan (post-Maven)
+    ├── gitlab-sast.sh
+    ├── gitlab-dependency-scanning.sh
+    ├── gitlab-container-scanning.sh
     ├── secret-detection.sh ← mirrors gitlab.com/components/secret-detection
     └── trivy.sh            ← mirrors devops/ci-catalogue/trivy-scan
 ```
@@ -167,6 +177,22 @@ The CI team retires a scanner entirely.
 5. Remove the env var from the Prerequisites table.
 6. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
 
+## Scenario 6 — Refreshing vendored catalog snapshots
+
+Quarterly or after a component release, run:
+
+```bash
+bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh resolve https://gitlab.com <component-path> /tmp/catalog-refresh
+```
+
+for each of: `components/sast/sast`, `components/secret-detection/secret-detection`, `components/dependency-scanning/main`, `components/container-scanning/container-scanning`
+
+Copy the new `<tag>/template.yml` + `README.md` from the refresh dir into `reference/catalog/<component-path>/<tag>/` (keep prior tag dirs).
+
+Run `check-drift` for each component against its runner script and update the runner's `# Last synced` header.
+
+Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
+
 ---
 
 ## When to edit SKILL.md vs. scanner files
@@ -249,3 +275,5 @@ March, June, September, and December. Check for:
 - Changes to the gate conditions (severity thresholds)
 - New `before_script` or `after_script` steps
 - Image tag updates
+
+Drift detection now runs automatically at every scan run via `scripts/catalog.sh check-drift`; the quarterly task is refreshing snapshots and `Last-synced` headers (Scenario 6).

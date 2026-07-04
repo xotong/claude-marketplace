@@ -1,7 +1,7 @@
 {
   "name": "appsec",
-  "version": "1.0.0",
-  "description": "2 security scanning skills: appsec-scan (container-based CI-mirror running Fortify SAST, Parasoft, Pylint, ESLint, Scantist SCA, Trivy, and GitLab Secret Detection — same images as your GitLab pipeline) and appsec-dast-sim (LLM-based DAST following OWASP WSTG v4.2 — no running app required).",
+  "version": "2.0.0",
+  "description": "2 security scanning skills: appsec-scan (catalog-driven CI mirror — admin-managed scanner preference profiles, GitLab CI/CD Catalog component versions resolved every run, local runs of Fortify SAST, GitLab SAST/Dependency-Scanning-SBOM/Secret-Detection/Container-Scanning plus Parasoft, Pylint, ESLint, Scantist, Trivy; approval-gated fix loop and a guided Vulnerability Report triage plan) and appsec-dast-sim (LLM-based DAST following OWASP WSTG v4.2 — no running app required).",
   "author": { "name": "Platform Team" },
-  "keywords": ["security", "appsec", "sast", "dast", "fortify", "scantist", "trivy", "secret-detection", "wstg"]
+  "keywords": ["security", "appsec", "sast", "dast", "fortify", "scantist", "trivy", "secret-detection", "wstg", "catalog", "profiles", "triage", "gitlab-sast", "dependency-scanning", "container-scanning"]
 }
