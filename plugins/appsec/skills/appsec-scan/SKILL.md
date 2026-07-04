@@ -36,7 +36,10 @@ skills/appsec-scan/
 │   ├── scanner-preferences.yaml  ← admin-owned category→scanner profiles
 │   └── PREFERENCES.md            ← schema + switching guide
 ├── scripts/
-│   └── catalog.sh            ← CI/CD Catalog resolver (tags, template, README, drift)
+│   ├── catalog.sh            ← CI/CD Catalog resolver (tags, template, README, drift)
+│   ├── detect-runtime.sh     ← picks docker or podman
+│   ├── resolve-jq.sh         ← host jq, or fetch from settings.jq.install_url
+│   └── container-target.sh   ← builds/saves a local image, or resolves CS_IMAGE
 ├── scanners/                 ← one runner per scanner; each mirrors one CI component
 │   ├── fortify-python.sh  fortify-js.sh
 │   ├── gitlab-sast.sh     gitlab-dependency-scanning.sh  gitlab-container-scanning.sh
@@ -131,39 +134,55 @@ fi
 
 ---
 
-## Step 1.5 — Load scanner preferences (Claude reads the YAML)
+## Step 1.5 — Load scanner preferences and detect runtime
 
 Read `config/scanner-preferences.yaml` from `$SKILL_DIR` with the Read tool and
-resolve the active profile yourself — do not shell out to a YAML parser:
+resolve it yourself — do not shell out to a YAML parser. Everything the run
+needs is declared in that file; do not infer endpoints or images.
 
-1. Active profile = `$APPSEC_PROFILE` if set, else the file's `default_profile`.
-   If the profile does not exist, stop and tell the user which profiles are
-   available.
-2. From the active profile extract: `gitlab_instance`, `catalog_auth`, each
-   category's `components` / `runners` / `enabled`, and the
-   `additional_scanners` keys.
-3. Export the results as shell variables for the following steps:
+1. **Global `settings:`** → export: `APPSEC_AIRGAP` (from `airgap`),
+   `CONTAINER_RUNTIME` (from `container_runtime`), `JQ_INSTALL_URL` (from
+   `jq.install_url`), `CATALOG_MODE` (from `catalog.mode`), `CATALOG_AUTH_ENV`
+   (from `catalog.auth_token_env`), and the container-registry credential env
+   var *names* (`container_registry.user_env` / `password_env`).
+2. **Active profile** = `$APPSEC_PROFILE` if set, else `default_profile`. If it
+   does not exist, stop and list the available profiles. If `APPSEC_AIRGAP=true`
+   and the profile is `public-test`, stop — that profile targets gitlab.com.
+3. **Per category** read `component`, `image`, `runner`, `enabled`. The `image`
+   is what actually runs — set each analyzer's `*_IMAGE` variable from it (an
+   explicit `*_IMAGE` env var override still wins). Set one `RUN_*` flag per
+   enabled runner.
 
 ```bash
-APPSEC_PROFILE="${APPSEC_PROFILE:-company}"   # ← replace with resolved profile name
-GITLAB_INSTANCE="https://gitlab.company.com"  # ← from profile
-CATALOG_AUTH_ENV=""                            # ← env var NAME from catalog_auth, or empty for none
+APPSEC_PROFILE="${APPSEC_PROFILE:-company}"   # ← resolved profile name
+APPSEC_AIRGAP="true"                           # ← settings.airgap
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-auto}" # ← settings.container_runtime
+GITLAB_INSTANCE="https://gitlab.internal.example"  # ← profile.gitlab_instance
+CATALOG_MODE="online"                          # ← settings.catalog.mode
+CATALOG_AUTH_ENV=""                            # ← settings.catalog.auth_token_env (env var NAME)
+JQ_INSTALL_URL=""                              # ← settings.jq.install_url
+CS_USER_ENV="CS_REGISTRY_USER"; CS_PASS_ENV="CS_REGISTRY_PASSWORD"  # ← settings.container_registry
 
-# One RUN_* flag per category runner + one per additional scanner, from the profile:
+# Analyzer images come from each category's image: (env override wins)
+SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-jfrog.internal/security/secrets:7}"
+GITLAB_SAST_IMAGE="${GITLAB_SAST_IMAGE:-jfrog.internal/security/semgrep:6}"
+GITLAB_DS_IMAGE="${GITLAB_DS_IMAGE:-jfrog.internal/security/dependency-scanning:2}"
+GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-jfrog.internal/security/container-scanning:8}"
+
+# One RUN_* flag per enabled runner (category runners + additional_scanners):
 RUN_FORTIFY=false; RUN_GITLAB_SAST=false; RUN_GITLAB_DS=false
 RUN_SECRET_DETECTION=false; RUN_GITLAB_CS=false
 RUN_PARASOFT=false; RUN_PYLINT=false; RUN_ESLINT=false; RUN_SCANTIST=false; RUN_TRIVY=false
-# Set each to true when the active profile's category is enabled and lists the
-# matching runner (e.g. sast → fortify-*.sh ⇒ RUN_FORTIFY, sast → gitlab-sast.sh
-# ⇒ RUN_GITLAB_SAST), or when the additional_scanners key is present.
 
-echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE"
+# Detect the container runtime (docker or podman) — hard requirement.
+RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
+  echo "ERROR: no container runtime (docker or podman) found"; return 1; }
+
+echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE   Runtime: $RUNTIME   Airgap: $APPSEC_AIRGAP"
 ```
 
-4. Image prefixes for the GitLab analyzers default per profile:
-   `public-test` → `registry.gitlab.com/security-products`;
-   `company` → `$APPSEC_REGISTRY`. Explicit `*_IMAGE_PREFIX`/`*_IMAGE` env vars
-   always win.
+Explicit `image:` values are what run (pinned/safe for weak self-hosted models);
+Step 2.5 resolves `component:` only for its usage guide and a drift advisory.
 
 ---
 
@@ -173,7 +192,9 @@ Runs `scanners/preflight.sh` in its own process — a real shell script that is
 shellchecked and can be run standalone.
 
 ```bash
-CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" bash "$SCANNERS_DIR/preflight.sh" || return 1
+CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" APPSEC_AIRGAP="$APPSEC_AIRGAP" \
+  APPSEC_PROFILE="$APPSEC_PROFILE" CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
+  bash "$SCANNERS_DIR/preflight.sh" || return 1
 ```
 
 ---
@@ -182,8 +203,9 @@ CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" bash "$SCANNERS_DIR/preflight.sh" || return
 
 For every **enabled** category component in the active profile, resolve the
 component against the catalog and check drift. `scripts/catalog.sh` is the only
-thing that talks to the network, and only to `$GITLAB_INSTANCE`; when offline it
-falls back to the vendored snapshots in `reference/catalog/` and says so.
+thing that talks to the network, and only to `$GITLAB_INSTANCE`. When
+`CATALOG_MODE=offline` (or the fetch fails) it uses the vendored snapshots in
+`reference/catalog/` and says so — the scan still runs.
 
 ```bash
 CATALOG_CACHE=".appsec-results/catalog"
@@ -194,6 +216,13 @@ mkdir -p "$CATALOG_CACHE"
 bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "components/sast/sast" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
 bash "$SCRIPTS_DIR/catalog.sh" check-drift "components/sast/sast" "$CATALOG_CACHE" "$SCANNERS_DIR/gitlab-sast.sh"
 ```
+
+If `CATALOG_MODE=offline`, skip the `resolve` network call and read straight
+from `reference/catalog/`. If `resolve` reports an authentication failure
+(HTTP 401/403), tell the user: anonymous catalog reads are disabled on this
+instance — create a `read_api` Personal Access Token, put it in an env var, and
+set `settings.catalog.auth_token_env` to that var's name; meanwhile the run
+continues on the vendored snapshot.
 
 Then present the user a resolution table before scanning:
 
@@ -221,22 +250,9 @@ SOURCE_PATH="${SOURCE_PATH:-src}"
 CI_PROJECT_DIR="${CI_PROJECT_DIR:-$PWD}"
 APPSEC_REGISTRY="${APPSEC_REGISTRY:-registry.company.com/security}"
 
-# GitLab analyzer images — prefix per profile (Step 1.5), tag from Step 2.5:
-GITLAB_ANALYZER_PREFIX_DEFAULT="registry.gitlab.com/security-products"
-[ "$APPSEC_PROFILE" = "company" ] && GITLAB_ANALYZER_PREFIX_DEFAULT="$APPSEC_REGISTRY"
-SECRET_DETECTION_IMAGE_PREFIX="${SECRET_DETECTION_IMAGE_PREFIX:-$GITLAB_ANALYZER_PREFIX_DEFAULT}"
-SECRET_DETECTION_IMAGE_TAG="${SECRET_DETECTION_IMAGE_TAG:-7}"          # ← catalog-resolved when online
-SECRET_DETECTION_IMAGE_SUFFIX="${SECRET_DETECTION_IMAGE_SUFFIX:-}"
-SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-${SECRET_DETECTION_IMAGE_PREFIX}/secrets:${SECRET_DETECTION_IMAGE_TAG}${SECRET_DETECTION_IMAGE_SUFFIX}}"
-GITLAB_SAST_IMAGE_PREFIX="${GITLAB_SAST_IMAGE_PREFIX:-$GITLAB_ANALYZER_PREFIX_DEFAULT}"
-GITLAB_SAST_IMAGE_TAG="${GITLAB_SAST_IMAGE_TAG:-6}"                    # ← catalog-resolved when online
-GITLAB_SAST_IMAGE="${GITLAB_SAST_IMAGE:-${GITLAB_SAST_IMAGE_PREFIX}/semgrep:${GITLAB_SAST_IMAGE_TAG}}"
-GITLAB_DS_IMAGE_PREFIX="${GITLAB_DS_IMAGE_PREFIX:-$GITLAB_ANALYZER_PREFIX_DEFAULT}"
-GITLAB_DS_IMAGE_TAG="${GITLAB_DS_IMAGE_TAG:-2}"                        # ← catalog-resolved when online
-GITLAB_DS_IMAGE="${GITLAB_DS_IMAGE:-${GITLAB_DS_IMAGE_PREFIX}/dependency-scanning:${GITLAB_DS_IMAGE_TAG}}"
-GITLAB_CS_IMAGE_PREFIX="${GITLAB_CS_IMAGE_PREFIX:-$GITLAB_ANALYZER_PREFIX_DEFAULT}"
-GITLAB_CS_IMAGE_TAG="${GITLAB_CS_IMAGE_TAG:-8}"                        # ← catalog-resolved when online
-GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-${GITLAB_CS_IMAGE_PREFIX}/container-scanning:${GITLAB_CS_IMAGE_TAG}}"
+# Analyzer images (SECRET_DETECTION_IMAGE, GITLAB_SAST_IMAGE, GITLAB_DS_IMAGE,
+# GITLAB_CS_IMAGE) were set from each category's image: in Step 1.5. The Step 2.5
+# drift advisory tells you when the catalog moved ahead of a pinned image.
 
 FORTIFY_PY_PID=""; FORTIFY_JS_PID=""; PYLINT_PID=""; ESLINT_PID=""; SCANTIST_JS_PID=""
 SECRET_DETECTION_PID=""; GITLAB_SAST_PID=""; GITLAB_DS_PID=""; GITLAB_CS_PID=""
@@ -277,7 +293,7 @@ sequential ones.
 ```bash
 if $RUN_FORTIFY && $HAS_REQUIREMENTS && [ -n "${FORTIFY_PY_IMAGE:-}" ]; then
   echo "[Fortify/Python] Starting in background..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/fortify-python.sh:/runner.sh:ro" \
     -w /workspace \
@@ -295,7 +311,7 @@ fi
 ```bash
 if $RUN_FORTIFY && $HAS_PACKAGE_JSON && [ -n "${FORTIFY_JS_IMAGE:-}" ]; then
   echo "[Fortify/JS] Starting in background..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/fortify-js.sh:/runner.sh:ro" \
     -w /workspace \
@@ -314,9 +330,9 @@ Language-agnostic. Runner: `scanners/gitlab-sast.sh`.*
 ```bash
 if $RUN_GITLAB_SAST && [ -n "${GITLAB_SAST_IMAGE:-}" ]; then
   echo "[GitLab SAST] Pulling ${GITLAB_SAST_IMAGE}..."
-  if docker pull "${GITLAB_SAST_IMAGE}"; then
+  if "$RUNTIME" pull "${GITLAB_SAST_IMAGE}"; then
     echo "[GitLab SAST] Starting in background..."
-    docker run --rm \
+    "$RUNTIME" run --rm \
       --entrypoint "" \
       -v "$PWD:/workspace" \
       -v "$SCANNERS_DIR/gitlab-sast.sh:/runner.sh:ro" \
@@ -340,9 +356,9 @@ poetry.lock, pip-compile output, …). Runner: `scanners/gitlab-dependency-scann
 ```bash
 if $RUN_GITLAB_DS && [ -n "${GITLAB_DS_IMAGE:-}" ]; then
   echo "[GitLab DS] Pulling ${GITLAB_DS_IMAGE}..."
-  if docker pull "${GITLAB_DS_IMAGE}"; then
+  if "$RUNTIME" pull "${GITLAB_DS_IMAGE}"; then
     echo "[GitLab DS] Starting in background..."
-    docker run --rm \
+    "$RUNTIME" run --rm \
       --entrypoint "" \
       -v "$PWD:/workspace" \
       -v "$SCANNERS_DIR/gitlab-dependency-scanning.sh:/runner.sh:ro" \
@@ -370,9 +386,9 @@ image shape and `/analyzer run` script.*
 ```bash
 if $RUN_SECRET_DETECTION && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -n "${SECRET_DETECTION_IMAGE:-}" ]; then
   echo "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
-  if docker pull "${SECRET_DETECTION_IMAGE}"; then
+  if "$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"; then
     echo "[Secret Detection] Starting in background..."
-    docker run --rm \
+    "$RUNTIME" run --rm \
       --entrypoint "" \
       -v "$PWD:/workspace" \
       -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" \
@@ -392,33 +408,57 @@ fi
 ```
 
 ### GitLab Container Scanning (GTCS)
-*Category: container_scanning. Scans the image named by `CS_IMAGE` (or
-`CI_APPLICATION_REPOSITORY` + `CI_APPLICATION_TAG`). Runner:
-`scanners/gitlab-container-scanning.sh`.*
+*Category: container_scanning. Runner: `scanners/gitlab-container-scanning.sh`.
+Sequential (it builds/saves an image). GTCS is **registry-only**, so the target
+is resolved by `scripts/container-target.sh`: a registry image named by
+`CS_IMAGE` runs the real `gtcs scan`; otherwise a local `Dockerfile` is built,
+saved to a tarball, and scanned with the analyzer image's bundled Trivy — fully
+offline, no registry, no socket.*
 
 ```bash
-if $RUN_GITLAB_CS && [ -n "${CS_IMAGE:-}${CI_APPLICATION_REPOSITORY:-}" ] && [ -n "${GITLAB_CS_IMAGE:-}" ]; then
-  echo "[GitLab CS] Pulling ${GITLAB_CS_IMAGE}..."
-  if docker pull "${GITLAB_CS_IMAGE}"; then
-    echo "[GitLab CS] Starting in background..."
-    docker run --rm \
-      --entrypoint "" \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -v "$PWD:/workspace" \
-      -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
-      -w /workspace \
-      -e CI_PROJECT_DIR="/workspace" \
-      -e CS_IMAGE="${CS_IMAGE:-}" \
-      -e CI_APPLICATION_REPOSITORY="${CI_APPLICATION_REPOSITORY:-}" \
-      -e CI_APPLICATION_TAG="${CI_APPLICATION_TAG:-}" \
-      "${GITLAB_CS_IMAGE}" \
-      sh /runner.sh > .appsec-results/gitlab-cs.log 2>&1 &
-    GITLAB_CS_PID=$!
-  else
-    echo "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
-  fi
-elif $RUN_GITLAB_CS; then
-  echo "[GitLab CS] Skipped — set CS_IMAGE=<image:tag> to scan a container image"
+if $RUN_GITLAB_CS && [ -n "${GITLAB_CS_IMAGE:-}" ]; then
+  # Resolve the scan target on the host (build+save a local Dockerfile, or use CS_IMAGE).
+  CS_TARGET="$(bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$APP_NAME" ".appsec-results" || true)"
+  CS_MODE="${CS_TARGET%%|*}"; CS_VALUE="${CS_TARGET#*|}"
+  case "$CS_MODE" in
+    registry)
+      echo "[GitLab CS] Scanning registry image $CS_VALUE..."
+      "$RUNTIME" pull "${GITLAB_CS_IMAGE}" && \
+      "$RUNTIME" run --rm --entrypoint "" \
+        -v "$PWD:/workspace" \
+        -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
+        -w /workspace \
+        -e CI_PROJECT_DIR="/workspace" \
+        -e CS_SCAN_MODE="registry" \
+        -e CS_IMAGE="$CS_VALUE" \
+        -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" \
+        -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" \
+        "${GITLAB_CS_IMAGE}" \
+        sh /runner.sh 2>&1 | tee .appsec-results/gitlab-cs.log
+      GITLAB_CS_PID="ran"   # sequential; mark that CS produced output
+      ;;
+    archive)
+      echo "[GitLab CS] Scanning locally-built image (offline, bundled Trivy)..."
+      "$RUNTIME" pull "${GITLAB_CS_IMAGE}" && \
+      "$RUNTIME" run --rm --entrypoint "" \
+        -v "$PWD:/workspace" \
+        -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
+        -w /workspace \
+        -e CI_PROJECT_DIR="/workspace" \
+        -e CS_SCAN_MODE="archive" \
+        -e CS_ARCHIVE="/workspace/.appsec-results/container-image.tar" \
+        "${GITLAB_CS_IMAGE}" \
+        sh /runner.sh 2>&1 | tee .appsec-results/gitlab-cs.log
+      GITLAB_CS_PID="ran"
+      ;;
+    error)
+      echo "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
+      ;;
+    *)
+      echo "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
+      echo "  Container scanning runs post-build in the pipeline (see the DAST/CI section)."
+      ;;
+  esac
 fi
 ```
 
@@ -428,7 +468,7 @@ fi
 ```bash
 if $RUN_PYLINT && $HAS_REQUIREMENTS && [ -n "${PYLINT_IMAGE:-}" ]; then
   echo "[Pylint] Starting in background..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     --entrypoint "" \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/pylint.sh:/runner.sh:ro" \
@@ -446,7 +486,7 @@ fi
 ```bash
 if $RUN_ESLINT && $HAS_PACKAGE_JSON && [ -n "${ESLINT_IMAGE:-}" ] && [ -n "${ESLINT_CONFIG_FILE:-}" ]; then
   echo "[ESLint] Starting in background..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/eslint.sh:/runner.sh:ro" \
     -w /workspace \
@@ -463,7 +503,7 @@ fi
 ```bash
 if $RUN_SCANTIST && $HAS_PACKAGE_JSON && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ]; then
   echo "[Scantist/JS] Starting in background..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     --network=host \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/scantist-js.sh:/runner.sh:ro" \
@@ -504,7 +544,7 @@ done
 ```bash
 if $RUN_PARASOFT && $HAS_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ]; then
   echo "[Parasoft/Gradle] Running..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/parasoft-gradle.sh:/runner.sh:ro" \
     -w /workspace \
@@ -522,7 +562,7 @@ fi
 ```bash
 if $RUN_PARASOFT && $HAS_POM && ! $HAS_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
   echo "[Parasoft/Maven] Running..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/parasoft-maven.sh:/runner.sh:ro" \
     -w /workspace \
@@ -541,7 +581,7 @@ fi
 ```bash
 if $RUN_SCANTIST && $HAS_POM && ! $HAS_GRADLE && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
   echo "[Scantist/Maven] Running..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     --network=host \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/scantist-maven.sh:/runner.sh:ro" \
@@ -560,7 +600,7 @@ fi
 ```bash
 if $RUN_TRIVY && [ -n "${TRIVY_TARGET:-}" ] && [ -n "${TRIVY_IMAGE:-}" ]; then
   echo "[Trivy] Scanning ${TRIVY_TARGET:-}..."
-  docker run --rm \
+  "$RUNTIME" run --rm \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$PWD:/workspace" \
     -v "$SCANNERS_DIR/trivy.sh:/runner.sh:ro" \
@@ -586,11 +626,14 @@ printf "%-22s %-10s %-6s %-8s %-5s\n" "-------" "--------" "----" "------" "---"
 
 TOTAL_CRITICAL=0; TOTAL_HIGH=0
 HAS_SUMMARY_UNKNOWN=false
+HAS_MISSING_REPORT=false
 
 HAS_JQ=true
 HAS_UNZIP=true
 HAS_XMLLINT=true
-command -v jq >/dev/null 2>&1 || HAS_JQ=false
+# Resolve jq: use host jq, else fetch from settings.jq.install_url (Step 1.5).
+JQ_BIN="$(JQ_INSTALL_URL="${JQ_INSTALL_URL:-}" APPSEC_RESULTS_DIR=".appsec-results" bash "$SCRIPTS_DIR/resolve-jq.sh" || true)"
+if [ -n "$JQ_BIN" ]; then PATH="$(dirname "$JQ_BIN"):$PATH"; else HAS_JQ=false; fi
 command -v unzip >/dev/null 2>&1 || HAS_UNZIP=false
 command -v xmllint >/dev/null 2>&1 || HAS_XMLLINT=false
 
@@ -603,6 +646,9 @@ fi
 
 print_missing_report() {
   printf "%-22s %s\n" "$1" "WARNING: report file not present"
+  # A scanner that was selected to run but produced no report means we do NOT
+  # know its result — never let the run end with a false "All clear".
+  HAS_MISSING_REPORT=true
 }
 
 print_unknown_report() {
@@ -628,7 +674,8 @@ print_gl_report() {  # $1=label  $2=report-file  $3=count-into-totals(true/false
   fi
 }
 
-# Fortify: count <Vulnerability> tags in the embedded fvdl
+# Fortify: count <Vulnerability> tags in the embedded fvdl (only if selected)
+if $RUN_FORTIFY; then
 for fpr_label in "fortify-python:Fortify/Python" "fortify-js:Fortify/JS"; do
   fpr_file=".appsec-results/${fpr_label%%:*}.fpr"
   label="${fpr_label##*:}"
@@ -645,6 +692,7 @@ for fpr_label in "fortify-python:Fortify/Python" "fortify-js:Fortify/JS"; do
     print_missing_report "$label"
   fi
 done
+fi
 
 # GitLab SAST (only when it ran)
 [ -n "$GITLAB_SAST_PID" ] && print_gl_report "GitLab SAST" .appsec-results/gl-sast-report.json true
@@ -662,8 +710,27 @@ if [ -n "$GITLAB_DS_PID" ]; then
   fi
 fi
 
-# GitLab Container Scanning (only when it ran)
-[ -n "$GITLAB_CS_PID" ] && print_gl_report "GitLab CS" .appsec-results/gl-container-scanning-report.json true
+# GitLab Container Scanning — registry mode emits GitLab schema; archive mode
+# (local build) emits trivy-native schema. Parse whichever exists.
+if [ -n "$GITLAB_CS_PID" ]; then
+  if [ -f .appsec-results/gl-container-scanning-report.json ]; then
+    print_gl_report "GitLab CS" .appsec-results/gl-container-scanning-report.json true
+  elif [ -f .appsec-results/container-scan-trivy.json ]; then
+    if ! $HAS_JQ; then
+      print_unknown_report "GitLab CS"
+    elif CS_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' .appsec-results/container-scan-trivy.json 2>/dev/null) && \
+         CS_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")]     | length' .appsec-results/container-scan-trivy.json 2>/dev/null) && \
+         CS_MED=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")]   | length' .appsec-results/container-scan-trivy.json 2>/dev/null) && \
+         CS_LOW=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")]      | length' .appsec-results/container-scan-trivy.json 2>/dev/null); then
+      printf "%-22s %-10s %-6s %-8s %-5s\n" "GitLab CS (local)" "$CS_CRIT" "$CS_HIGH" "$CS_MED" "$CS_LOW"
+      TOTAL_CRITICAL=$((TOTAL_CRITICAL + CS_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + CS_HIGH))
+    else
+      print_unknown_report "GitLab CS"
+    fi
+  else
+    print_missing_report "GitLab CS"
+  fi
+fi
 
 # Pylint — drop the ##tool header line added by pylint.sh before parsing JSON
 if [ -f .appsec-results/pylint-report.json ]; then
@@ -769,7 +836,12 @@ printf "%-22s %-10s %-6s\n" "TOTAL C+H" "$TOTAL_CRITICAL" "$TOTAL_HIGH"
 echo "============================================================"
 
 echo ""
-if $HAS_SUMMARY_UNKNOWN; then
+if $HAS_MISSING_REPORT; then
+  echo "WARNING: One or more selected scanners produced NO report (image pull or"
+  echo "  run failed). Results are incomplete — this is NOT an all-clear. Check the"
+  echo "  per-scanner logs in .appsec-results/ (e.g. failed docker/podman pulls)."
+  echo "  This scan does not block your commit — you are responsible for acting on findings."
+elif $HAS_SUMMARY_UNKNOWN; then
   echo "WARNING: One or more scanner summaries are UNKNOWN."
   echo "  Review .appsec-results/ and the warnings above before pushing."
   echo "  This scan does not block your commit — you are responsible for acting on findings."
