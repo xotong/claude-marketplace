@@ -134,6 +134,124 @@ If a plugin is missing after install, re-run the install command.
 
 ---
 
+## AppSec airgap setup
+
+The `appsec-scan` skill runs security scanners locally against a configurable
+GitLab CI/CD Catalog. It is built for airgapped networks: it talks only to your
+**internal** GitLab and image registry, and keeps working with no internet at
+all. This section is for the **skill admin** who tailors it to your environment.
+Everything is set in one file — `plugins/appsec/skills/appsec-scan/config/scanner-preferences.yaml`
+— so a self-hosted model only reads config and never guesses endpoints. Full
+schema reference: `config/PREFERENCES.md` next to it.
+
+### What the skill actually requires
+
+**Hard dependencies (present on any dev machine — nothing to mirror):**
+`docker` **or** `podman`, `bash`, `git`, and coreutils. The skill detects the
+runtime first and stops with a clear message if none is found.
+
+**Everything else degrades gracefully — never a hard failure:** `jq` (severity
+summary; see below), `curl` (only for live catalog; falls back to vendored
+snapshots), `unzip`/`xmllint` (only for Fortify/Parasoft summaries), `glab`
+(only for the optional end-of-run MR offer). `python3` is **not** required at
+runtime.
+
+### Step 1 — Mirror the analyzer images to your registry
+
+Mirror these four images into your internal JFrog (their scan rules and
+vulnerability DBs are baked in — **no network happens inside the containers**):
+
+```
+registry.gitlab.com/security-products/semgrep:6                 → <your-registry>/security/semgrep:6
+registry.gitlab.com/security-products/secrets:7                 → <your-registry>/security/secrets:7
+registry.gitlab.com/security-products/dependency-scanning:2     → <your-registry>/security/dependency-scanning:2
+registry.gitlab.com/security-products/container-scanning:8      → <your-registry>/security/container-scanning:8
+```
+
+Then set each category's `image:` in the `company` profile to the mirrored path.
+`image:` is what actually runs (admin-pinned); the `component:` path is resolved
+each run only for its usage guide and a drift advisory that tells you when to
+bump the pin.
+
+### Step 2 — Point the profile at your GitLab and turn on airgap
+
+```yaml
+settings:
+  airgap: true                 # internal endpoints only; refuses the public-test profile
+  container_runtime: auto      # auto-detect docker or podman
+  catalog:
+    mode: online               # resolve customized components live against your GitLab
+    auth_token_env: ""         # see Step 4
+profiles:
+  company:
+    gitlab_instance: https://gitlab.your-company.internal
+    categories:
+      sast:
+        component: components/sast/sast     # or your customized fork's path
+        image: <your-registry>/security/semgrep:6
+        runner: gitlab-sast.sh
+        enabled: true
+      # …dependency_scanning, secret_detection, container_scanning…
+```
+
+`airgap: true` also works alongside internet-connected sites — flip it to
+`false` (or use the shipped `public-test` profile) when you *do* have internet,
+e.g. for validation against gitlab.com. Same skill, both worlds.
+
+### Step 3 — jq (optional, for the severity summary)
+
+If `jq` is on the dev machine, nothing to do. If not, host the binary in JFrog
+and point the skill at it — `{os}` and `{arch}` are filled from `uname`, so one
+URL serves a mixed fleet:
+
+```yaml
+settings:
+  jq:
+    install_url: https://jfrog.your-company.internal/artifactory/tools/jq/{os}/{arch}/jq
+```
+
+Leave it empty to simply show `UNKNOWN` counts when `jq` is absent — the scan
+still runs.
+
+### Step 4 — Catalog authentication
+
+The skill tries **anonymous** API reads against your GitLab first. If your
+instance disables them, create a `read_api` Personal Access Token, put it in an
+env var, and name that var in the config:
+
+```yaml
+settings:
+  catalog:
+    auth_token_env: GITLAB_READ_TOKEN     # the skill reads $GITLAB_READ_TOKEN
+```
+
+If neither works, the skill continues on the vendored snapshots in
+`reference/catalog/` and tells the user exactly what to configure. Refresh those
+snapshots periodically per `UPDATE-GUIDE.md` (Scenario 6).
+
+### Step 5 — Container scanning
+
+GTCS scans a **registry** image, so the skill resolves the target two ways
+automatically:
+
+- **Already-built image** — set `CS_IMAGE=<image:tag>` (pushed to your
+  registry) and the real `gtcs scan` runs, using the credentials named in
+  `settings.container_registry`.
+- **Local shift-left** — with no `CS_IMAGE` but a `Dockerfile` present, the
+  skill builds and saves the image locally and scans the tarball with the
+  analyzer image's bundled Trivy — fully offline, no registry, no root. If a
+  `FROM` base can't be pulled, it prompts you to `docker login` / `podman login`
+  your registry or set the credential env vars.
+
+### Verifying offline behavior
+
+With the network unplugged, `catalog.sh` prints `[offline-fallback]` and the
+scan proceeds from vendored snapshots. If a selected scanner produces no report
+(e.g. an image failed to pull), the summary says **"Results are incomplete —
+this is NOT an all-clear"** rather than a false green.
+
+---
+
 ## For teams: create your own private marketplace
 
 Team skills live in your own private repo — **not** in this central catalog. This means:
