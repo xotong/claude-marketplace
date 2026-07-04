@@ -47,7 +47,8 @@ class SecretDetectionDocumentationTest(unittest.TestCase):
         skill = SKILL_MD.read_text(encoding="utf-8")
 
         self.assertIn("GitLab Secret Detection", skill)
-        self.assertIn("docker pull", skill)
+        # The container pull is runtime-abstracted (docker or podman) in v2.
+        self.assertIn('"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"', skill)
         self.assertIn("gl-secret-detection-report.json", skill)
         self.assertIn("Secret Detection findings (redacted)", skill)
         self.assertIn("Ask for approval once before making changes", skill)

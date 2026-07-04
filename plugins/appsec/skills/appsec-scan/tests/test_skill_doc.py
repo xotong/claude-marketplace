@@ -66,8 +66,32 @@ class SkillDocumentationTest(unittest.TestCase):
 
         self.assertNotRegex(SKILL_TEXT, re.compile(r"glpat-[A-Za-z0-9]"))
 
+    def test_skill_documents_airgap_and_runtime_abstraction(self) -> None:
+        # Runtime is abstracted over docker/podman — no bare `docker run`/`docker pull`.
+        self.assertIn('"$RUNTIME" run', SKILL_TEXT)
+        self.assertNotIn("docker run --rm", SKILL_TEXT)
+        self.assertNotIn("if docker pull", SKILL_TEXT)
+        # Airgap + helper wiring.
+        self.assertIn("APPSEC_AIRGAP", SKILL_TEXT)
+        self.assertIn("detect-runtime.sh", SKILL_TEXT)
+        self.assertIn("resolve-jq.sh", SKILL_TEXT)
+        self.assertIn("container-target.sh", SKILL_TEXT)
+        # Catalog auth fallback guidance and offline mode.
+        self.assertIn("read_api", SKILL_TEXT)
+        self.assertIn("CATALOG_MODE", SKILL_TEXT)
+        # No false all-clear when a selected scanner produced no report.
+        self.assertIn("HAS_MISSING_REPORT", SKILL_TEXT)
+        self.assertIn("NOT an all-clear", SKILL_TEXT)
+
 
 class GitlabRunnerDocTest(unittest.TestCase):
+    def test_container_runner_supports_registry_and_archive_modes(self) -> None:
+        text = CS_RUNNER.read_text(encoding="utf-8")
+        self.assertIn("CS_SCAN_MODE", text)
+        self.assertIn("gtcs", text)          # registry mode
+        self.assertIn("--input", text)       # archive mode (bundled trivy on tarball)
+        self.assertIn("--offline-scan", text)
+
     def test_runner_headers_and_component_paths_are_documented(self) -> None:
         expected_components = {
             SAST_RUNNER: "components/sast/sast",
