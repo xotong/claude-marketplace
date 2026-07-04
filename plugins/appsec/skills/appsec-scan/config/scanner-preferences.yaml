@@ -1,0 +1,102 @@
+# appsec-scan scanner preferences — admin-owned (Platform Team via CODEOWNERS).
+# Schema + switching guide: see PREFERENCES.md in this directory.
+#
+# Runtime profile override: export APPSEC_PROFILE=<profile-name>
+# Category → component mapping is resolved against the profile's GitLab
+# CI/CD Catalog on EVERY run (scripts/catalog.sh); vendored fallbacks live
+# in ../reference/catalog/ for offline use.
+
+default_profile: company
+
+profiles:
+  # ---------------------------------------------------------------------
+  # company — production preferences (internal GitLab instance).
+  # Component paths under devops/ci-catalogue are PLACEHOLDERS: confirm the
+  # exact project paths in your instance's CI/CD Catalog before relying on
+  # drift checks.
+  # ---------------------------------------------------------------------
+  company:
+    gitlab_instance: https://gitlab.company.com
+    # none = anonymous catalog reads. To authenticate, set this to the NAME
+    # of an env var holding a read_api PAT, e.g. GITLAB_COMPANY_TOKEN.
+    catalog_auth: none
+    categories:
+      sast:
+        # Preference: Fortify (licensed images from the internal registry).
+        components:
+          - devops/ci-catalogue/fortify-scan-python3
+          - devops/ci-catalogue/fortify-scan-js
+        runners: [fortify-python.sh, fortify-js.sh]
+        enabled: true
+      dependency_scanning:
+        # GitLab analyzer generates an SBOM locally; vulnerability matching
+        # happens in GitLab after push. Local run needs the licensed-feature
+        # mirror flag GITLAB_FEATURES=dependency_scanning (set by SKILL.md).
+        components: [components/dependency-scanning/main]
+        runners: [gitlab-dependency-scanning.sh]
+        enabled: true
+      secret_detection:
+        components: [components/secret-detection/secret-detection]
+        runners: [secret-detection.sh]
+        enabled: true
+      container_scanning:
+        # GTCS. Requires CS_IMAGE (or CI_APPLICATION_REPOSITORY+TAG) naming
+        # the image to scan.
+        components: [components/container-scanning/container-scanning]
+        runners: [gitlab-container-scanning.sh]
+        enabled: true
+      dast_web:
+        # CI-only: DAST needs a running deployed target. The skill emits a
+        # ready-to-paste CI include + gathers target URL / OpenAPI / Postman
+        # inputs. Local design-time stand-in: the appsec-dast-sim skill.
+        components: [components/dast/dast]
+        runners: [none]
+        enabled: false
+      dast_api:
+        components: [components/dast/dast]
+        runners: [none]
+        enabled: false
+    # Legacy env-var-driven scanners — unchanged v1 behavior. Remove an
+    # entry to stop offering that scanner.
+    additional_scanners:
+      parasoft_gradle: { runner: parasoft-gradle.sh, image_env: PARASOFT_IMAGE, condition: HAS_GRADLE }
+      parasoft_maven:  { runner: parasoft-maven.sh,  image_env: PARASOFT_IMAGE, condition: HAS_POM_NO_GRADLE }
+      pylint:          { runner: pylint.sh,          image_env: PYLINT_IMAGE,   condition: HAS_REQUIREMENTS }
+      eslint:          { runner: eslint.sh,          image_env: ESLINT_IMAGE,   condition: HAS_PACKAGE_JSON }
+      scantist_js:     { runner: scantist-js.sh,     image_env: SCANTIST_IMAGE, condition: HAS_PACKAGE_JSON }
+      scantist_maven:  { runner: scantist-maven.sh,  image_env: SCANTIST_IMAGE, condition: HAS_POM_NO_GRADLE }
+      trivy:           { runner: trivy.sh,           image_env: TRIVY_IMAGE,    condition: TRIVY_TARGET_SET }
+
+  # ---------------------------------------------------------------------
+  # public-test — end-to-end testing against the public gitlab.com catalog
+  # and public analyzer images. No internal infrastructure required.
+  # ---------------------------------------------------------------------
+  public-test:
+    gitlab_instance: https://gitlab.com
+    catalog_auth: none
+    categories:
+      sast:
+        components: [components/sast/sast]
+        runners: [gitlab-sast.sh]
+        enabled: true
+      dependency_scanning:
+        components: [components/dependency-scanning/main]
+        runners: [gitlab-dependency-scanning.sh]
+        enabled: true
+      secret_detection:
+        components: [components/secret-detection/secret-detection]
+        runners: [secret-detection.sh]
+        enabled: true
+      container_scanning:
+        components: [components/container-scanning/container-scanning]
+        runners: [gitlab-container-scanning.sh]
+        enabled: true
+      dast_web:
+        components: [components/dast/dast]
+        runners: [none]
+        enabled: false
+      dast_api:
+        components: [components/dast/dast]
+        runners: [none]
+        enabled: false
+    additional_scanners: {}
