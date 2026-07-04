@@ -19,6 +19,7 @@ skills/appsec-scan/
     ├── eslint.sh           ← mirrors devops/ci-catalogue/eslint
     ├── scantist-js.sh      ← mirrors devops/ci-catalogue/scantist-js-scan
     ├── scantist-maven.sh   ← mirrors devops/ci-catalogue/scantist-maven-scan (post-Maven)
+    ├── secret-detection.sh ← mirrors gitlab.com/components/secret-detection
     └── trivy.sh            ← mirrors devops/ci-catalogue/trivy-scan
 ```
 
@@ -178,6 +179,29 @@ The CI team retires a scanner entirely.
 | Scanner image renamed/retagged | SKILL.md Prerequisites table only |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |
 | Scanner retired | Remove scanner file + remove blocks from SKILL.md |
+
+## GitLab Secret Detection notes
+
+The Secret Detection scanner mirrors the GitLab CI/CD Catalog component:
+
+- Image shape: `$image_prefix/secrets:$image_tag$image_suffix`
+- Default local image: `${SECRET_DETECTION_IMAGE_PREFIX:-$APPSEC_REGISTRY}/secrets:${SECRET_DETECTION_IMAGE_TAG:-7}${SECRET_DETECTION_IMAGE_SUFFIX:-}`
+- Script block: `/analyzer run`
+- Report artifact: `gl-secret-detection-report.json`
+
+Use `SECRET_DETECTION_IMAGE` to override the full image path, or set
+`SECRET_DETECTION_IMAGE_PREFIX`, `SECRET_DETECTION_IMAGE_TAG`, and
+`SECRET_DETECTION_IMAGE_SUFFIX` to match your internal mirror. For public-image
+smoke testing, use:
+
+```bash
+export SECRET_DETECTION_IMAGE="registry.gitlab.com/security-products/secrets:7"
+```
+
+When the GitLab component changes, update `scanners/secret-detection.sh`, the
+Secret Detection Docker block in `SKILL.md`, and the smoke test parser together.
+Keep result summaries redacted: never print raw values from
+`gl-secret-detection-report.json`.
 
 **Never embed scanner commands directly in SKILL.md.** All commands go in `scanners/`.
 

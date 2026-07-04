@@ -5,7 +5,7 @@ Central plugin marketplace. One URL to configure; all team and platform skills f
 | Plugin | What it gives you |
 |---|---|
 | **essentials** | Start here — TDD, debugging, planning, feature dev, PR review in one install. |
-| **appsec** | Security scanning: Fortify, Parasoft, Scantist, Trivy (CI-mirror) + OWASP WSTG DAST sim. |
+| **appsec** | Security scanning: Fortify, Parasoft, Scantist, Trivy, GitLab Secret Detection (CI-mirror) + OWASP WSTG DAST sim. |
 | **code-quality** | Lint gate, API design enforcement, OpenAPI spec generation, doc co-authoring. |
 | **superpowers** | 14 core developer skills (already in essentials — install for the full library). |
 | **compound-engineering** | 38 skills + 50 specialised review agents for compound AI workflows. |
@@ -116,7 +116,7 @@ If a plugin is missing after install, re-run the install command.
 | Plugin | Type | What's inside |
 |---|---|---|
 | `essentials` | Platform Team | TDD, debugging, planning, git worktrees (14 skills) + feature-dev (3 agents) + PR review (6 agents) — best starting point |
-| `appsec` | Platform Team | appsec-scan (Fortify/Parasoft/Scantist/Trivy CI-mirror) + appsec-dast-sim (OWASP WSTG v4.2) |
+| `appsec` | Platform Team | appsec-scan (Fortify/Parasoft/Scantist/Trivy/GitLab Secret Detection CI-mirror) + appsec-dast-sim (OWASP WSTG v4.2) |
 | `code-quality` | Platform Team | lint-and-validate + api-design-principles + openapi-spec-generation + doc-coauthoring |
 | `superpowers` | Vendored (obra) | 14 skills: TDD, debugging, planning, worktrees, code review, brainstorming. **Already in essentials.** |
 | `compound-engineering` | Vendored (EveryInc) | 38 skills + 50 specialised review agents: architecture, performance, security, data integrity… |

@@ -4,12 +4,14 @@ description: >
   Run the same security scanners as CI — locally, using identical container images —
   before pushing to GitLab. Covers Fortify SAST (Python and JS), Parasoft Jtest
   (Gradle and Maven), Pylint (SARIF output), ESLint (JSON output), Scantist SCA
-  (JAR-based dependency analysis), and Trivy (container image scanning).
+  (JAR-based dependency analysis), Trivy (container image scanning), and GitLab
+  Secret Detection.
   Results go to .appsec-results/ and a severity-gated summary is printed at the end.
   Use when the user says: "appsec scan", "run security scanners", "run Fortify",
   "run Parasoft", "Scantist scan", "Trivy scan", "ESLint security", "Pylint scan",
   "pre-push security check", "CI security pipeline locally", "mirror CI scanners",
-  "container security scan", "SCA scan", "SAST scan", "security before merge".
+  "container security scan", "SCA scan", "SAST scan", "secret scan",
+  "secret detection", "security before merge".
   Do NOT activate for general code review, unit testing, or lint-only requests.
 ---
 
@@ -36,6 +38,7 @@ skills/appsec-scan/
     ├── eslint.sh
     ├── scantist-js.sh
     ├── scantist-maven.sh
+    ├── secret-detection.sh
     └── trivy.sh
 ```
 
@@ -60,6 +63,11 @@ JFrog virtual repos. Network access to JFrog is required.
 | `ESLINT_IMAGE` | ESLint image (with npm/npx) | — |
 | `SCANTIST_IMAGE` | Scantist image (with Java + curl + sudo) | — |
 | `TRIVY_IMAGE` | Trivy image | — |
+| `SECRET_DETECTION_IMAGE` | Full GitLab Secret Detection analyzer image override | — |
+| `SECRET_DETECTION_IMAGE_PREFIX` | Registry prefix for the GitLab `secrets` analyzer image | `$APPSEC_REGISTRY` |
+| `SECRET_DETECTION_IMAGE_TAG` | GitLab Secret Detection analyzer major tag | `7` |
+| `SECRET_DETECTION_IMAGE_SUFFIX` | Optional image suffix such as `-fips` | — |
+| `SECRET_DETECTION_EXCLUDED_PATHS` | Comma-separated paths excluded by the analyzer | — |
 | `DEVSECOPS_IMPORT_URL` | DTP server URL for Scantist JAR download | — |
 | `APP_NAME` | Application name used in Fortify build IDs | `basename $PWD` |
 | `SOURCE_PATH` | Source directory passed to Fortify and Pylint | `src` |
@@ -80,6 +88,8 @@ export PYLINT_IMAGE="pylint-scanner:latest"
 export ESLINT_IMAGE="eslint-scanner:latest-node20"
 export SCANTIST_IMAGE="scantist-scanner:latest"
 export TRIVY_IMAGE="trivy-scanner:latest"
+export SECRET_DETECTION_IMAGE_PREFIX="$APPSEC_REGISTRY"
+export SECRET_DETECTION_IMAGE_TAG="7"
 ```
 
 ---
@@ -124,7 +134,11 @@ BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
 SOURCE_PATH="${SOURCE_PATH:-src}"
 CI_PROJECT_DIR="${CI_PROJECT_DIR:-$PWD}"
 APPSEC_REGISTRY="${APPSEC_REGISTRY:-registry.company.com/security}"
-FORTIFY_PY_PID=""; FORTIFY_JS_PID=""; PYLINT_PID=""; ESLINT_PID=""; SCANTIST_JS_PID=""
+SECRET_DETECTION_IMAGE_PREFIX="${SECRET_DETECTION_IMAGE_PREFIX:-$APPSEC_REGISTRY}"
+SECRET_DETECTION_IMAGE_TAG="${SECRET_DETECTION_IMAGE_TAG:-7}"
+SECRET_DETECTION_IMAGE_SUFFIX="${SECRET_DETECTION_IMAGE_SUFFIX:-}"
+SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-${SECRET_DETECTION_IMAGE_PREFIX}/secrets:${SECRET_DETECTION_IMAGE_TAG}${SECRET_DETECTION_IMAGE_SUFFIX}}"
+FORTIFY_PY_PID=""; FORTIFY_JS_PID=""; PYLINT_PID=""; ESLINT_PID=""; SCANTIST_JS_PID=""; SECRET_DETECTION_PID=""
 
 HAS_POM=false; HAS_GRADLE=false; HAS_PACKAGE_JSON=false
 HAS_REQUIREMENTS=false; HAS_DOCKERFILE=false
@@ -147,8 +161,9 @@ grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
 ## Step 4 — Run applicable scanners
 
 Each scanner script is mounted read-only into its container at `/runner.sh`.
-The container executes `bash /runner.sh`. All output paths inside the script
-use `/workspace/...` which maps to `$PWD` on the host.
+The container executes the runner with `bash` or `sh`, depending on the analyzer
+image. All output paths inside the script use `/workspace/...` which maps to
+`$PWD` on the host.
 
 Run the parallel scanners first (background `&`), then the sequential ones.
 
@@ -242,11 +257,38 @@ if $HAS_PACKAGE_JSON && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT
 fi
 ```
 
+### GitLab Secret Detection
+*Runs for any Git repository. Runner: `scanners/secret-detection.sh`. Mirrors the GitLab CI/CD Catalog component image shape and `/analyzer run` script.*
+
+```bash
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -n "${SECRET_DETECTION_IMAGE:-}" ]; then
+  echo "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
+  if docker pull "${SECRET_DETECTION_IMAGE}"; then
+    echo "[Secret Detection] Starting in background..."
+    docker run --rm \
+      --entrypoint "" \
+      -v "$PWD:/workspace" \
+      -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" \
+      -w /workspace \
+      -e CI_PROJECT_DIR="/workspace" \
+      -e GIT_DEPTH="${GIT_DEPTH:-50}" \
+      -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" \
+      "${SECRET_DETECTION_IMAGE}" \
+      sh /runner.sh > .appsec-results/secret-detection.log 2>&1 &
+    SECRET_DETECTION_PID=$!
+  else
+    echo "[Secret Detection] Failed to pull ${SECRET_DETECTION_IMAGE}; skipping scan"
+  fi
+else
+  echo "[Secret Detection] Skipped — not in a git worktree or image is unset"
+fi
+```
+
 ### Wait for all parallel scanners
 
 ```bash
 echo "Waiting for parallel scanners..."
-for pid_var in FORTIFY_PY_PID FORTIFY_JS_PID PYLINT_PID ESLINT_PID SCANTIST_JS_PID; do
+for pid_var in FORTIFY_PY_PID FORTIFY_JS_PID PYLINT_PID ESLINT_PID SCANTIST_JS_PID SECRET_DETECTION_PID; do
   pid="${!pid_var:-}"
   if [ -n "$pid" ]; then
     if wait "$pid"; then
@@ -356,7 +398,7 @@ command -v xmllint >/dev/null 2>&1 || HAS_XMLLINT=false
 
 if ! $HAS_JQ || ! $HAS_UNZIP || ! $HAS_XMLLINT; then
   echo "WARNING: One or more summary parsers are unavailable; some counts may show as UNKNOWN."
-  ! $HAS_JQ && echo "  - jq not found: Pylint, ESLint, and Trivy counts may be unavailable."
+  ! $HAS_JQ && echo "  - jq not found: Pylint, ESLint, Secret Detection, and Trivy counts may be unavailable."
   ! $HAS_UNZIP && echo "  - unzip not found: Fortify FPR counts may be unavailable."
   ! $HAS_XMLLINT && echo "  - xmllint not found: Parasoft XML counts may be unavailable."
 fi
@@ -439,6 +481,37 @@ else
   print_missing_report "Parasoft"
 fi
 
+# GitLab Secret Detection
+if [ -f .appsec-results/gl-secret-detection-report.json ]; then
+  if ! $HAS_JQ; then
+    print_unknown_report "Secret Detection"
+  elif SD_CRIT=$(jq '[.vulnerabilities[]? | select((.severity // "" | ascii_downcase) == "critical")] | length' .appsec-results/gl-secret-detection-report.json 2>/dev/null) && \
+       SD_HIGH=$(jq '[.vulnerabilities[]? | select((.severity // "" | ascii_downcase) == "high")] | length' .appsec-results/gl-secret-detection-report.json 2>/dev/null) && \
+       SD_MED=$(jq  '[.vulnerabilities[]? | select((.severity // "" | ascii_downcase) == "medium")] | length' .appsec-results/gl-secret-detection-report.json 2>/dev/null) && \
+       SD_LOW=$(jq  '[.vulnerabilities[]? | select((.severity // "" | ascii_downcase) == "low")] | length' .appsec-results/gl-secret-detection-report.json 2>/dev/null); then
+    printf "%-22s %-10s %-6s %-8s %-5s\n" "Secret Detection" "$SD_CRIT" "$SD_HIGH" "$SD_MED" "$SD_LOW"
+    TOTAL_CRITICAL=$((TOTAL_CRITICAL + SD_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + SD_HIGH))
+    if [ "$SD_CRIT" -gt 0 ] || [ "$SD_HIGH" -gt 0 ] || [ "$SD_MED" -gt 0 ] || [ "$SD_LOW" -gt 0 ]; then
+      echo ""
+      echo "Secret Detection findings (redacted):"
+      jq -r '.vulnerabilities[]? | [
+        (.severity // "UNKNOWN"),
+        (.name // .message // .id // "Secret detected"),
+        (.location.file // .location.path // "unknown"),
+        ((.location.start_line // .location.line // 0) | tostring)
+      ] | @tsv' .appsec-results/gl-secret-detection-report.json |
+        awk -F '\t' '{printf "  - [%s] %s at %s:%s\n", $1, $2, $3, $4}'
+      echo "  Remediation: rotate or revoke any real credential, remove it from source, and load it from CI/CD variables or a secret manager."
+      echo "  Note: removing a secret from the working tree does not revoke it or erase it from git history."
+      echo ""
+    fi
+  else
+    print_unknown_report "Secret Detection"
+  fi
+else
+  print_missing_report "Secret Detection"
+fi
+
 # Trivy
 if [ -f .appsec-results/trivy-results.json ]; then
   if ! $HAS_JQ; then
@@ -478,10 +551,41 @@ echo "Tip: Run /appsec-scan before every commit or push to catch issues early."
 
 ---
 
+## Secret Detection remediation loop
+
+When GitLab Secret Detection reports findings:
+
+1. Show the user the redacted findings from the summary above. Do not print raw
+   secret values, even if they are present in the JSON artifact.
+2. Inspect the referenced files and tell the user the remediation plan: which
+   secrets appear real, which look like test fixtures/placeholders, what code or
+   config will change, and which credentials must be rotated outside the repo.
+3. Ask for approval once before making changes. The approval request must mention
+   that a new branch will be created and that the loop will continue until Secret
+   Detection is clean.
+4. After approval, create a new branch named
+   `appsec/secret-detection-remediation-<YYYYMMDD>-<shortsha>`.
+5. Replace committed secrets with environment variables, CI/CD variables,
+   `.env.example` placeholders, local fixture values, or a secret manager lookup,
+   matching the app's existing configuration pattern.
+6. Rerun only GitLab Secret Detection first. If findings remain, inspect the new
+   report and repeat the fix/rescan loop autonomously.
+7. When Secret Detection is clean, run the app's relevant tests before reporting
+   back. Use the repo's documented test command when present; otherwise infer the
+   narrowest meaningful test command from the project manifests.
+
+Stop and ask the user before continuing if the fix requires destructive git
+history rewrite, deleting user data, changing production credentials, or choosing
+between multiple product behaviors.
+
+---
+
 ## What NOT to do
 
 - Do not edit scanner commands directly in this file — edit `scanners/*.sh` instead
 - Do not add `fortifyclient` upload steps — scan-only is the local model
 - Do not remove `--network=host` from Scantist — it needs to reach the DTP server
 - Do not run Scantist Maven before Parasoft Maven — it needs compiled artifacts
+- Do not print raw secret values from `gl-secret-detection-report.json`
+- Do not treat removing a detected value from source as credential rotation
 - Do not commit `.appsec-results/` to git

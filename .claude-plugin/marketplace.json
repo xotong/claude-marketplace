@@ -19,10 +19,10 @@
       "name": "appsec",
       "source": "./plugins/appsec",
       "version": "1.0.0",
-      "description": "[Platform Team] Security scanning: appsec-scan (Fortify SAST, Parasoft, Pylint, ESLint, Scantist, Trivy — identical images to your CI pipeline) + appsec-dast-sim (LLM DAST following OWASP WSTG v4.2, no running app required).",
+      "description": "[Platform Team] Security scanning: appsec-scan (Fortify SAST, Parasoft, Pylint, ESLint, Scantist, Trivy, GitLab Secret Detection — identical images to your CI pipeline) + appsec-dast-sim (LLM DAST following OWASP WSTG v4.2, no running app required).",
       "author": { "name": "Platform Team" },
       "category": "internal",
-      "keywords": ["security", "appsec", "sast", "dast", "fortify", "scantist", "wstg"]
+      "keywords": ["security", "appsec", "sast", "dast", "fortify", "scantist", "secret-detection", "wstg"]
     },
     {
       "name": "code-quality",

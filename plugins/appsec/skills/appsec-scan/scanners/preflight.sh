@@ -14,12 +14,15 @@ if [ -n "${SCANTIST_IMAGE:-}" ]; then
     ERRORS+=("DEVSECOPS_IMPORT_URL must be set when SCANTIST_IMAGE is configured (needed for JAR download)")
 fi
 
-# At least one scanner image must be set — otherwise there is nothing to run.
+# Secret Detection derives its image from APPSEC_REGISTRY when no explicit image
+# is set, so it is always available as long as Docker can pull the configured
+# registry path. Legacy scanner images remain opt-in.
 if [ -z "${FORTIFY_PY_IMAGE:-}" ] && [ -z "${FORTIFY_JS_IMAGE:-}" ] && \
    [ -z "${PARASOFT_IMAGE:-}" ]   && [ -z "${PYLINT_IMAGE:-}" ]     && \
    [ -z "${ESLINT_IMAGE:-}" ]     && [ -z "${SCANTIST_IMAGE:-}" ]   && \
-   [ -z "${TRIVY_IMAGE:-}" ]; then
-  ERRORS+=("No scanner image env vars are set. Set at least one of: FORTIFY_PY_IMAGE, FORTIFY_JS_IMAGE, PARASOFT_IMAGE, PYLINT_IMAGE, ESLINT_IMAGE, SCANTIST_IMAGE, TRIVY_IMAGE")
+   [ -z "${TRIVY_IMAGE:-}" ]      && [ -z "${SECRET_DETECTION_IMAGE:-}" ] && \
+   [ -z "${SECRET_DETECTION_IMAGE_PREFIX:-}" ]; then
+  echo "INFO: No legacy scanner image env vars are set; GitLab Secret Detection will use APPSEC_REGISTRY/secrets:7."
 fi
 
 if [ ${#ERRORS[@]} -gt 0 ]; then
