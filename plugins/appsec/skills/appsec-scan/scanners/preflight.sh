@@ -20,6 +20,15 @@ if [ -n "${CATALOG_AUTH_ENV:-}" ]; then
     ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by the active profile's catalog_auth) is not set")
 fi
 
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ! RT="$(CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}" "$SKILL_DIR/scripts/detect-runtime.sh" 2>/dev/null)"; then
+  ERRORS+=("no container runtime: install docker or podman, or set settings.container_runtime")
+fi
+
+if [ "${APPSEC_AIRGAP:-}" = "true" ] && [ "${APPSEC_PROFILE:-}" = "public-test" ]; then
+  ERRORS+=("profile 'public-test' targets gitlab.com and is not allowed when airgap=true")
+fi
+
 # Secret Detection derives its image from APPSEC_REGISTRY when no explicit image
 # is set, so it is always available as long as Docker can pull the configured
 # registry path. Legacy scanner images remain opt-in.

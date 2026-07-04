@@ -2,62 +2,97 @@
 # Schema + switching guide: see PREFERENCES.md in this directory.
 #
 # Runtime profile override: export APPSEC_PROFILE=<profile-name>
-# Category → component mapping is resolved against the profile's GitLab
-# CI/CD Catalog on EVERY run (scripts/catalog.sh); vendored fallbacks live
-# in ../reference/catalog/ for offline use.
+# Everything the skill needs is declared here so a self-hosted model only has
+# to READ config, never guess endpoints. Edit the values; do not make the model
+# infer them.
 
+# ─────────────────────────────────────────────────────────────────────────
+# Global settings (apply to every profile)
+# ─────────────────────────────────────────────────────────────────────────
+settings:
+  # Master environment flag.
+  #   true  = no public internet. The skill talks ONLY to the active profile's
+  #           gitlab_instance and the configured image registry; the public-test
+  #           profile is refused; "offline" is not treated as an error.
+  #   false = internet available (e.g. testing against gitlab.com).
+  airgap: true
+
+  # Container runtime. auto = detect docker, then podman. Or force docker/podman.
+  container_runtime: auto
+
+  # jq powers the Step 5 severity summary. It is OPTIONAL — without it the
+  # summary shows UNKNOWN but the scan still runs.
+  #   prefer: host  = use jq from PATH if present.
+  #   install_url   = if jq is absent, download it from here to .appsec-results/bin.
+  #                   {os} and {arch} are filled from `uname` (e.g. linux/amd64,
+  #                   darwin/arm64). Leave empty to just degrade to UNKNOWN.
+  jq:
+    prefer: host
+    install_url: ""   # e.g. https://jfrog.internal/artifactory/tools/jq/{os}/{arch}/jq
+
+  # CI/CD Catalog resolution (per run).
+  catalog:
+    #   online  = resolve component versions live against gitlab_instance.
+    #   offline = skip the network, use vendored snapshots in reference/catalog/.
+    mode: online
+    # Anonymous API reads are attempted first. If gitlab_instance rejects them,
+    # the skill asks you to create a read_api PAT and name the env var holding it
+    # here (e.g. GITLAB_READ_TOKEN). Leave empty for anonymous-only.
+    auth_token_env: ""
+
+  # Container scanning: names of env vars holding registry credentials, used both
+  # when GTCS pulls a BYO image and when a local build must pull a FROM base from
+  # the internal registry.
+  container_registry:
+    user_env: CS_REGISTRY_USER
+    password_env: CS_REGISTRY_PASSWORD
+
+# ─────────────────────────────────────────────────────────────────────────
+# Profiles
+# ─────────────────────────────────────────────────────────────────────────
 default_profile: company
 
 profiles:
-  # ---------------------------------------------------------------------
-  # company — production preferences (internal GitLab instance).
-  # Component paths under devops/ci-catalogue are PLACEHOLDERS: confirm the
-  # exact project paths in your instance's CI/CD Catalog before relying on
-  # drift checks.
-  # ---------------------------------------------------------------------
+  # company — production preferences (internal GitLab + internal JFrog).
+  # image: is what actually RUNS (admin-pinned; edit to your JFrog path).
+  # component: is the CI/CD Catalog path, resolved every run for its usage guide
+  # (README) and a drift advisory telling you when to bump image:.
+  # Both are placeholders below — set them to your real paths.
   company:
-    gitlab_instance: https://gitlab.company.com
-    # none = anonymous catalog reads. To authenticate, set this to the NAME
-    # of an env var holding a read_api PAT, e.g. GITLAB_COMPANY_TOKEN.
-    catalog_auth: none
+    gitlab_instance: https://gitlab.internal.example
     categories:
       sast:
-        # Preference: Fortify (licensed images from the internal registry).
-        components:
-          - devops/ci-catalogue/fortify-scan-python3
-          - devops/ci-catalogue/fortify-scan-js
-        runners: [fortify-python.sh, fortify-js.sh]
+        component: components/sast/sast
+        image: jfrog.internal/security/semgrep:6
+        runner: gitlab-sast.sh
         enabled: true
       dependency_scanning:
-        # GitLab analyzer generates an SBOM locally; vulnerability matching
-        # happens in GitLab after push. Local run needs the licensed-feature
-        # mirror flag GITLAB_FEATURES=dependency_scanning (set by SKILL.md).
-        components: [components/dependency-scanning/main]
-        runners: [gitlab-dependency-scanning.sh]
+        component: components/dependency-scanning/main
+        image: jfrog.internal/security/dependency-scanning:2
+        runner: gitlab-dependency-scanning.sh
         enabled: true
       secret_detection:
-        components: [components/secret-detection/secret-detection]
-        runners: [secret-detection.sh]
+        component: components/secret-detection/secret-detection
+        image: jfrog.internal/security/secrets:7
+        runner: secret-detection.sh
         enabled: true
       container_scanning:
-        # GTCS. Requires CS_IMAGE (or CI_APPLICATION_REPOSITORY+TAG) naming
-        # the image to scan.
-        components: [components/container-scanning/container-scanning]
-        runners: [gitlab-container-scanning.sh]
+        component: components/container-scanning/container-scanning
+        image: jfrog.internal/security/container-scanning:8
+        runner: gitlab-container-scanning.sh
         enabled: true
       dast_web:
-        # CI-only: DAST needs a running deployed target. The skill emits a
-        # ready-to-paste CI include + gathers target URL / OpenAPI / Postman
-        # inputs. Local design-time stand-in: the appsec-dast-sim skill.
-        components: [components/dast/dast]
-        runners: [none]
+        component: components/dast/dast
+        image: ""          # CI-only: DAST needs a running deployed target
+        runner: none
         enabled: false
       dast_api:
-        components: [components/dast/dast]
-        runners: [none]
+        component: components/dast/dast
+        image: ""
+        runner: none
         enabled: false
-    # Legacy env-var-driven scanners — unchanged v1 behavior. Remove an
-    # entry to stop offering that scanner.
+    # Legacy env-var-driven scanners — unchanged v1 behavior. Remove an entry to
+    # stop offering that scanner. image comes from APPSEC_REGISTRY + *_IMAGE env.
     additional_scanners:
       parasoft_gradle: { runner: parasoft-gradle.sh, image_env: PARASOFT_IMAGE, condition: HAS_GRADLE }
       parasoft_maven:  { runner: parasoft-maven.sh,  image_env: PARASOFT_IMAGE, condition: HAS_POM_NO_GRADLE }
@@ -67,36 +102,39 @@ profiles:
       scantist_maven:  { runner: scantist-maven.sh,  image_env: SCANTIST_IMAGE, condition: HAS_POM_NO_GRADLE }
       trivy:           { runner: trivy.sh,           image_env: TRIVY_IMAGE,    condition: TRIVY_TARGET_SET }
 
-  # ---------------------------------------------------------------------
-  # public-test — end-to-end testing against the public gitlab.com catalog
-  # and public analyzer images. No internal infrastructure required.
-  # ---------------------------------------------------------------------
+  # public-test — end-to-end testing against the PUBLIC gitlab.com catalog and
+  # public analyzer images. Requires internet; refused when settings.airgap=true.
   public-test:
     gitlab_instance: https://gitlab.com
-    catalog_auth: none
     categories:
       sast:
-        components: [components/sast/sast]
-        runners: [gitlab-sast.sh]
+        component: components/sast/sast
+        image: registry.gitlab.com/security-products/semgrep:6
+        runner: gitlab-sast.sh
         enabled: true
       dependency_scanning:
-        components: [components/dependency-scanning/main]
-        runners: [gitlab-dependency-scanning.sh]
+        component: components/dependency-scanning/main
+        image: registry.gitlab.com/security-products/dependency-scanning:2
+        runner: gitlab-dependency-scanning.sh
         enabled: true
       secret_detection:
-        components: [components/secret-detection/secret-detection]
-        runners: [secret-detection.sh]
+        component: components/secret-detection/secret-detection
+        image: registry.gitlab.com/security-products/secrets:7
+        runner: secret-detection.sh
         enabled: true
       container_scanning:
-        components: [components/container-scanning/container-scanning]
-        runners: [gitlab-container-scanning.sh]
+        component: components/container-scanning/container-scanning
+        image: registry.gitlab.com/security-products/container-scanning:8
+        runner: gitlab-container-scanning.sh
         enabled: true
       dast_web:
-        components: [components/dast/dast]
-        runners: [none]
+        component: components/dast/dast
+        image: ""
+        runner: none
         enabled: false
       dast_api:
-        components: [components/dast/dast]
-        runners: [none]
+        component: components/dast/dast
+        image: ""
+        runner: none
         enabled: false
     additional_scanners: {}
