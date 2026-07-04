@@ -50,10 +50,17 @@ fi
 # =============================================================================
 # SCAN — mirrors the GitLab CI/CD Catalog component script.
 # Component image: "$image_prefix/container-scanning:$image_tag$image_suffix"
-# Component script: /analyzer run
+# Component script: gtcs scan (image cmd; verified against container-scanning:8)
 # =============================================================================
 
-/analyzer run
+if command -v gtcs >/dev/null 2>&1; then
+  gtcs scan
+elif [ -x /analyzer ]; then
+  /analyzer run
+else
+  echo "ERROR: neither gtcs nor /analyzer found in the container-scanning image" >&2
+  exit 1
+fi
 
 if [ -f "${REPORT}" ]; then
   cp "${REPORT}" "${RESULTS}/gl-container-scanning-report.json"
