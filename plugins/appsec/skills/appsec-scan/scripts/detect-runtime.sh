@@ -2,7 +2,6 @@
 set -euo pipefail
 
 runtime="${CONTAINER_RUNTIME:-auto}"
-[ -z "$runtime" ] && runtime="auto"
 
 case "$runtime" in
   auto)

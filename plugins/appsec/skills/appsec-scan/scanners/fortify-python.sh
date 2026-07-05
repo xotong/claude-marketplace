@@ -30,11 +30,11 @@ cd /workspace
 # Sync Python dependencies so Fortify can follow cross-module data flows.
 # uv is preferred (faster lock resolution). Falls back to pip if uv is absent.
 if command -v uv >/dev/null 2>&1; then
-  uv sync --all-extras 2>/dev/null || true
+  uv sync --all-extras || echo "WARNING: dependency install failed — Fortify dataflow analysis may be incomplete" >&2
 elif [ -f requirements.txt ]; then
-  pip install -r requirements.txt --quiet 2>/dev/null || true
+  pip install -r requirements.txt --quiet || echo "WARNING: dependency install failed — Fortify dataflow analysis may be incomplete" >&2
 elif [ -f requirements-dev.txt ]; then
-  pip install -r requirements-dev.txt --quiet 2>/dev/null || true
+  pip install -r requirements-dev.txt --quiet || echo "WARNING: dependency install failed — Fortify dataflow analysis may be incomplete" >&2
 fi
 
 # =============================================================================

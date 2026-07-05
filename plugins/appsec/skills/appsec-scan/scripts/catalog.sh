@@ -27,7 +27,7 @@ curl_get() {
     token_value=
   fi
   if [ -n "$token_value" ]; then
-    curl -sf --max-time 10 -H "PRIVATE-TOKEN: $token_value" "$url"
+    curl -sf --max-time 10 --config <(printf 'header = "PRIVATE-TOKEN: %s"\n' "$token_value") "$url"
   else
     curl -sf --max-time 10 "$url"
   fi

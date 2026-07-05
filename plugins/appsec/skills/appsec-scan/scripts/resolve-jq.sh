@@ -24,12 +24,16 @@ case "$arch" in
 esac
 
 cache_dir="${APPSEC_RESULTS_DIR:-.appsec-results}"
-mkdir -p "$cache_dir/bin"
+mkdir -p "$cache_dir/bin" || {
+  echo "WARNING: cannot create $cache_dir/bin; severity summary will show UNKNOWN" >&2
+  exit 0
+}
 jq_path="$(cd "$cache_dir/bin" && pwd)/jq"
 url="${JQ_INSTALL_URL//\{os\}/$os}"
 url="${url//\{arch\}/$arch}"
 
-if ! curl -fsSL "$url" -o "$jq_path" || ! chmod +x "$jq_path"; then
+# ponytail: no checksum verification — internal TLS registry is the trust boundary; add settings.jq.sha256 if that changes
+if ! curl -fsSL --max-time 30 "$url" -o "$jq_path" || ! chmod +x "$jq_path"; then
   echo "WARNING: failed to download jq from $url" >&2
   exit 0
 fi

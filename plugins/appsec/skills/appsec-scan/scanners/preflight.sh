@@ -17,7 +17,7 @@ fi
 if [ -n "${CATALOG_AUTH_ENV:-}" ]; then
   catalog_auth_value="$(printenv "$CATALOG_AUTH_ENV" 2>/dev/null || true)"
   [ -z "$catalog_auth_value" ] && \
-    ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by the active profile's catalog_auth) is not set")
+    ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by settings.catalog.auth_token_env) is not set")
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,15 +29,14 @@ if [ "${APPSEC_AIRGAP:-}" = "true" ] && [ "${APPSEC_PROFILE:-}" = "public-test" 
   ERRORS+=("profile 'public-test' targets gitlab.com and is not allowed when airgap=true")
 fi
 
-# Secret Detection derives its image from APPSEC_REGISTRY when no explicit image
-# is set, so it is always available as long as Docker can pull the configured
-# registry path. Legacy scanner images remain opt-in.
+# Category analyzer images (SAST/DS/Secret Detection/CS) come from the profile's
+# image: values via load-prefs.sh. Legacy additional_scanners images are env-var
+# opt-in — this check is informational only.
 if [ -z "${FORTIFY_PY_IMAGE:-}" ] && [ -z "${FORTIFY_JS_IMAGE:-}" ] && \
    [ -z "${PARASOFT_IMAGE:-}" ]   && [ -z "${PYLINT_IMAGE:-}" ]     && \
    [ -z "${ESLINT_IMAGE:-}" ]     && [ -z "${SCANTIST_IMAGE:-}" ]   && \
-   [ -z "${TRIVY_IMAGE:-}" ]      && [ -z "${SECRET_DETECTION_IMAGE:-}" ] && \
-   [ -z "${SECRET_DETECTION_IMAGE_PREFIX:-}" ]; then
-  echo "INFO: No legacy scanner image env vars are set; GitLab Secret Detection will use APPSEC_REGISTRY/secrets:7."
+   [ -z "${TRIVY_IMAGE:-}" ]; then
+  echo "INFO: no legacy scanner image env vars set; only the GitLab-native category scanners will run."
 fi
 
 if [ ${#ERRORS[@]} -gt 0 ]; then
