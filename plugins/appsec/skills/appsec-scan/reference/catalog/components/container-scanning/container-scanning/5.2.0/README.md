@@ -1,3 +1,4 @@
+<!-- Vendored snapshot: fetched 2026-07-04 from gitlab.com CI/CD Catalog (component tag 5.2.0) -->
 # Container Scanning
 
 ## Usage

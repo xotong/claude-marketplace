@@ -82,6 +82,11 @@ class SkillDocumentationTest(unittest.TestCase):
         # No false all-clear when a selected scanner produced no report.
         self.assertIn("HAS_MISSING_REPORT", SKILL_TEXT)
         self.assertIn("NOT an all-clear", SKILL_TEXT)
+        # v2 config loading: deterministic script, no model-side YAML parsing.
+        self.assertIn("load-prefs.sh", SKILL_TEXT)
+        self.assertIn("ENABLED_COMPONENTS", SKILL_TEXT)
+        # v1 prefix/tag image construction must stay dead in the orchestration doc.
+        self.assertNotIn("IMAGE_PREFIX", SKILL_TEXT)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):

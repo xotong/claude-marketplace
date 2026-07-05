@@ -4,10 +4,10 @@
 # Target       : Registry image (GTCS) or docker-save tarball (Trivy offline)
 # CI component : gitlab.com/components/container-scanning/container-scanning@~latest
 # Last synced  : 2026-07-04
-# Image env var: GITLAB_CS_IMAGE / GITLAB_CS_IMAGE_PREFIX / GITLAB_CS_IMAGE_TAG
-# Image note   : Tag normally comes from SKILL.md's catalog-resolved component
-#                template; documented defaults (registry.gitlab.com/
-#                security-products, tag 8) are offline fallbacks only.
+# Image env var: GITLAB_CS_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
+# Image note   : The pinned profile image: is what runs; the catalog-resolved
+#                template is advisory only (README + drift). Public defaults
+#                (registry.gitlab.com/security-products, tag 8) suit public-test.
 # Scan modes   : CS_SCAN_MODE=registry uses gtcs / analyzer with CS_IMAGE
 #                CS_SCAN_MODE=archive uses bundled trivy on CS_ARCHIVE tarball
 # Output       : gl-container-scanning-report.json / container-scan-trivy.json

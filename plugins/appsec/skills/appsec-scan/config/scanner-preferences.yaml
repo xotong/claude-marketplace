@@ -101,6 +101,8 @@ profiles:
       scantist_js:     { runner: scantist-js.sh,     image_env: SCANTIST_IMAGE, condition: HAS_PACKAGE_JSON }
       scantist_maven:  { runner: scantist-maven.sh,  image_env: SCANTIST_IMAGE, condition: HAS_POM_NO_GRADLE }
       trivy:           { runner: trivy.sh,           image_env: TRIVY_IMAGE,    condition: TRIVY_TARGET_SET }
+      fortify_python:  { runner: fortify-python.sh,  image_env: FORTIFY_PY_IMAGE, condition: HAS_REQUIREMENTS }
+      fortify_js:      { runner: fortify-js.sh,      image_env: FORTIFY_JS_IMAGE, condition: HAS_PACKAGE_JSON }
 
   # public-test — end-to-end testing against the PUBLIC gitlab.com catalog and
   # public analyzer images. Requires internet; refused when settings.airgap=true.

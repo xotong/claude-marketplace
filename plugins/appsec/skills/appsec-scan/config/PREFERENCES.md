@@ -7,6 +7,8 @@ skill. It is versioned, so changes go through an MR with Platform Team approval
 Design principle for self-hosted / airgap environments: **everything is
 declared here so the model only reads config, never guesses endpoints.** Pin
 `image:` values explicitly; do not rely on the model to infer registry paths.
+`scripts/load-prefs.sh` converts this file into shell variables and `RUN_*`
+flags — the model never parses the YAML itself.
 
 ## Switching profiles
 
@@ -88,8 +90,10 @@ The six categories are `sast`, `dependency_scanning`, `secret_detection`,
 
 ## Category notes
 
-- **sast** — `company` pins the Fortify or GitLab SAST image you mirror; the
-  Semgrep analyzer's rules are baked into the image (no network inside).
+- **sast** — `company` pins the GitLab SAST (Semgrep) image you mirror; the
+  analyzer's rules are baked into the image (no network inside). Fortify runs
+  as an *additional scanner* (`fortify_python` / `fortify_js` entries, see
+  below), not as the sast category runner.
 - **dependency_scanning** — generates an **SBOM** locally
   (`gl-sbom-*.cdx.json`); vulnerability matching happens in GitLab after push.
   The skill passes `GITLAB_FEATURES=dependency_scanning` to mirror the licensed
@@ -124,9 +128,14 @@ internal registry, the skill tells you to run `<runtime> login <registry-host>`
 
 ## Legacy `additional_scanners`
 
-Parasoft, Pylint, ESLint, Scantist, and Trivy keep their v1 env-var behavior
-(image from `APPSEC_REGISTRY` + the named `image_env`). Remove an entry to
-retire that scanner.
+Fortify, Parasoft, Pylint, ESLint, Scantist, and Trivy keep their v1 env-var
+behavior (image from `APPSEC_REGISTRY` + the named `image_env`). An entry's
+presence sets its `RUN_*` flag (mapping table: `scripts/load-prefs.sh` header);
+remove an entry to retire that scanner. The `condition:` field names the
+SKILL.md Step 3 project-detection flag that must also hold at scan time — one
+of `HAS_GRADLE`, `HAS_POM_NO_GRADLE`, `HAS_REQUIREMENTS`, `HAS_PACKAGE_JSON`,
+`TRIVY_TARGET_SET`. It documents the gate for admins; the same condition is
+hard-coded in the scanner's Step 4 block.
 
 ## Per-run env overrides (users)
 

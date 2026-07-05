@@ -36,6 +36,7 @@ skills/appsec-scan/
 │   ├── scanner-preferences.yaml  ← admin-owned category→scanner profiles
 │   └── PREFERENCES.md            ← schema + switching guide
 ├── scripts/
+│   ├── load-prefs.sh         ← YAML → shell env/RUN_* flags (the model never parses YAML)
 │   ├── catalog.sh            ← CI/CD Catalog resolver (tags, template, README, drift)
 │   ├── detect-runtime.sh     ← picks docker or podman
 │   ├── resolve-jq.sh         ← host jq, or fetch from settings.jq.install_url
@@ -77,17 +78,11 @@ fallback snapshots are vendored under `reference/catalog/`).
 | `ESLINT_IMAGE` | ESLint image (with npm/npx) | — |
 | `SCANTIST_IMAGE` | Scantist image (with Java + curl + sudo) | — |
 | `TRIVY_IMAGE` | Trivy image | — |
-| `SECRET_DETECTION_IMAGE` | Full GitLab Secret Detection analyzer image override | — |
-| `SECRET_DETECTION_IMAGE_PREFIX` | Registry prefix for the `secrets` analyzer | profile-dependent |
-| `SECRET_DETECTION_IMAGE_TAG` | Secret Detection analyzer major tag | catalog-resolved, else `7` |
-| `SECRET_DETECTION_IMAGE_SUFFIX` | Optional image suffix such as `-fips` | — |
+| `SECRET_DETECTION_IMAGE` | GitLab Secret Detection analyzer image (full ref) | profile `image:` (env override wins) |
 | `SECRET_DETECTION_EXCLUDED_PATHS` | Paths excluded by the analyzer | — |
-| `GITLAB_SAST_IMAGE` | Full GitLab SAST (Semgrep) analyzer image override | — |
-| `GITLAB_SAST_IMAGE_PREFIX` / `GITLAB_SAST_IMAGE_TAG` | Semgrep analyzer prefix/tag | profile-dependent / catalog-resolved, else `6` |
-| `GITLAB_DS_IMAGE` | Full GitLab Dependency Scanning analyzer image override | — |
-| `GITLAB_DS_IMAGE_PREFIX` / `GITLAB_DS_IMAGE_TAG` | DS analyzer prefix/tag | profile-dependent / catalog-resolved, else `2` |
-| `GITLAB_CS_IMAGE` | Full GitLab Container Scanning analyzer image override | — |
-| `GITLAB_CS_IMAGE_PREFIX` / `GITLAB_CS_IMAGE_TAG` | CS analyzer prefix/tag | profile-dependent / catalog-resolved, else `8` |
+| `GITLAB_SAST_IMAGE` | GitLab SAST (Semgrep) analyzer image (full ref) | profile `image:` (env override wins) |
+| `GITLAB_DS_IMAGE` | GitLab Dependency Scanning analyzer image (full ref) | profile `image:` (env override wins) |
+| `GITLAB_CS_IMAGE` | GitLab Container Scanning analyzer image (full ref) | profile `image:` (env override wins) |
 | `CS_IMAGE` | Container image:tag for Container Scanning to scan | — |
 | `DEVSECOPS_IMPORT_URL` | DTP server URL for Scantist JAR download | — |
 | `APP_NAME` | Application name used in Fortify build IDs | `basename $PWD` |
@@ -136,43 +131,22 @@ fi
 
 ## Step 1.5 — Load scanner preferences and detect runtime
 
-Read `config/scanner-preferences.yaml` from `$SKILL_DIR` with the Read tool and
-resolve it yourself — do not shell out to a YAML parser. Everything the run
-needs is declared in that file; do not infer endpoints or images.
-
-1. **Global `settings:`** → export: `APPSEC_AIRGAP` (from `airgap`),
-   `CONTAINER_RUNTIME` (from `container_runtime`), `JQ_INSTALL_URL` (from
-   `jq.install_url`), `CATALOG_MODE` (from `catalog.mode`), `CATALOG_AUTH_ENV`
-   (from `catalog.auth_token_env`), and the container-registry credential env
-   var *names* (`container_registry.user_env` / `password_env`).
-2. **Active profile** = `$APPSEC_PROFILE` if set, else `default_profile`. If it
-   does not exist, stop and list the available profiles. If `APPSEC_AIRGAP=true`
-   and the profile is `public-test`, stop — that profile targets gitlab.com.
-3. **Per category** read `component`, `image`, `runner`, `enabled`. The `image`
-   is what actually runs — set each analyzer's `*_IMAGE` variable from it (an
-   explicit `*_IMAGE` env var override still wins). Set one `RUN_*` flag per
-   enabled runner.
+Run `scripts/load-prefs.sh` — it parses `config/scanner-preferences.yaml` and
+prints ready-to-eval shell assignments. Do not parse the YAML yourself and do
+not infer endpoints or images: everything the run needs is emitted by the
+script, and the runner→`RUN_*` flag mapping table lives in its header comment.
 
 ```bash
-APPSEC_PROFILE="${APPSEC_PROFILE:-company}"   # ← resolved profile name
-APPSEC_AIRGAP="true"                           # ← settings.airgap
-CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-auto}" # ← settings.container_runtime
-GITLAB_INSTANCE="https://gitlab.internal.example"  # ← profile.gitlab_instance
-CATALOG_MODE="online"                          # ← settings.catalog.mode
-CATALOG_AUTH_ENV=""                            # ← settings.catalog.auth_token_env (env var NAME)
-JQ_INSTALL_URL=""                              # ← settings.jq.install_url
-CS_USER_ENV="CS_REGISTRY_USER"; CS_PASS_ENV="CS_REGISTRY_PASSWORD"  # ← settings.container_registry
-
-# Analyzer images come from each category's image: (env override wins)
-SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-jfrog.internal/security/secrets:7}"
-GITLAB_SAST_IMAGE="${GITLAB_SAST_IMAGE:-jfrog.internal/security/semgrep:6}"
-GITLAB_DS_IMAGE="${GITLAB_DS_IMAGE:-jfrog.internal/security/dependency-scanning:2}"
-GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-jfrog.internal/security/container-scanning:8}"
-
-# One RUN_* flag per enabled runner (category runners + additional_scanners):
-RUN_FORTIFY=false; RUN_GITLAB_SAST=false; RUN_GITLAB_DS=false
-RUN_SECRET_DETECTION=false; RUN_GITLAB_CS=false
-RUN_PARASOFT=false; RUN_PYLINT=false; RUN_ESLINT=false; RUN_SCANTIST=false; RUN_TRIVY=false
+PREFS_ENV="$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-preferences.yaml")" || {
+  echo "ERROR: failed to load scanner preferences — see the message above."
+  echo "Fix config/scanner-preferences.yaml (or unset APPSEC_PROFILE) and re-run."
+  return 1
+}
+eval "$PREFS_ENV"
+# Now set: APPSEC_PROFILE, APPSEC_AIRGAP, CONTAINER_RUNTIME, JQ_INSTALL_URL,
+# CATALOG_MODE, CATALOG_AUTH_ENV, CS_USER_ENV, CS_PASS_ENV, GITLAB_INSTANCE,
+# SECRET_DETECTION_IMAGE, GITLAB_SAST_IMAGE, GITLAB_DS_IMAGE, GITLAB_CS_IMAGE,
+# one RUN_* flag per enabled runner, and ENABLED_COMPONENTS ("component|runner" pairs).
 
 # Detect the container runtime (docker or podman) — hard requirement.
 RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
@@ -181,8 +155,14 @@ RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runt
 echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE   Runtime: $RUNTIME   Airgap: $APPSEC_AIRGAP"
 ```
 
-Explicit `image:` values are what run (pinned/safe for weak self-hosted models);
-Step 2.5 resolves `component:` only for its usage guide and a drift advisory.
+- The emitted `*_IMAGE` values are what actually run (pinned by the admin);
+  Step 2.5 resolves `component:` only for its usage guide and a drift advisory.
+  An explicit `*_IMAGE` env var set before the run still wins over the YAML.
+- If load-prefs.sh exits nonzero (unknown profile, or `public-test` requested
+  while `airgap: true`), show its stderr to the user verbatim and stop.
+- If `GITLAB_INSTANCE` still points at a `*.example` host or the images still
+  point at `jfrog.internal/...`, the admin has not configured this profile yet —
+  stop and direct the user to the repo README section "AppSec airgap setup".
 
 ---
 
@@ -196,6 +176,10 @@ CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" APPSEC_AIRGAP="$APPSEC_AIRGAP" \
   APPSEC_PROFILE="$APPSEC_PROFILE" CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
   bash "$SCANNERS_DIR/preflight.sh" || return 1
 ```
+
+If preflight fails, show its output to the user and stop — its error lines name
+exactly which variables to set. Never start scanners against an incomplete
+environment.
 
 ---
 
@@ -211,10 +195,14 @@ thing that talks to the network, and only to `$GITLAB_INSTANCE`. When
 CATALOG_CACHE=".appsec-results/catalog"
 mkdir -p "$CATALOG_CACHE"
 
-# Repeat for each enabled category component (from Step 1.5), pairing each
-# component with its runner script (or "none"):
-bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "components/sast/sast" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
-bash "$SCRIPTS_DIR/catalog.sh" check-drift "components/sast/sast" "$CATALOG_CACHE" "$SCANNERS_DIR/gitlab-sast.sh"
+# ENABLED_COMPONENTS comes from Step 1.5: space-separated "component|runner" pairs.
+for pair in $ENABLED_COMPONENTS; do
+  component="${pair%|*}"; runner="${pair#*|}"
+  bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "$component" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
+  if [ "$runner" != "none" ]; then
+    bash "$SCRIPTS_DIR/catalog.sh" check-drift "$component" "$CATALOG_CACHE" "$SCANNERS_DIR/$runner"
+  fi
+done
 ```
 
 If `CATALOG_MODE=offline`, skip the `resolve` network call and read straight
@@ -234,10 +222,11 @@ Then present the user a resolution table before scanning:
   tags were considered and why one was chosen (highest stable release).
 - `check-drift` prints `DRIFT:` lines when the component's defaults have moved
   ahead of the local runner — surface these to the user verbatim.
-- Read each resolved `template.yml` in the cache and use its `image_tag` input
-  default as the analyzer tag for Step 4 (offline: keep the runner's documented
-  fallback). The cached `README.md` is the component's official guide — offer to
-  summarize it if the user wants details on any component.
+- The resolved `template.yml` and `README.md` are **advisory only**: the README
+  is the component's official usage guide (offer to summarize it), and `DRIFT:`
+  lines tell the admin when to bump the pinned `image:` in the preferences.
+  Never derive the Step 4 analyzer images from the catalog — they were fixed in
+  Step 1.5.
 
 ---
 
@@ -265,6 +254,11 @@ HAS_REQUIREMENTS=false; HAS_DOCKERFILE=false
 { [ -f requirements.txt ] || [ -f pyproject.toml ]; } && HAS_REQUIREMENTS=true
 [ -f Dockerfile ]                                      && HAS_DOCKERFILE=true
 
+# Composite flags — exactly the names used by the `condition:` field on
+# additional_scanners entries in config/scanner-preferences.yaml:
+HAS_POM_NO_GRADLE=false; { $HAS_POM && ! $HAS_GRADLE; } && HAS_POM_NO_GRADLE=true
+TRIVY_TARGET_SET=false;  [ -n "${TRIVY_TARGET:-}" ]     && TRIVY_TARGET_SET=true
+
 echo "Project: $APP_NAME  Branch: $BRANCH"
 echo "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Docker=$HAS_DOCKERFILE"
 
@@ -288,7 +282,9 @@ behavior). Run the parallel scanners first (background `&`), then the
 sequential ones.
 
 ### Fortify SAST — Python
-*Category: sast (company). Applies when: Python project detected. Runner: `scanners/fortify-python.sh`.*
+*Additional scanner (`additional_scanners.fortify_python`). Applies when: Python
+project detected and `FORTIFY_PY_IMAGE` is set. Image: `APPSEC_REGISTRY/$FORTIFY_PY_IMAGE`.
+Runner: `scanners/fortify-python.sh`.*
 
 ```bash
 if $RUN_FORTIFY && $HAS_REQUIREMENTS && [ -n "${FORTIFY_PY_IMAGE:-}" ]; then
@@ -306,7 +302,9 @@ fi
 ```
 
 ### Fortify SAST — JS/TS
-*Category: sast (company). Applies when: JS/TS project detected. Runner: `scanners/fortify-js.sh`.*
+*Additional scanner (`additional_scanners.fortify_js`). Applies when: JS/TS
+project detected and `FORTIFY_JS_IMAGE` is set. Image: `APPSEC_REGISTRY/$FORTIFY_JS_IMAGE`.
+Runner: `scanners/fortify-js.sh`.*
 
 ```bash
 if $RUN_FORTIFY && $HAS_PACKAGE_JSON && [ -n "${FORTIFY_JS_IMAGE:-}" ]; then
@@ -560,7 +558,7 @@ fi
 *Additional scanner, sequential. Applies when: Maven project (no Gradle). Runner: `scanners/parasoft-maven.sh`.*
 
 ```bash
-if $RUN_PARASOFT && $HAS_POM && ! $HAS_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
+if $RUN_PARASOFT && $HAS_POM_NO_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
   echo "[Parasoft/Maven] Running..."
   "$RUNTIME" run --rm \
     -v "$PWD:/workspace" \
@@ -579,7 +577,7 @@ fi
 *Additional scanner, sequential — runs after Parasoft Maven (needs compiled artifacts). Runner: `scanners/scantist-maven.sh`.*
 
 ```bash
-if $RUN_SCANTIST && $HAS_POM && ! $HAS_GRADLE && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
+if $RUN_SCANTIST && $HAS_POM_NO_GRADLE && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
   echo "[Scantist/Maven] Running..."
   "$RUNTIME" run --rm \
     --network=host \
@@ -598,7 +596,7 @@ fi
 *Additional scanner. Run if `TRIVY_TARGET` is set. Runner: `scanners/trivy.sh`.*
 
 ```bash
-if $RUN_TRIVY && [ -n "${TRIVY_TARGET:-}" ] && [ -n "${TRIVY_IMAGE:-}" ]; then
+if $RUN_TRIVY && $TRIVY_TARGET_SET && [ -n "${TRIVY_IMAGE:-}" ]; then
   echo "[Trivy] Scanning ${TRIVY_TARGET:-}..."
   "$RUNTIME" run --rm \
     -v /var/run/docker.sock:/var/run/docker.sock \

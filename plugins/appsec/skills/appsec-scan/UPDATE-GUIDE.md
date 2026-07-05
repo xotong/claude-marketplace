@@ -189,6 +189,9 @@ for each of: `components/sast/sast`, `components/secret-detection/secret-detecti
 
 Copy the new `<tag>/template.yml` + `README.md` from the refresh dir into `reference/catalog/<component-path>/<tag>/` (keep prior tag dirs).
 
+Add or refresh the provenance line at the top of each copied `README.md`:
+`<!-- Vendored snapshot: fetched YYYY-MM-DD from <gitlab instance> CI/CD Catalog (component tag <tag>) -->`
+
 Run `check-drift` for each component against its runner script and update the runner's `# Last synced` header.
 
 Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
@@ -210,15 +213,13 @@ Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
 
 The Secret Detection scanner mirrors the GitLab CI/CD Catalog component:
 
-- Image shape: `$image_prefix/secrets:$image_tag$image_suffix`
-- Default local image: `${SECRET_DETECTION_IMAGE_PREFIX:-$APPSEC_REGISTRY}/secrets:${SECRET_DETECTION_IMAGE_TAG:-7}${SECRET_DETECTION_IMAGE_SUFFIX:-}`
+- Image: the active profile's `secret_detection.image:` (full ref), exported as
+  `SECRET_DETECTION_IMAGE` by `scripts/load-prefs.sh` in Step 1.5; a pre-set
+  `SECRET_DETECTION_IMAGE` env var overrides it for one run.
 - Script block: `/analyzer run`
 - Report artifact: `gl-secret-detection-report.json`
 
-Use `SECRET_DETECTION_IMAGE` to override the full image path, or set
-`SECRET_DETECTION_IMAGE_PREFIX`, `SECRET_DETECTION_IMAGE_TAG`, and
-`SECRET_DETECTION_IMAGE_SUFFIX` to match your internal mirror. For public-image
-smoke testing, use:
+For public-image smoke testing, use:
 
 ```bash
 export SECRET_DETECTION_IMAGE="registry.gitlab.com/security-products/secrets:7"
@@ -263,6 +264,19 @@ ls -la .appsec-results/
 
 If the isolated run passes, run the full `appsec-scan` skill to confirm the
 orchestration still works end-to-end.
+
+## Opt-in docker smoke tests
+
+Two tests pull real public analyzer images and are skipped unless explicitly
+enabled (they need docker + internet, so repo CI skips them too):
+
+```bash
+RUN_SECRET_DETECTION_SMOKE=1 python3 -m pytest tests/test_secret_detection.py -v
+RUN_GITLAB_SAST_SMOKE=1      python3 -m pytest tests/test_skill_doc.py -v
+```
+
+Run them before releasing changes to `secret-detection.sh`, `gitlab-sast.sh`,
+or their SKILL.md blocks.
 
 ---
 

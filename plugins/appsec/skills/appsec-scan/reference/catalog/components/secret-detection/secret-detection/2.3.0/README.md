@@ -1,3 +1,4 @@
+<!-- Vendored snapshot: fetched 2026-07-04 from gitlab.com CI/CD Catalog (component tag 2.3.0) -->
 # Secret Detection
 
 Read more about this feature here: https://docs.gitlab.com/ee/user/application_security/secret_detection.

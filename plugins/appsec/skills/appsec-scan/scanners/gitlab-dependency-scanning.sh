@@ -4,10 +4,10 @@
 # Target       : Source tree in analyzer workspace
 # CI component : gitlab.com/components/dependency-scanning/main@~latest
 # Last synced  : 2026-07-04
-# Image env var: GITLAB_DS_IMAGE / GITLAB_DS_IMAGE_PREFIX / GITLAB_DS_IMAGE_TAG
-# Image note   : Tag normally comes from SKILL.md's catalog-resolved component
-#                template; documented defaults (registry.gitlab.com/
-#                security-products, tag 2) are offline fallbacks only.
+# Image env var: GITLAB_DS_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
+# Image note   : The pinned profile image: is what runs; the catalog-resolved
+#                template is advisory only (README + drift). Public defaults
+#                (registry.gitlab.com/security-products, tag 2) suit public-test.
 # Requires     : GITLAB_FEATURES=dependency_scanning (set by SKILL.md docker run — mirrors the licensed CI environment)
 # Output       : gl-sbom-*.cdx.json (SBOM; findings matched server-side after push)
 #

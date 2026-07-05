@@ -1,4 +1,5 @@
 
+<!-- Vendored snapshot: fetched 2026-07-04 from gitlab.com CI/CD Catalog (component tag 3.4.0) -->
 This project provides components for the use of Static Application Security Testing as well as Infrastructure as Code scanning.
 
 [[_TOC_]]

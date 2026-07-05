@@ -1,3 +1,4 @@
+<!-- Vendored snapshot: fetched 2026-07-04 from gitlab.com CI/CD Catalog (component tag 2.1.0) -->
 # Component for Dependency and License Scanning
 
 This component generates a CycloneDX Software Bill of Materials, which is
