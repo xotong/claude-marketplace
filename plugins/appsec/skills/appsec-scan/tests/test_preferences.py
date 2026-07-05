@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -110,6 +112,41 @@ class ScannerPreferencesTest(unittest.TestCase):
 class HelperScriptsTest(unittest.TestCase):
     """The airgap helper scripts must exist, be executable, and behave sanely."""
 
+    def make_stub_dir(self, tmp: str, scripts: dict[str, str]) -> Path:
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        for name, body in scripts.items():
+            path = bin_dir / name
+            path.write_text(body, encoding="utf-8")
+            path.chmod(0o755)
+        return bin_dir
+
+    def add_passthrough_tools(self, bin_dir: Path, tool_names: list[str]) -> None:
+        for tool_name in tool_names:
+            tool_path = shutil.which(tool_name)
+            if tool_path is None:
+                self.fail(f"required tool {tool_name} not found on host PATH")
+            link_path = bin_dir / tool_name
+            if not link_path.exists():
+                link_path.symlink_to(tool_path)
+
+    def run_script(
+        self,
+        script_name: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        args: list[str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        bash = shutil.which("bash") or "/bin/bash"
+        return subprocess.run(
+            [bash, str(SCRIPTS_DIR / script_name), *(args or [])],
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+
     def test_helper_scripts_present_and_executable(self) -> None:
         for name in ("detect-runtime.sh", "resolve-jq.sh", "container-target.sh", "catalog.sh"):
             path = SCRIPTS_DIR / name
@@ -132,37 +169,163 @@ class HelperScriptsTest(unittest.TestCase):
     def test_resolve_jq_degrades_without_url(self) -> None:
         # jq absent (empty PATH) and no install_url → exit 0, print nothing.
         # Launch bash by absolute path so an empty PATH only hides jq, not bash.
-        import shutil
-        bash = shutil.which("bash") or "/bin/bash"
         env = dict(os.environ, PATH="", JQ_INSTALL_URL="")
-        result = subprocess.run(
-            [bash, str(SCRIPTS_DIR / "resolve-jq.sh")],
-            env=env, capture_output=True, text=True,
-        )
+        result = self.run_script("resolve-jq.sh", env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "")
 
+    def test_detect_runtime_errors_when_auto_finds_no_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, PATH=tmp, CONTAINER_RUNTIME="auto")
+            result = self.run_script("detect-runtime.sh", env=env)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "")
+        self.assertIn("no container runtime found", result.stderr)
+
+    def test_detect_runtime_rejects_invalid_forced_value(self) -> None:
+        # Contract: invalid values do not fall back to auto-detection; they hard-fail.
+        env = dict(os.environ, CONTAINER_RUNTIME="bogus")
+        result = self.run_script("detect-runtime.sh", env=env)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "")
+        self.assertIn("unsupported CONTAINER_RUNTIME 'bogus'", result.stderr)
+
+    def test_resolve_jq_returns_existing_jq_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {
+                    "jq": "#!/bin/sh\nexit 0\n",
+                },
+            )
+            env = dict(os.environ, PATH=str(bin_dir))
+            result = self.run_script("resolve-jq.sh", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.strip().endswith("/jq"))
+        self.assertEqual(result.stdout.strip(), str(bin_dir / "jq"))
+
+    def test_resolve_jq_warns_and_degrades_when_download_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {
+                    "curl": "#!/bin/sh\nexit 7\n",
+                    "uname": "#!/bin/sh\nexec /usr/bin/uname \"$@\"\n",
+                    "tr": "#!/bin/sh\nexec /usr/bin/tr \"$@\"\n",
+                    "mkdir": "#!/bin/sh\nexec /bin/mkdir \"$@\"\n",
+                    "chmod": "#!/bin/sh\nexec /bin/chmod \"$@\"\n",
+                },
+            )
+            env = dict(
+                os.environ,
+                PATH=str(bin_dir),
+                APPSEC_RESULTS_DIR=str(Path(tmp) / "results"),
+                JQ_INSTALL_URL="https://example.invalid/{os}/{arch}/jq",
+            )
+            result = self.run_script("resolve-jq.sh", env=env)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "")
+        self.assertIn("WARNING: failed to download jq", result.stderr)
+
     def test_container_target_defers_when_no_image_no_dockerfile(self) -> None:
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, CS_IMAGE="")
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "container-target.sh"), "docker", "app", ".appsec-results"],
-                cwd=tmp, env=env, capture_output=True, text=True,
+            result = self.run_script(
+                "container-target.sh",
+                cwd=tmp,
+                env=env,
+                args=["docker", "app", ".appsec-results"],
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout.strip(), "none|")
 
     def test_container_target_uses_cs_image_when_set(self) -> None:
-        import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, CS_IMAGE="jfrog.internal/app:1.2.3")
-            result = subprocess.run(
-                ["bash", str(SCRIPTS_DIR / "container-target.sh"), "docker", "app", ".appsec-results"],
-                cwd=tmp, env=env, capture_output=True, text=True,
+            result = self.run_script(
+                "container-target.sh",
+                cwd=tmp,
+                env=env,
+                args=["docker", "app", ".appsec-results"],
             )
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout.strip(), "registry|jfrog.internal/app:1.2.3")
+
+    def test_container_target_reports_build_failure_for_top_level_dockerfile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+            runtime_log = project_dir / "runtime.log"
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {
+                    "fake-runtime": (
+                        "#!/bin/sh\n"
+                        "printf '%s\\n' \"$*\" >> \"$RUNTIME_LOG\"\n"
+                        "if [ \"$1\" = \"build\" ]; then\n"
+                        "  echo 'build failed' >&2\n"
+                        "  exit 1\n"
+                        "fi\n"
+                        "exit 0\n"
+                    ),
+                },
+            )
+            self.add_passthrough_tools(bin_dir, ["mkdir", "dirname", "grep", "cat"])
+            env = dict(os.environ, PATH=str(bin_dir), RUNTIME_LOG=str(runtime_log))
+            result = self.run_script(
+                "container-target.sh",
+                cwd=tmp,
+                env=env,
+                args=["fake-runtime", "sample-app", str(project_dir / ".appsec-results")],
+            )
+
+            build_log = project_dir / ".appsec-results" / "container-build.log"
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(result.stdout.strip(), "error|build")
+            self.assertIn("Container image build failed", result.stderr)
+            self.assertIn(f"see {build_log}", result.stderr)
+            self.assertTrue(build_log.is_file())
+            self.assertIn("build -t appsec-local/sample-app:appsec-scan -f ./Dockerfile .", runtime_log.read_text(encoding="utf-8"))
+
+    def test_container_target_discovers_nested_dockerfile_and_reports_build_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            nested_dir = project_dir / "service"
+            nested_dir.mkdir()
+            (nested_dir / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+            runtime_log = project_dir / "runtime.log"
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {
+                    "fake-runtime": (
+                        "#!/bin/sh\n"
+                        "printf '%s\\n' \"$*\" >> \"$RUNTIME_LOG\"\n"
+                        "if [ \"$1\" = \"build\" ]; then\n"
+                        "  exit 1\n"
+                        "fi\n"
+                        "exit 0\n"
+                    ),
+                },
+            )
+            self.add_passthrough_tools(bin_dir, ["mkdir", "find", "dirname", "grep", "cat"])
+            env = dict(os.environ, PATH=str(bin_dir), RUNTIME_LOG=str(runtime_log))
+            result = self.run_script(
+                "container-target.sh",
+                cwd=tmp,
+                env=env,
+                args=["fake-runtime", "sample-app", str(project_dir / ".appsec-results")],
+            )
+
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(result.stdout.strip(), "error|build")
+            self.assertIn(
+                "build -t appsec-local/sample-app:appsec-scan -f ./service/Dockerfile ./service",
+                runtime_log.read_text(encoding="utf-8"),
+            )
 
 
 if __name__ == "__main__":

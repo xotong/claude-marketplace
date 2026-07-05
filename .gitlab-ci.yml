@@ -108,6 +108,26 @@ lint-shell:
         - plugins/**/scripts/**/*
     - when: never
 
+# ── AppSec skill tests ────────────────────────────────────────────────────────
+# Subprocess pytest suite for the appsec-scan helper scripts, preference schema,
+# and SKILL.md doc contract. Hermetic: container/network tools are stubbed via
+# PATH; the docker smoke tests are env-gated (RUN_*_SMOKE=1) and skipped here.
+
+test-appsec-scan:
+  stage: validate
+  image: python:3.12-slim-bookworm
+  before_script:
+    - pip install --quiet pyyaml pytest
+  script:
+    - python3 -m pytest plugins/appsec/skills/appsec-scan/tests/ -v
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      changes:
+        - plugins/appsec/**/*
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - plugins/appsec/**/*
+
 # ── Essentials drift check ───────────────────────────────────────────────────
 # Verifies that skills bundled in plugins/essentials/ are byte-for-byte identical
 # to their source plugin dirs (superpowers, anthropic-feature-dev, anthropic-pr-review).

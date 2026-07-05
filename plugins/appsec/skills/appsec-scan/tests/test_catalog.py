@@ -119,6 +119,17 @@ exit 7
         )
 
         self.assertIn("[offline-fallback]", result.stdout)
+        component_dir = REFERENCE_CATALOG / "components" / "secret-detection" / "secret-detection"
+        tag_dirs = sorted(
+            (path for path in component_dir.iterdir() if path.is_dir()),
+            key=lambda path: tuple(int(part) for part in path.name.split(".")),
+        )
+        self.assertTrue(tag_dirs, f"missing vendored snapshot tags under {component_dir}")
+        template_path = tag_dirs[-1] / "template.yml"
+        template_text = template_path.read_text(encoding="utf-8")
+        self.assertTrue(template_text.strip(), f"{template_path} is empty")
+        self.assertIn("spec:", template_text)
+        self.assertIn("inputs:", template_text)
 
     def test_resolve_supports_nested_template_path_when_flat_path_404s(self) -> None:
         script = """#!/bin/sh
