@@ -131,12 +131,16 @@ The Platform Team renamed or retagged a scanner image.
 
 **Steps:**
 
-1. Update the env var default in the Prerequisites table in `SKILL.md`.
-2. No change needed to the scanner files — they use env vars, not hardcoded names.
-3. Remind developers to update their shell profile export:
+1. **Category scanner** (SAST / Dependency Scanning / Secret Detection /
+   Container Scanning): edit that category's `image:` in
+   `config/scanner-preferences.yaml` — that pinned ref is what runs. Nothing
+   else to touch; `scripts/load-prefs.sh` exports it at Step 1.5.
+2. **Legacy additional scanner** (Fortify, Parasoft, Pylint, ESLint, Scantist,
+   Trivy): remind developers to update their shell profile export:
    ```bash
    export FORTIFY_PY_IMAGE="fortify-sast-python:v2-jdk21"
    ```
+3. No change needed to the scanner files — they use env vars, not hardcoded names.
 
 ---
 
@@ -205,7 +209,7 @@ Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
 | CI component script changed | `scanners/<name>.sh` only |
 | New language variant for existing scanner | New `scanners/<name>-<lang>.sh` + one block in SKILL.md |
 | New scanner entirely | New `scanners/<name>.sh` + detection + wait + parse in SKILL.md |
-| Scanner image renamed/retagged | SKILL.md Prerequisites table only |
+| Scanner image renamed/retagged | `config/scanner-preferences.yaml` `image:` (categories) or the developer's env var (additional scanners) |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |
 | Scanner retired | Remove scanner file + remove blocks from SKILL.md |
 
