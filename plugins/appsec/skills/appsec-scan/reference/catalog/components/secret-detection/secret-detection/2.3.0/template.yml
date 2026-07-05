@@ -1,0 +1,50 @@
+spec:
+  inputs:
+    stage:
+      default: test
+    image_prefix:
+      default: "$CI_TEMPLATE_REGISTRY_HOST/security-products"
+    image_tag:
+      default: '7'
+    image_suffix:
+      default: ""
+    enable_mr_pipelines:
+      description: "If set to `true` secret-detection jobs run on MR Pipelines"
+      type: boolean
+      default: false
+---
+
+.secret-detection-rules:true:
+  rules:
+    # If there is an open MR on this branch do not run the job on a "Branch" pipeline
+    # https://docs.gitlab.com/ee/ci/pipelines/mr_pipeline_troubleshooting.html#two-pipelines-when-pushing-to-a-branch
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_TAG
+      when: never
+    - when: always
+
+.secret-detection-rules:false:
+  rules:
+    - if: $CI_COMMIT_BRANCH
+      when: always
+    - when: never
+
+secret_detection:
+  extends: '.secret-detection-rules:$[[ inputs.enable_mr_pipelines ]]'
+  stage: $[[ inputs.stage ]]
+  image: "$[[ inputs.image_prefix ]]/secrets:$[[ inputs.image_tag ]]$[[ inputs.image_suffix ]]"
+  services: []
+  allow_failure: true
+  variables:
+    GIT_DEPTH: "50"
+    SECRET_DETECTION_EXCLUDED_PATHS: ""
+  # `rules` must be overridden explicitly by each child job
+  # see https://gitlab.com/gitlab-org/gitlab/-/issues/218444
+  artifacts:
+    reports:
+      secret_detection: gl-secret-detection-report.json
+    paths:
+      - "gl-secret-detection-report.json"
+  script:
+    - /analyzer run

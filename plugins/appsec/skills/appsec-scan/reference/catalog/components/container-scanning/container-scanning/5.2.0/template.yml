@@ -1,0 +1,72 @@
+spec:
+  inputs:
+    stage:
+      default: test
+    analyzer_image:
+      default: $CI_TEMPLATE_REGISTRY_HOST/security-products/container-scanning:8
+      description: 'The container image of the analyzer'
+    cs_image:
+      default: "$CI_APPLICATION_REPOSITORY:$CI_APPLICATION_TAG"
+      description: 'Image to analyze'
+    cs_dockerfile_path:
+      default: "Dockerfile"
+      description: 'The path to the Dockerfile to use for generating remediations'
+    dependencies:
+      type: array
+      default: []
+      description: 'List of CI jobs that container scanning depends on. Normally not necessary, but useful if your pipeline creates artifacts that are used to customize container scanning.'
+    git_strategy:
+      default: 'none'
+      description: 'Defines the Git strategy for the `container_scanning` job. Use `fetch` to enable auto-remedation or vulnerability allowlisting.'
+    job_name:
+      default: 'container_scanning'
+      description: 'The name to give the container scanning job'
+    enable_mr_pipelines:
+      type: boolean
+      default: true
+      description: "Whether the container scanning job should run in merge request pipelines."
+
+---
+
+"$[[ inputs.job_name ]]":
+  image: "$[[ inputs.analyzer_image ]]$CS_IMAGE_SUFFIX"
+  stage: $[[ inputs.stage ]]
+  variables:
+    GIT_STRATEGY: $[[ inputs.git_strategy ]]
+    CS_IMAGE: $[[ inputs.cs_image ]]
+    CS_DOCKERFILE_PATH: $[[ inputs.cs_dockerfile_path ]]
+    CS_SCHEMA_MODEL: 15
+  allow_failure: true
+  artifacts:
+    access: 'developer'
+    reports:
+      container_scanning: gl-container-scanning-report.json
+      cyclonedx: "**/gl-sbom-*.cdx.json"
+    paths: [gl-container-scanning-report.json, "**/gl-sbom-*.cdx.json"]
+  dependencies: $[[ inputs.dependencies ]]
+  script:
+    - gtcs scan
+  rules:
+    # Add the job to merge request pipelines if there's an open merge request.
+    - if: '"$[[ inputs.enable_mr_pipelines ]]" == "true" &&
+          $CI_PIPELINE_SOURCE == "merge_request_event" &&
+          $CI_GITLAB_FIPS_MODE == "true" &&
+          "$[[ inputs.analyzer_image ]]" !~ /-(fips|ubi)\z/'
+      variables:
+        CS_IMAGE_SUFFIX: -fips
+    
+    - if: '"$[[ inputs.enable_mr_pipelines ]]" == "true" &&
+          $CI_PIPELINE_SOURCE == "merge_request_event"'
+
+    # Don't add it to a *branch* pipeline if it's already in a merge request pipeline.
+    - if: '"$[[ inputs.enable_mr_pipelines ]]" == "true" &&
+          $CI_OPEN_MERGE_REQUESTS'
+      when: never
+
+    # Add the job to branch pipelines.
+    - if: '$CI_COMMIT_BRANCH &&
+          $CI_GITLAB_FIPS_MODE == "true" &&
+          "$[[ inputs.analyzer_image ]]" !~ /-(fips|ubi)\z/'
+      variables:
+        CS_IMAGE_SUFFIX: -fips
+    - if: $CI_COMMIT_BRANCH

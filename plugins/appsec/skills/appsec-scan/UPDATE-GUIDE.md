@@ -10,6 +10,13 @@ This guide explains how to keep `appsec-scan` in sync with your GitLab CI compon
 skills/appsec-scan/
 ├── SKILL.md                ← orchestration only — edit rarely (see "When to edit SKILL.md")
 ├── UPDATE-GUIDE.md         ← this file
+├── config/
+│   ├── scanner-preferences.yaml
+│   └── PREFERENCES.md
+├── reference/
+│   └── catalog/
+├── scripts/
+│   └── catalog.sh
 └── scanners/
     ├── fortify-python.sh   ← mirrors devops/ci-catalogue/fortify-scan-python3
     ├── fortify-js.sh       ← mirrors devops/ci-catalogue/fortify-scan-js
@@ -19,6 +26,10 @@ skills/appsec-scan/
     ├── eslint.sh           ← mirrors devops/ci-catalogue/eslint
     ├── scantist-js.sh      ← mirrors devops/ci-catalogue/scantist-js-scan
     ├── scantist-maven.sh   ← mirrors devops/ci-catalogue/scantist-maven-scan (post-Maven)
+    ├── gitlab-sast.sh
+    ├── gitlab-dependency-scanning.sh
+    ├── gitlab-container-scanning.sh
+    ├── secret-detection.sh ← mirrors gitlab.com/components/secret-detection
     └── trivy.sh            ← mirrors devops/ci-catalogue/trivy-scan
 ```
 
@@ -120,12 +131,16 @@ The Platform Team renamed or retagged a scanner image.
 
 **Steps:**
 
-1. Update the env var default in the Prerequisites table in `SKILL.md`.
-2. No change needed to the scanner files — they use env vars, not hardcoded names.
-3. Remind developers to update their shell profile export:
+1. **Category scanner** (SAST / Dependency Scanning / Secret Detection /
+   Container Scanning): edit that category's `image:` in
+   `config/scanner-preferences.yaml` — that pinned ref is what runs. Nothing
+   else to touch; `scripts/load-prefs.sh` exports it at Step 1.5.
+2. **Legacy additional scanner** (Fortify, Parasoft, Pylint, ESLint, Scantist,
+   Trivy): remind developers to update their shell profile export:
    ```bash
    export FORTIFY_PY_IMAGE="fortify-sast-python:v2-jdk21"
    ```
+3. No change needed to the scanner files — they use env vars, not hardcoded names.
 
 ---
 
@@ -166,6 +181,25 @@ The CI team retires a scanner entirely.
 5. Remove the env var from the Prerequisites table.
 6. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
 
+## Scenario 6 — Refreshing vendored catalog snapshots
+
+Quarterly or after a component release, run:
+
+```bash
+bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh resolve https://gitlab.com <component-path> /tmp/catalog-refresh
+```
+
+for each of: `components/sast/sast`, `components/secret-detection/secret-detection`, `components/dependency-scanning/main`, `components/container-scanning/container-scanning`
+
+Copy the new `<tag>/template.yml` + `README.md` from the refresh dir into `reference/catalog/<component-path>/<tag>/` (keep prior tag dirs).
+
+Add or refresh the provenance line at the top of each copied `README.md`:
+`<!-- Vendored snapshot: fetched YYYY-MM-DD from <gitlab instance> CI/CD Catalog (component tag <tag>) -->`
+
+Run `check-drift` for each component against its runner script and update the runner's `# Last synced` header.
+
+Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
+
 ---
 
 ## When to edit SKILL.md vs. scanner files
@@ -175,9 +209,30 @@ The CI team retires a scanner entirely.
 | CI component script changed | `scanners/<name>.sh` only |
 | New language variant for existing scanner | New `scanners/<name>-<lang>.sh` + one block in SKILL.md |
 | New scanner entirely | New `scanners/<name>.sh` + detection + wait + parse in SKILL.md |
-| Scanner image renamed/retagged | SKILL.md Prerequisites table only |
+| Scanner image renamed/retagged | `config/scanner-preferences.yaml` `image:` (categories) or the developer's env var (additional scanners) |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |
 | Scanner retired | Remove scanner file + remove blocks from SKILL.md |
+
+## GitLab Secret Detection notes
+
+The Secret Detection scanner mirrors the GitLab CI/CD Catalog component:
+
+- Image: the active profile's `secret_detection.image:` (full ref), exported as
+  `SECRET_DETECTION_IMAGE` by `scripts/load-prefs.sh` in Step 1.5; a pre-set
+  `SECRET_DETECTION_IMAGE` env var overrides it for one run.
+- Script block: `/analyzer run`
+- Report artifact: `gl-secret-detection-report.json`
+
+For public-image smoke testing, use:
+
+```bash
+export SECRET_DETECTION_IMAGE="registry.gitlab.com/security-products/secrets:7"
+```
+
+When the GitLab component changes, update `scanners/secret-detection.sh`, the
+Secret Detection Docker block in `SKILL.md`, and the smoke test parser together.
+Keep result summaries redacted: never print raw values from
+`gl-secret-detection-report.json`.
 
 **Never embed scanner commands directly in SKILL.md.** All commands go in `scanners/`.
 
@@ -214,6 +269,19 @@ ls -la .appsec-results/
 If the isolated run passes, run the full `appsec-scan` skill to confirm the
 orchestration still works end-to-end.
 
+## Opt-in docker smoke tests
+
+Two tests pull real public analyzer images and are skipped unless explicitly
+enabled (they need docker + internet, so repo CI skips them too):
+
+```bash
+RUN_SECRET_DETECTION_SMOKE=1 python3 -m pytest tests/test_secret_detection.py -v
+RUN_GITLAB_SAST_SMOKE=1      python3 -m pytest tests/test_skill_doc.py -v
+```
+
+Run them before releasing changes to `secret-detection.sh`, `gitlab-sast.sh`,
+or their SKILL.md blocks.
+
 ---
 
 ## Quarterly sync reminder
@@ -225,3 +293,5 @@ March, June, September, and December. Check for:
 - Changes to the gate conditions (severity thresholds)
 - New `before_script` or `after_script` steps
 - Image tag updates
+
+Drift detection now runs automatically at every scan run via `scripts/catalog.sh check-drift`; the quarterly task is refreshing snapshots and `Last-synced` headers (Scenario 6).

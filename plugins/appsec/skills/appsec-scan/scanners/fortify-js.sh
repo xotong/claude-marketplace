@@ -36,11 +36,11 @@ if echo "${_NPM_REGISTRY}" | grep -qiE '(^|[/:])registry\.npmjs\.org([/:]|$)'; t
 fi
 
 if [ -f package-lock.json ]; then
-  npm ci --silent 2>/dev/null || true
+  npm ci --silent || echo "WARNING: dependency install failed — Fortify dataflow analysis may be incomplete" >&2
 elif [ -f yarn.lock ]; then
-  yarn install --frozen-lockfile --silent 2>/dev/null || true
+  yarn install --frozen-lockfile --silent || echo "WARNING: dependency install failed — Fortify dataflow analysis may be incomplete" >&2
 elif [ -f package.json ]; then
-  npm install --silent 2>/dev/null || true
+  npm install --silent || echo "WARNING: dependency install failed — Fortify dataflow analysis may be incomplete" >&2
 fi
 
 # =============================================================================

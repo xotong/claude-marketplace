@@ -51,6 +51,8 @@ This repo must work fully offline once cloned. Do not add:
 
 MCP SDK docs and other reference material should be vendored locally under `skills/<name>/reference/`.
 
+**Narrow exception — appsec-scan catalog integration:** the `appsec-scan` skill may make runtime HTTP calls, from its helper scripts only (`scripts/catalog.sh`), to the single GitLab instance configured in `config/scanner-preferences.yaml` (`gitlab_instance`; the `company` profile points at the internal GitLab, the `public-test` profile at gitlab.com). These calls fetch CI/CD Catalog metadata (tags, component templates, READMEs) for version resolution and drift warnings. The skill must keep working fully offline via the vendored snapshots in `plugins/appsec/skills/appsec-scan/reference/catalog/` — never add WebFetch instructions to SKILL.md prose.
+
 ## Skill safety scanner
 
 The CI scanner evaluates SKILL.md files using an LLM-as-judge. Implementation lives in `ci/skill-scanner/` (scanner.py, Dockerfile). The GitLab CI component spec is in `skill-scanner-component/templates/skill-scanner-component.yml`. It only scans changed files on MRs (via `SCANNER_FILES` env var). Full scan runs on push to main.
