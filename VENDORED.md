@@ -19,6 +19,9 @@ version in `.claude-plugin/marketplace.json`, and update the "Vendored on" date.
 | `gstack` | https://github.com/garrytan/gstack | `c7ae63201ab193a7dc7fb7e0d81238645111ffac` | 2026-06-16 | MIT |
 | `getshitdone` | https://github.com/gsd-build/get-shit-done | `3aaed8f5d7c3492678b867e6687d42c88fe227e5` | 2026-05-09 | MIT |
 | `ruflo` | https://github.com/ruvnet/ruflo | `b5a57cbf1888cc9bfcc68712d3e4679b0e3d7a75` | 2026-05-09 | MIT |
+| `ponytail` | https://github.com/DietrichGebert/ponytail | `16f6cbf4b87792938e47b0f8c650b6d80fcbc98c` | 2026-07-05 | MIT |
+| `agent-skills` | https://github.com/addyosmani/agent-skills | `8c6530305396f341b5da7201cf1f7e390fdb863f` | 2026-07-05 | MIT |
+| `trailofbits-skills` | https://github.com/trailofbits/skills | `cfe5d7b1619e47fb5b38b7e2561dad7e5f1e89af` | 2026-07-05 | CC-BY-SA-4.0 |
 
 ## What was vendored
 
@@ -36,16 +39,16 @@ Note: `skill-creator` from the same repo was not vendored here as a more feature
 Airgap modifications: replaced `skills/claude-api/shared/live-sources.md` with an offline stub that tells Claude not to attempt WebFetch and lists the vendored reference files available locally (upstream added many new shared/ files that reference live-sources.md; patching each individually was impractical). Vendored MCP Python SDK README and TypeScript SDK README into `skills/mcp-builder/reference/` and updated `skills/mcp-builder/SKILL.md` to reference local files instead of raw.githubusercontent.com URLs.
 
 ### anthropic-feature-dev
-`plugins/feature-dev/` subtree from `anthropics/claude-plugins-official` verbatim.
-Contains: `.claude-plugin/plugin.json`, `agents/` (code-architect, code-explorer, code-reviewer), `commands/feature-dev.md`, `LICENSE`, `README.md`.
+`plugins/feature-dev/` subtree from `anthropics/claude-plugins-official`.
+Contains: `.claude-plugin/plugin.json`, `agents/` (code-architect, code-explorer, code-reviewer), `commands/feature-dev.md`. (Upstream `LICENSE`/`README.md` were not vendored — corrected 2026-07-05 after the catalog security scan flagged the mismatch.)
 
 ### anthropic-pr-review
-`plugins/pr-review-toolkit/` subtree from `anthropics/claude-plugins-official` verbatim.
-Contains: `.claude-plugin/plugin.json`, `agents/` (6 specialised review agents), `commands/`, `LICENSE`, `README.md`.
+`plugins/pr-review-toolkit/` subtree from `anthropics/claude-plugins-official`.
+Contains: `.claude-plugin/plugin.json`, `agents/` (6 specialised review agents), `commands/`. (Upstream `LICENSE`/`README.md` were not vendored — corrected 2026-07-05.)
 
 ### anthropic-hookify
-`plugins/hookify/` subtree from `anthropics/claude-plugins-official` verbatim.
-Contains: `.claude-plugin/plugin.json`, `skills/writing-rules/SKILL.md`, `agents/`, `commands/`, `core/`, `hooks/`, `matchers/`, `utils/`, `LICENSE`, `README.md`.
+`plugins/hookify/` subtree from `anthropics/claude-plugins-official`.
+Contains: `.claude-plugin/plugin.json`, `skills/writing-rules/SKILL.md`, `commands/`, `hooks/`, `matchers/`, `utils/`. (Upstream `agents/`, `core/`, `LICENSE`, `README.md` were not vendored — corrected 2026-07-05.)
 
 ### obsidian
 Full repo from `kepano/obsidian-skills` verbatim (upstream already ships as a Claude plugin).
@@ -77,6 +80,24 @@ Note: The 38 skills work fully offline. Swarm MCP features require npx and inter
 Contains: `.claude-plugin/plugin.json`, `agents/` (50+ specialised review agents), `skills/` (30+ skills), `LICENSE`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`.
 Dropped: `.codex-plugin/plugin.json`, `.cursor-plugin/plugin.json` (other-tool manifests not needed).
 Note: `skills/ce-gemini-imagegen/` requires a Google Gemini API key (`GEMINI_API_KEY`) to function. The skill is included but will not work without the key configured on the user's machine.
+
+### ponytail
+From `DietrichGebert/ponytail` (v4.8.4): `.claude-plugin/plugin.json` (description prefixed with `[Vendored: …]`, otherwise verbatim), `skills/` (6 skills), `hooks/` (whole dir: claude-codex-hooks.json wiring SessionStart/SubagentStart/UserPromptSubmit node scripts, plus statusline scripts), `LICENSE`.
+Dropped: `benchmarks/` (contains `urllib` network code — airgap), `tests/`, `docs/`, `examples/`, `assets/`, `scripts/`, `ponytail-mcp/`, `pi-extension/`, `commands/*.toml` (Codex-format; the skills already cover the /ponytail-* triggers), all other-harness dirs (`.cursor`, `.codex-plugin`, `.windsurf`, `.openclaw`, `.opencode`, `.devin-plugin`, `.kiro`, `.clinerules`, `.agents`, `.github`), root README/AGENTS/package.json.
+Runtime note: hooks execute via `node` (local file I/O only — no network).
+Airgap modifications: rewrote the `ponytail-help` "Update" section (upstream instructed marketplace auto-update + `npm install -g` — internet-dependent and stale for a vendored copy) and pointed the `ponytail-gain` benchmark-source line at upstream instead of the dropped local `benchmarks/` dir.
+
+### agent-skills
+From `addyosmani/agent-skills`: `skills/` (24 skills), `agents/` (4), `references/` (7 shared checklists that skills link to), `hooks/hooks.json` + `hooks/session-start.sh` (SessionStart meta-skill injection; requires `jq`, exits gracefully without it), `LICENSE`. Added `.claude-plugin/plugin.json` (authored locally — upstream manifest lives at repo root and lacks author/hooks fields).
+Dropped: `commands/*.toml` (Codex-format), opt-in hook extras `sdd-cache-pre/post.sh` + `SDD-CACHE.md` (use `curl` at runtime) and `simplify-ignore*` (unwired), `session-start-test.sh`, `scripts/`, `docs/`, root README/CLAUDE/AGENTS.
+Security modification: simplified `hooks/hooks.json` to drop upstream's fallback that would execute a project-local `.claude/hooks/session-start.sh` (undeclared repo-controlled execution path flagged by the vendoring security scan).
+Network notes (kept with documentation, per catalog precedent — ruflo swarm, compound-engineering gemini-imagegen): `source-driven-development` fetches official docs at runtime (works against internal doc mirrors; degrade to vendored references offline); `browser-testing-with-devtools` installs `chrome-devtools-mcp` via npx (works via internal npm mirror); `doubt-driven-development` has an opt-in cross-model step (external Gemini/Codex CLIs, per-run user authorization) — skill works without it.
+
+### trailofbits-skills
+Curated subset of `trailofbits/skills` (upstream is a 40-plugin monorepo under `plugins/`). Merged 17 sub-plugins into one plugin — `skills/` (33), `commands/` (6), `agents/` (13), no name collisions: audit-context-building, differential-review, entry-point-analyzer, variant-analysis, static-analysis (codeql/semgrep/sarif-parsing), semgrep-rule-creator, semgrep-rule-variant-creator, fp-check, insecure-defaults, sharp-edges, supply-chain-risk-auditor, agentic-actions-auditor, spec-to-code-compliance, property-based-testing, mutation-testing, dimensional-analysis, testing-handbook-skills (15 fuzzing/testing skills). Added `.claude-plugin/plugin.json` (authored locally). Kept upstream `LICENSE`.
+Excluded sub-plugins: `c-review`, `rust-review` (plugin-root `prompts/`+`scripts/` collide when flattened; C/C++/Rust off-stack internally), `constant-time-analysis` (bundled Python package needing `uv` install — airgap), `zeroize-audit`, `yara-authoring`, `dwarf-expert`, `seatbelt-sandboxer`, `firebase-apk-scanner`, `burpsuite-project-parser`, `building-secure-contracts` (niche/off-mission), `debug-buttercup`, `culture-index`, `trailmark`, `let-fate-decide`, `claude-in-chrome-troubleshooting`, `second-opinion` (Trail of Bits-internal/situational), `gh-cli`, `git-cleanup`, `devcontainer-setup`, `modern-python`, `ask-questions-if-underspecified`, `skill-improver`, `workflow-skill-design` (off security theme or overlap with existing catalog).
+License note: CC-BY-SA-4.0 — attribution kept via LICENSE + this entry; share-alike applies to derivative modifications of the skill content.
+Network notes (kept with documentation, per catalog precedent): `semgrep-rule-creator` mandates WebFetch of semgrep-docs URLs before writing rules (works via internal doc mirror/proxy; unusable fully offline); `testing-handbook-generator` fetches external resources and installs its validator via `uv pip`; the fuzzing skills (aflpp, atheris, cargo-fuzz, libafl, libfuzzer, ossfuzz, ruzzy) document fuzzer/toolchain installs (apt/pip/cargo/rustup) as prerequisites — use internal mirrors. Scan/audit skills (semgrep, codeql, sarif-parsing, agentic-actions-auditor, supply-chain-risk-auditor) default to locally installed tools and offline/local modes; `merge_sarif.py` uses `npx --no-install` (never downloads).
 
 ### First-party (Platform Team authored)
 

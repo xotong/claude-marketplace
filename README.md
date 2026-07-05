@@ -18,6 +18,9 @@ Central plugin marketplace. One URL to configure; all team and platform skills f
 | **anthropic-pr-review** | 6-agent parallel PR review (already in essentials). |
 | **anthropic-hookify** | Git hooks framework + writing-rules skill. |
 | **frontend-design** | Frontend design patterns skill. |
+| **ponytail** | Lazy-senior-dev mode: simplest solution that works (YAGNI, stdlib first) + over-engineering review/audit. |
+| **agent-skills** | 24 production-engineering skills from Addy Osmani (TDD, API design, security hardening, perf). |
+| **trailofbits-skills** | 33 Trail of Bits security skills: audit workflows, Semgrep/CodeQL authoring, fuzzing handbook. |
 
 ---
 
@@ -113,24 +116,30 @@ If a plugin is missing after install, re-run the install command.
 
 ## Plugin catalog
 
-| Plugin | Type | What's inside |
-|---|---|---|
-| `essentials` | Platform Team | TDD, debugging, planning, git worktrees (14 skills) + feature-dev (3 agents) + PR review (6 agents) — best starting point |
-| `appsec` | Platform Team | Catalog-driven security scanning: admin preference profiles (Fortify or GitLab SAST, GitLab dependency/secret/container scanning), CI/CD Catalog versions resolved every run, fix loop + triage plan — plus OWASP WSTG DAST sim. |
-| `code-quality` | Platform Team | lint-and-validate + api-design-principles + openapi-spec-generation + doc-coauthoring |
-| `superpowers` | Vendored (obra) | 14 skills: TDD, debugging, planning, worktrees, code review, brainstorming. **Already in essentials.** |
-| `compound-engineering` | Vendored (EveryInc) | 38 skills + 50 specialised review agents: architecture, performance, security, data integrity… |
-| `gstack` | Vendored (Garry Tan) | 54 skills: QA, browser automation, design consultation, production safety gates, context management |
-| `ruflo` | Vendored (rUv) | 33 skills: AgentDB memory, SPARC methodology, swarm orchestration, GitHub automation |
-| `getshitdone` | Vendored (gsd-build) | 66 `/gsd` slash commands: Discuss→Plan→Execute→Verify lifecycle |
-| `anthropic-dev-skills` | Vendored (Anthropic) | claude-api, mcp-builder, webapp-testing, dual-mode (4 skills) |
-| `obsidian` | Vendored (Steph Ango) | obsidian-markdown, bases, CLI, json-canvas, defuddle (5 skills) |
-| `anthropic-feature-dev` | Vendored (Anthropic) | 7-phase feature-dev: 3 agents + /feature-dev command. **Already in essentials.** |
-| `anthropic-pr-review` | Vendored (Anthropic) | 6-agent parallel PR review + /review-pr command. **Already in essentials.** |
-| `anthropic-hookify` | Vendored (Anthropic) | Git hooks framework + writing-rules skill + /hookify command |
-| `frontend-design` | Vendored (Anthropic) | Frontend design patterns skill |
+| Plugin | Type | What's inside | Not-malicious confidence¹ |
+|---|---|---|---|
+| `essentials` | Platform Team | TDD, debugging, planning, git worktrees (14 skills) + feature-dev (3 agents) + PR review (6 agents) — best starting point | 96% |
+| `appsec` | Platform Team | Catalog-driven security scanning: admin preference profiles (Fortify or GitLab SAST, GitLab dependency/secret/container scanning), CI/CD Catalog versions resolved every run, fix loop + triage plan — plus OWASP WSTG DAST sim. | 96% |
+| `code-quality` | Platform Team | lint-and-validate + api-design-principles + openapi-spec-generation + doc-coauthoring | 97% |
+| `superpowers` | Vendored (obra) | 14 skills: TDD, debugging, planning, worktrees, code review, brainstorming. **Already in essentials.** | 92% |
+| `compound-engineering` | Vendored (EveryInc) | 38 skills + 50 specialised review agents: architecture, performance, security, data integrity… | 95% |
+| `gstack` | Vendored (Garry Tan) | 54 skills: QA, browser automation, design consultation, production safety gates, context management | 88% |
+| `ruflo` | Vendored (rUv) | 33 skills: AgentDB memory, SPARC methodology, swarm orchestration, GitHub automation | 62%² |
+| `getshitdone` | Vendored (gsd-build) | 66 `/gsd` slash commands: Discuss→Plan→Execute→Verify lifecycle | 90% |
+| `anthropic-dev-skills` | Vendored (Anthropic) | claude-api, mcp-builder, webapp-testing, dual-mode (4 skills) | 97% |
+| `obsidian` | Vendored (Steph Ango) | obsidian-markdown, bases, CLI, json-canvas, defuddle (5 skills) | 96% |
+| `anthropic-feature-dev` | Vendored (Anthropic) | 7-phase feature-dev: 3 agents + /feature-dev command. **Already in essentials.** | 98% |
+| `anthropic-pr-review` | Vendored (Anthropic) | 6-agent parallel PR review + /review-pr command. **Already in essentials.** | 97% |
+| `anthropic-hookify` | Vendored (Anthropic) | Git hooks framework + writing-rules skill + /hookify command | 87% |
+| `frontend-design` | Vendored (Anthropic) | Frontend design patterns skill | 98% |
+| `ponytail` | Vendored (Dietrich Gebert) | 6 skills: lazy-senior-dev mode, over-engineering review/audit, debt ledger + session hooks (needs `node`) | 92% |
+| `agent-skills` | Vendored (Addy Osmani) | 24 production-engineering skills + 4 reviewer/auditor agents + skill-discovery session hook (needs `jq`) | 96% |
+| `trailofbits-skills` | Vendored (Trail of Bits) | 33 security skills: audit workflows, Semgrep/CodeQL authoring, SARIF, supply-chain, fuzzing handbook | 97% |
 
-> All content is vendored at a fixed commit — no runtime network calls to upstream repos. Fully offline once the marketplace is cloned. See `VENDORED.md` for commit SHAs and license notes.
+> ¹ LLM-as-judge confidence (0–100%) that the plugin contains no malicious content, scanned 2026-07-05 per plugin against the CI scanner's five risk categories (prompt injection, data exfiltration, destructive commands, embedded secrets, scope creep) by Claude agents (Fable 5 for essentials/superpowers/obsidian/feature-dev/pr-review/frontend-design/ponytail/agent-skills/trailofbits-skills; Sonnet 4.6 for the rest). Higher = cleaner. Scores reflect risk indicators found, not overall quality; the CI LLM scanner independently gates every MR. Full findings are in PR history.
+> ² ruflo's score reflects airgap/scope findings, not malice: 3 flow-nexus skills route to a commercial cloud service (forwards API keys, Stripe billing), ~13 skills require `npx <pkg>@latest` at runtime, and one skill file contains gstack content verbatim (vendoring contamination). Remediation tracked as a follow-up.
+
+> All content is vendored at a fixed commit — no runtime network calls to upstream repos required by the marketplace itself. Individual skills that need network or local tools are flagged in `VENDORED.md` and the plugin descriptions. See `VENDORED.md` for commit SHAs and license notes.
 
 ---
 
@@ -470,6 +479,9 @@ plugins/
   anthropic-pr-review/                 Vendored: anthropics/claude-plugins-official
   anthropic-hookify/                   Vendored: anthropics/claude-plugins-official
   frontend-design/                     Vendored: anthropics/skills (1 skill)
+  ponytail/                            Vendored: DietrichGebert/ponytail (6 skills + mode hooks)
+  agent-skills/                        Vendored: addyosmani/agent-skills (24 skills + 4 agents)
+  trailofbits-skills/                  Vendored: trailofbits/skills (33 skills, curated subset)
   appsec/                              Platform Team — 2 security scanning skills
   code-quality/                        Platform Team — 4 code/doc quality skills
 
