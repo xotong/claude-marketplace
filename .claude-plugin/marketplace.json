@@ -46,7 +46,7 @@
       "name": "compound-engineering",
       "source": "./plugins/compound-engineering",
       "version": "1.0.0",
-      "description": "[Vendored: EveryInc/compound-engineering-plugin] 38 skills + 50 specialised review agents: code review, architecture strategy, performance analysis, security review, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY.",
+      "description": "[Vendored: EveryInc/compound-engineering-plugin] 38 skills + 50 specialised review agents: code review, architecture strategy, performance analysis, security review, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY; ce-riffrec-feedback-analysis calls the OpenAI transcription API when OPENAI_API_KEY is set; ce-demo-reel can upload demo GIFs to public catbox.moe (user-approved); ce-release-notes/ce-update query the GitHub API.",
       "author": { "name": "Platform Team" },
       "category": "vendored",
       "keywords": ["agents", "code-review", "architecture", "compound", "engineering"]
@@ -131,6 +131,33 @@
       "author": { "name": "Platform Team" },
       "category": "vendored",
       "keywords": ["frontend", "design", "ui", "css"]
+    },
+    {
+      "name": "ponytail",
+      "source": "./plugins/ponytail",
+      "version": "4.8.4",
+      "description": "[Vendored: DietrichGebert/ponytail] Lazy senior dev mode — forces the simplest, shortest solution that works: YAGNI, stdlib first, no unrequested abstractions. 6 skills (mode, review, audit, debt ledger, gain, help) plus session hooks that keep the mode active. Hooks require node on PATH.",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["yagni", "simplicity", "minimalism", "code-review", "anti-bloat"]
+    },
+    {
+      "name": "agent-skills",
+      "source": "./plugins/agent-skills",
+      "version": "1.0.0",
+      "description": "[Vendored: addyosmani/agent-skills] 24 production-engineering skills (TDD, API design, security hardening, performance, planning, debugging, docs/ADRs) with a skill-discovery meta-skill injected at session start, plus 4 reviewer/auditor agents. Session hook requires jq (degrades gracefully). Note: source-driven-development needs doc access (internal mirror OK); browser-testing-with-devtools installs chrome-devtools-mcp via npx (npm mirror OK).",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["engineering", "tdd", "code-review", "planning", "security", "performance"]
+    },
+    {
+      "name": "trailofbits-skills",
+      "source": "./plugins/trailofbits-skills",
+      "version": "1.0.0",
+      "description": "[Vendored: trailofbits/skills] 33 security-engineering skills from Trail of Bits (curated subset of 17 upstream sub-plugins): audit context building, differential/variant analysis, Semgrep/CodeQL rule authoring, SARIF parsing, supply-chain and GitHub Actions auditing, insecure defaults, property-based/mutation testing, and the fuzzing testing-handbook. Some skills expect locally installed tools (semgrep, codeql, fuzzers); semgrep-rule-creator and testing-handbook-generator fetch external docs at runtime (internal mirror/proxy OK).",
+      "author": { "name": "Platform Team" },
+      "category": "vendored",
+      "keywords": ["security", "audit", "semgrep", "codeql", "fuzzing", "static-analysis", "supply-chain"]
     }
   ]
 }

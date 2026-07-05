@@ -1,0 +1,10 @@
+{
+  "name": "ponytail",
+  "version": "4.8.4",
+  "description": "[Vendored: https://github.com/DietrichGebert/ponytail] Lazy senior dev mode. Forces the simplest, shortest solution that actually works: YAGNI, stdlib first, no unrequested abstractions. SessionStart/SubagentStart/UserPromptSubmit hooks require node on PATH.",
+  "author": {
+    "name": "Dietrich Gebert",
+    "url": "https://github.com/DietrichGebert"
+  },
+  "hooks": "./hooks/claude-codex-hooks.json"
+}

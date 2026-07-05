@@ -1,0 +1,7 @@
+{
+  "name": "trailofbits-skills",
+  "version": "1.0.0",
+  "description": "[Vendored: https://github.com/trailofbits/skills] 33 security-engineering skills from Trail of Bits: audit context building, differential/variant analysis, entry-point analysis, Semgrep/CodeQL rule authoring, SARIF parsing, supply-chain and GitHub Actions auditing, insecure defaults, property-based testing, mutation testing, and the fuzzing testing-handbook (libFuzzer, AFL++, Atheris, cargo-fuzz, OSS-Fuzz). Curated subset of 17 upstream sub-plugins.",
+  "author": { "name": "Trail of Bits (vendored by Platform Team)" },
+  "keywords": ["security", "audit", "semgrep", "codeql", "fuzzing", "static-analysis", "supply-chain"]
+}

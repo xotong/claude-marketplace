@@ -19,6 +19,9 @@ plugins/
   anthropic-pr-review/            Vendored: anthropics/claude-plugins-official (pr-review)
   anthropic-hookify/              Vendored: anthropics/claude-plugins-official (hookify)
   frontend-design/                Vendored: anthropics/skills (frontend-design)
+  ponytail/                       Vendored: DietrichGebert/ponytail (6 skills + mode hooks)
+  agent-skills/                   Vendored: addyosmani/agent-skills (24 skills + 4 agents)
+  trailofbits-skills/             Vendored: trailofbits/skills (33 skills, curated subset)
   appsec/                         Platform Team — 2 security scanning skills
   code-quality/                   Platform Team — 4 code/doc quality skills
 ci/skill-scanner/                 Scanner implementation (scanner.py, Dockerfile, config.yaml)
@@ -27,14 +30,14 @@ VENDORED.md                       Upstream SHAs, licenses, what was included/exc
 CODEOWNERS                        Approval rules (GitLab Ultimate [Section][N] syntax)
 ```
 
-## 14-plugin model
+## 17-plugin model
 
-The marketplace (registered as `platform-claude-marketplace`) offers 14 installable plugins:
+The marketplace (registered as `platform-claude-marketplace`) offers 17 installable plugins:
 
 - **`essentials`** — curated starter (TDD, debugging, planning, feature-dev, pr-review). Install this first.
 - **`appsec`** — Platform Team security scanning (Fortify SAST, DAST)
 - **`code-quality`** — Platform Team code/doc quality tools
-- **11 per-source vendored plugins** — `superpowers`, `compound-engineering`, `gstack`, `ruflo`, `getshitdone`, `anthropic-dev-skills`, `obsidian`, `anthropic-feature-dev`, `anthropic-pr-review`, `anthropic-hookify`, `frontend-design`
+- **14 per-source vendored plugins** — `superpowers`, `compound-engineering`, `gstack`, `ruflo`, `getshitdone`, `anthropic-dev-skills`, `obsidian`, `anthropic-feature-dev`, `anthropic-pr-review`, `anthropic-hookify`, `frontend-design`, `ponytail`, `agent-skills`, `trailofbits-skills`
 
 All upstream content is vendored (no runtime network calls).
 

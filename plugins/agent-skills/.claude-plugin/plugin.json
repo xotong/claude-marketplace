@@ -1,0 +1,8 @@
+{
+  "name": "agent-skills",
+  "version": "1.0.0",
+  "description": "[Vendored: https://github.com/addyosmani/agent-skills] 24 production-engineering skills (TDD, API design, security hardening, performance, planning, code review) plus 4 reviewer/auditor agents. SessionStart hook injects the skill-discovery meta-skill (requires jq, degrades gracefully).",
+  "author": { "name": "Addy Osmani (vendored by Platform Team)" },
+  "keywords": ["engineering", "tdd", "code-review", "planning", "security", "performance"],
+  "hooks": "./hooks/hooks.json"
+}
