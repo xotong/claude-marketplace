@@ -1,0 +1,116 @@
+<mxfile host="app.diagrams.net" agent="claude-marketplace" version="24.0.0">
+  <diagram id="appsec-scan-arch" name="appsec-scan architecture">
+    <mxGraphModel dx="1420" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1360" pageHeight="860" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" value="appsec-scan — run CI security scanners locally, same images, before push" style="text;html=1;fontSize=20;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="280" y="10" width="800" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="h1" value="Developer machine — SKILL.md orchestration" style="text;html=1;fontSize=13;fontStyle=1;fontColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="50" width="340" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="h2" value="Helper scripts (host, bash 3.2)" style="text;html=1;fontSize=13;fontStyle=1;fontColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="440" y="50" width="240" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="h3" value="Analyzer containers (docker | podman)" style="text;html=1;fontSize=13;fontStyle=1;fontColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="740" y="50" width="280" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="h4" value="GitLab (gitlab_instance)" style="text;html=1;fontSize=13;fontStyle=1;fontColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="50" width="250" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="cfg" value="config/scanner-preferences.yaml&lt;br&gt;&lt;i&gt;admin-owned: profiles (catalog | company), per-category&lt;br&gt;component · version (~latest or pin) · image · runner · enabled&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="440" y="80" width="360" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s1" value="Step 1 — locate skill directories" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s15" value="Step 1.5 — load preferences&lt;br&gt;env + RUN_* flags + ENABLED_COMPONENTS triples&lt;br&gt;component | version | runner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="140" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="Step 2 — preflight checks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="220" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s25" value="Step 2.5 — resolve catalog components&lt;br&gt;per triple: ~latest → highest stable tag&lt;br&gt;pin → exact tag + ADVISORY on newer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="280" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="Step 3 — detect project type&lt;br&gt;HAS_POM · HAS_GRADLE · HAS_REQUIREMENTS · HAS_PACKAGE_JSON · HAS_DOCKERFILE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="360" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s4" value="Step 4 — run enabled scanners&lt;br&gt;Fortify + DS + Secrets parallel · GTCS sequential&lt;br&gt;runner script mounted read-only at /runner.sh" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="440" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s5" value="Step 5 — parse reports (jq)&lt;br&gt;severity table · Critical+High gate · missing-report guard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="560" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s6" value="Step 6 — fix loop (one approval)&lt;br&gt;branch appsec/fix-YYYYMMDD-sha · ≤5 × fix → rescan · tests" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="640" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s7" value="Step 7 — TRIAGE.md&lt;br&gt;unfixed findings → dismissal reason + paste-ready justification" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="40" y="720" width="340" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="lp" value="load-prefs.sh&lt;br&gt;&lt;i&gt;YAML → eval-ready env&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="440" y="170" width="170" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="dr" value="detect-runtime.sh" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="630" y="170" width="130" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="cat" value="catalog.sh&lt;br&gt;&lt;i&gt;resolve · check-drift · self-test&lt;br&gt;the skill&#39;s ONLY network path&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="440" y="280" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="snap" value="reference/catalog/ snapshots&lt;br&gt;&lt;i&gt;template.yml + README.md + AGENTS.md&lt;br&gt;offline fallback, vendored per tag&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="370" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="ct" value="container-target.sh&lt;br&gt;&lt;i&gt;GTCS target: registry | archive | none&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="440" y="470" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="jq" value="resolve-jq.sh&lt;br&gt;&lt;i&gt;host jq, else configured URL, else degrade&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="440" y="570" width="200" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cf" value="Fortify SCA (SAST)&lt;br&gt;&lt;i&gt;fortify-sca:25.2.0-jdk17-review&lt;br&gt;FORTIFY_LANGUAGE: maven | gradle | python | javascript → .fpr&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="740" y="410" width="280" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cd" value="Dependency Scanning (SCA)&lt;br&gt;&lt;i&gt;GitLab analyzer → DS report + CycloneDX SBOM&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="740" y="480" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="csd" value="Secret Detection&lt;br&gt;&lt;i&gt;Gitleaks-based analyzer → secrets report&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="740" y="540" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="cc" value="Container Scanning (GTCS)&lt;br&gt;&lt;i&gt;registry image or docker/podman-save archive&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="740" y="600" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="res" value=".appsec-results/&lt;br&gt;&lt;i&gt;reports · TRIAGE.md · catalog cache&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="740" y="700" width="280" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gapi" value="CI/CD Catalog — lobster-thermidor/devops/ci-catalogue&lt;br&gt;&lt;i&gt;fortify-sast · dependency-scanning · secret-detection · container-scanning&lt;br&gt;tags + template.yml + README.md + AGENTS.md&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="260" width="250" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="greg" value="Container registry&lt;br&gt;&lt;i&gt;registry.gitlab.com/…/ci-catalogue (or internal mirror)&lt;br&gt;admin-pinned image: refs&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="470" width="250" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gvr" value="Vulnerability Report&lt;br&gt;&lt;i&gt;dev dismisses unfixed findings with&lt;br&gt;TRIAGE.md justifications after push + MR&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="700" width="250" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s1" target="s15"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s15" target="s2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s2" target="s25"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s25" target="s3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s4" target="s5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s5" target="s6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="s6" target="s7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" value="invokes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;" edge="1" parent="1" source="s15" target="lp"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" value="reads" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;exitX=0.5;exitY=0;entryX=0.25;entryY=1;" edge="1" parent="1" source="lp" target="cfg"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e11" value="per triple" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;" edge="1" parent="1" source="s25" target="cat"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e12" value="tags + files @tag (read_api PAT optional)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="cat" target="gapi"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e13" value="offline fallback" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="cat" target="snap"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e14" value="$RUNTIME run --rm × 4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="s4" target="cf"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e15" value="image pulls" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;exitX=0;exitY=0.5;entryX=1;entryY=0.35;" edge="1" parent="1" source="greg" target="cf"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e16" value="target" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="ct" target="cc"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e17" value="reports" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="cc" target="res"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e18" value="jq for parsing" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;" edge="1" parent="1" source="s5" target="jq"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e19" value="after push + MR, dev dismisses with justification" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;fontSize=10;exitX=0.5;exitY=1;entryX=0.5;entryY=1;" edge="1" parent="1" source="s7" target="gvr"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="210" y="830" /><mxPoint x="1205" y="830" /></Array></mxGeometry></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

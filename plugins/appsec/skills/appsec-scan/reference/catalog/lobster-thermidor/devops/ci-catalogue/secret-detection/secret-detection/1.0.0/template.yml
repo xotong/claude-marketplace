@@ -2,16 +2,15 @@ spec:
   inputs:
     stage:
       default: test
-    image_prefix:
-      default: "$CI_TEMPLATE_REGISTRY_HOST/security-products"
-    image_tag:
-      default: '7'
-    image_suffix:
-      default: ""
+
     enable_mr_pipelines:
       description: "If set to `true` secret-detection jobs run on MR Pipelines"
       type: boolean
       default: false
+
+    tags:
+      default: ""
+      description: custom tags given to spawned jobs. Pick your runner!
 ---
 
 .secret-detection-rules:true:
@@ -33,7 +32,9 @@ spec:
 secret_detection:
   extends: '.secret-detection-rules:$[[ inputs.enable_mr_pipelines ]]'
   stage: $[[ inputs.stage ]]
-  image: "$[[ inputs.image_prefix ]]/secrets:$[[ inputs.image_tag ]]$[[ inputs.image_suffix ]]"
+  image: "registry.gitlab.com/security-products/secrets:7"
+  tags: 
+    - $[[ inputs.tags ]]
   services: []
   allow_failure: true
   variables:
