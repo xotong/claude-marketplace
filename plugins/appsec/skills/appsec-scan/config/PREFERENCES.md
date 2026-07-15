@@ -13,21 +13,21 @@ flags — the model never parses the YAML itself.
 ## Switching profiles
 
 ```bash
-export APPSEC_PROFILE=public-test   # one env var — the whole switch
+export APPSEC_PROFILE=catalog   # one env var — the whole switch
 ```
 
 Unset → the `default_profile` at the top of the file applies.
 
 | Profile | Purpose |
 |---|---|
-| `company` | Production preferences: internal GitLab + internal JFrog images. Edit the placeholder `gitlab_instance`, `component:` and `image:` values to your paths. |
-| `public-test` | End-to-end test against the public gitlab.com catalog + public analyzer images. Needs internet; **refused when `settings.airgap: true`**. |
+| `catalog` | Default: resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
+| `company` | Production preferences: internal GitLab mirror + internal JFrog images. Edit the placeholder `gitlab_instance`, `component:` and `image:` values to your paths. Airgap-safe. |
 
 ## Global `settings:` block
 
 ```yaml
 settings:
-  airgap: true|false          # true = no public internet; internal endpoints only
+  airgap: false               # shipped default; set true for internal-only environments
   container_runtime: auto     # auto (docker then podman) | docker | podman
   jq:
     prefer: host              # use PATH jq if present
@@ -40,9 +40,12 @@ settings:
     password_env: CS_REGISTRY_PASSWORD
 ```
 
-- **airgap** — `true` keeps the skill on the active profile's `gitlab_instance`
-  and the configured image registry only, refuses the `public-test` profile, and
-  does not treat "no internet" as an error. Set `false` when you have internet.
+- **airgap** — `false` is the shipped default (catalog profile points at
+  gitlab.com and needs internet). Set `true` for environments with no public
+  internet access. When `airgap: true`, any profile whose `gitlab_instance`
+  contains `gitlab.com` is refused at load time — use the `company` profile
+  (pointing at your internal mirror) instead. The scan keeps working fully
+  offline via the vendored snapshots in `reference/catalog/`.
 - **container_runtime** — the skill detects docker, then podman. Force one if
   both are present. The container-scan verbs used (`build`, `save`, `run`,
   `pull`) are identical across docker and podman.
@@ -67,42 +70,56 @@ settings:
 ```yaml
 categories:
   sast:
-    component: components/sast/sast              # CI/CD Catalog path (resolve + README)
-    image: jfrog.internal/security/semgrep:6     # what actually RUNS — admin-pinned
-    runner: gitlab-sast.sh                        # local executor, or "none"
+    component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
+    version: ~latest          # ~latest OR an exact tag e.g. "25.2.0"
+    image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review
+    runner: fortify-sast.sh
     enabled: true
 ```
 
-The six categories are `sast`, `dependency_scanning`, `secret_detection`,
-`container_scanning`, `dast_web`, `dast_api`.
+The four categories are `sast`, `dependency_scanning`, `secret_detection`,
+`container_scanning`.
 
-- **`image:` is what runs** — edit this to your JFrog path. It is deliberately
-  decoupled from the catalog so a version bump can never surprise you: the
-  pinned image is what executes.
-- **`component:` is resolved every run** for two things: the component's own
-  usage guide (its README, cached under `.appsec-results/catalog/` — ask the
-  skill to summarize it), and a **drift advisory** that tells you when the
-  component's declared image tag has moved ahead of your pinned `image:`, i.e.
-  when to bump it. Customised components in your catalog resolve the same way —
-  just point `component:` at your fork's path.
-- **`runner: none`** = category is CI-only; the skill emits an
-  `include: component:` snippet instead of running locally (DAST).
+- **`image:` is what runs** — edit this to your JFrog mirror path. It is
+  deliberately decoupled from the catalog so a version bump can never surprise
+  you: the pinned image is what executes.
+- **`version:` controls catalog resolution** — two modes:
+  - `~latest` (default) — `catalog.sh` resolves the highest stable release tag
+    each run and uses it. Keeps you current without manual bumps.
+  - Exact tag (e.g. `"25.2.0"`) — pins the component version used for drift
+    comparison and AGENTS.md lookup. If a newer stable tag exists, `catalog.sh`
+    prints: `ADVISORY: <component> pinned <X>, newer stable <Y> available` —
+    surface this to the admin. When you're ready to upgrade, bump `version:` and
+    update `image:` to match.
+- **`component:` is resolved every run** for three things: the component's usage
+  guide (README, cached under `.appsec-results/catalog/`), the agent-oriented
+  reference (AGENTS.md, also cached), and a **drift advisory** that tells you
+  when the component's declared image tag has moved ahead of your pinned `image:`.
+- **`runner: none`** = category is CI-only; no local run.
+
+## How to pin an exact component version (Platform Team how-to)
+
+1. Decide the tag to pin (e.g. `25.2.0` for fortify-sast).
+2. In the relevant category block, set `version: "25.2.0"`.
+3. Optionally update `image:` to the matching image tag to keep drift
+   advisory clean.
+4. Refresh the vendored snapshot so offline fallback stays current:
+   see UPDATE-GUIDE.md Scenario 6.
+5. Open an MR. The ADVISORY line on future runs reminds you when a newer
+   stable tag is available.
 
 ## Category notes
 
-- **sast** — `company` pins the GitLab SAST (Semgrep) image you mirror; the
-  analyzer's rules are baked into the image (no network inside). Fortify runs
-  as an *additional scanner* (`fortify_python` / `fortify_js` entries, see
-  below), not as the sast category runner.
+- **sast** — Fortify SCA multi-language scanner. Language auto-detected from
+  project files (gradle > maven > python > javascript); set `FORTIFY_LANGUAGE`
+  to override. The FPR output (`.appsec-results/fortify-sast.fpr`) contains the
+  full severity breakdown; the local summary shows total vulnerability count.
 - **dependency_scanning** — generates an **SBOM** locally
   (`gl-sbom-*.cdx.json`); vulnerability matching happens in GitLab after push.
   The skill passes `GITLAB_FEATURES=dependency_scanning` to mirror the licensed
   CI environment. A lock file is required; plain manifests are skipped.
 - **secret_detection** — full local findings + the remediation loop.
 - **container_scanning** — see the dedicated section below.
-- **dast_web / dast_api** — CI-only by design (DAST needs a running deployed
-  target). The skill gathers inputs (target URL, OpenAPI, Postman) and emits the
-  include snippet. For local design-time coverage use the `appsec-dast-sim` skill.
 
 ## Container scanning: how the target image is chosen
 
@@ -126,19 +143,9 @@ internal registry, the skill tells you to run `<runtime> login <registry-host>`
 `FROM` at the internal mirror. Any other build error prints
 "Submit a Jira ticket under others".
 
-## Legacy `additional_scanners`
-
-Fortify, Parasoft, Pylint, ESLint, Scantist, and Trivy keep their v1 env-var
-behavior (image from `APPSEC_REGISTRY` + the named `image_env`). An entry's
-presence sets its `RUN_*` flag (mapping table: `scripts/load-prefs.sh` header);
-remove an entry to retire that scanner. The `condition:` field names the
-SKILL.md Step 3 project-detection flag that must also hold at scan time — one
-of `HAS_GRADLE`, `HAS_POM_NO_GRADLE`, `HAS_REQUIREMENTS`, `HAS_PACKAGE_JSON`,
-`TRIVY_TARGET_SET`. It documents the gate for admins; the same condition is
-hard-coded in the scanner's Step 4 block.
-
 ## Per-run env overrides (users)
 
-`CS_IMAGE`, `DOCKERFILE`, and the image/registry env vars override for a single
-run. They change *where images come from* or *what is scanned*, never *which
-scanner runs* — that is this file's job.
+`CS_IMAGE`, `DOCKERFILE`, `FORTIFY_LANGUAGE`, and the image env vars override
+for a single run. They change *where images come from*, *what is scanned*, or
+*which Fortify language is used* — never *which scanner runs* (that is this
+file's job).

@@ -15,22 +15,22 @@ skills/appsec-scan/
 │   └── PREFERENCES.md
 ├── reference/
 │   └── catalog/
+│       └── lobster-thermidor/devops/ci-catalogue/
+│           ├── fortify-sast/fortify-sast/25.2.0/
+│           │   ├── template.yml
+│           │   ├── README.md
+│           │   └── AGENTS.md       ← agent-oriented usage reference
+│           ├── dependency-scanning/dependency-scanning/1.0.0/
+│           ├── secret-detection/secret-detection/1.0.0/
+│           └── container-scanning/container-scanning/1.0.0/
 ├── scripts/
 │   └── catalog.sh
 └── scanners/
-    ├── fortify-python.sh   ← mirrors devops/ci-catalogue/fortify-scan-python3
-    ├── fortify-js.sh       ← mirrors devops/ci-catalogue/fortify-scan-js
-    ├── parasoft-gradle.sh  ← mirrors devops/ci-catalogue/parasoft-scan-gradle
-    ├── parasoft-maven.sh   ← mirrors devops/ci-catalogue/parasoft-scan-maven
-    ├── pylint.sh           ← mirrors devops/ci-catalogue/pylint
-    ├── eslint.sh           ← mirrors devops/ci-catalogue/eslint
-    ├── scantist-js.sh      ← mirrors devops/ci-catalogue/scantist-js-scan
-    ├── scantist-maven.sh   ← mirrors devops/ci-catalogue/scantist-maven-scan (post-Maven)
-    ├── gitlab-sast.sh
-    ├── gitlab-dependency-scanning.sh
-    ├── gitlab-container-scanning.sh
-    ├── secret-detection.sh ← mirrors gitlab.com/components/secret-detection
-    └── trivy.sh            ← mirrors devops/ci-catalogue/trivy-scan
+    ├── fortify-sast.sh                     ← mirrors lobster-thermidor/.../fortify-sast
+    ├── gitlab-dependency-scanning.sh       ← mirrors lobster-thermidor/.../dependency-scanning
+    ├── secret-detection.sh                 ← mirrors lobster-thermidor/.../secret-detection
+    ├── gitlab-container-scanning.sh        ← mirrors lobster-thermidor/.../container-scanning
+    └── preflight.sh
 ```
 
 Each scanner file has a header block:
@@ -59,69 +59,35 @@ A CI component had its `script:` block updated (new flags, new steps, different 
 5. Update the `# Last synced` header line to today's date.
 6. Commit: `git commit -m "sync: update <scanner> to match CI component change"`
 
-**Example — Fortify Python added a new `-python-path` flag:**
+**Example — Fortify added a new `-filter-file` flag:**
 ```bash
-# Before (in fortify-python.sh SCAN section):
+# Before (in fortify-sast.sh SCAN section):
 sourceanalyzer -b "$APP_NAME" -debug-verbose -python-version 3 "$SOURCE_PATH"
 
 # After:
 sourceanalyzer -b "$APP_NAME" -debug-verbose -python-version 3 \
-  -python-path "$(python3 -c 'import sys; print(":".join(sys.path))')" \
+  -filter-file /workspace/filter_list.txt \
   "$SOURCE_PATH"
 ```
 
 ---
 
-## Scenario 2 — New language added to an existing scanner
+## Scenario 2 — New language added to Fortify SCA
 
-The CI team ships a new component variant for a language that wasn't supported before
-(e.g. Fortify for Go, Scantist for Gradle).
+The upstream component added a new language variant (e.g. Go support).
 
 **Steps:**
 
-1. Create a new file in `scanners/` following the naming pattern:
-   `<scanner>-<language>.sh` (e.g. `fortify-go.sh`, `scantist-gradle.sh`)
+1. Open `scanners/fortify-sast.sh` and add a new language branch in the
+   `case "$FORTIFY_LANGUAGE" in` block.
+2. Open `SKILL.md` Step 3 and add the new project-type detection flag
+   (e.g. `HAS_GO`) and extend the language auto-detection precedence chain
+   in Step 4.
+3. Add the new language to the Prerequisites table `FORTIFY_LANGUAGE` row.
+4. Update `# Last synced` in `fortify-sast.sh`.
+5. Commit: `git commit -m "feat: add Go language support to Fortify SCA scanner"`
 
-2. Use an existing scanner file as a template. Copy the header block and update:
-   - `Scanner`, `Language`, `CI component`, `Last synced`, `Image env var`
-
-3. Fill in the SETUP and SCAN sections with the CI component's script commands.
-
-4. Open `SKILL.md` and add a detection block in **Step 3** for the new scanner.
-   Copy an existing block (e.g. the Fortify Python block) and adjust:
-   - The detection condition (`HAS_GO`, `HAS_GRADLE`, etc.)
-   - The image env var name
-   - The scanner file name
-   - The PID variable name
-
-   **Example — adding Fortify Go:**
-   ```bash
-   ### Fortify SAST — Go
-   # Applies when: Go project detected. Runner: scanners/fortify-go.sh.
-   if $HAS_GO && [ -n "$FORTIFY_GO_IMAGE" ]; then
-     echo "[Fortify/Go] Starting in background..."
-     docker run --rm \
-       -v "$PWD:/workspace" \
-       -v "$SCANNERS_DIR/fortify-go.sh:/runner.sh:ro" \
-       -w /workspace \
-       -e APP_NAME="$APP_NAME" \
-       -e SOURCE_PATH="$SOURCE_PATH" \
-       "${APPSEC_REGISTRY}/${FORTIFY_GO_IMAGE}" \
-       bash /runner.sh > .appsec-results/fortify-go.log 2>&1 &
-     FORTIFY_GO_PID=$!
-   fi
-   ```
-
-5. Add the new PID to the `wait` loop in Step 3 of SKILL.md:
-   ```bash
-   for pid_var in FORTIFY_PY_PID FORTIFY_JS_PID FORTIFY_GO_PID ...
-   ```
-
-6. Add the new env var to the Prerequisites table in SKILL.md.
-
-7. If the new scanner produces output, add a parse block in Step 4 of SKILL.md.
-
-8. Commit: `git commit -m "feat: add Fortify Go scanner to appsec-scan"`
+No new scanner file is needed — Fortify SCA is a single multi-language runner.
 
 ---
 
@@ -131,15 +97,12 @@ The Platform Team renamed or retagged a scanner image.
 
 **Steps:**
 
-1. **Category scanner** (SAST / Dependency Scanning / Secret Detection /
-   Container Scanning): edit that category's `image:` in
-   `config/scanner-preferences.yaml` — that pinned ref is what runs. Nothing
-   else to touch; `scripts/load-prefs.sh` exports it at Step 1.5.
-2. **Legacy additional scanner** (Fortify, Parasoft, Pylint, ESLint, Scantist,
-   Trivy): remind developers to update their shell profile export:
-   ```bash
-   export FORTIFY_PY_IMAGE="fortify-sast-python:v2-jdk21"
-   ```
+1. Edit that category's `image:` in `config/scanner-preferences.yaml` — that
+   pinned ref is what runs. Nothing else to touch; `scripts/load-prefs.sh`
+   exports it at Step 1.5.
+2. If changing the Fortify image specifically, update `FORTIFY_SAST_IMAGE` in
+   the profile's category block and remind developers who override via env var
+   to update `~/.bashrc` / `~/.zshrc` accordingly.
 3. No change needed to the scanner files — they use env vars, not hardcoded names.
 
 ---
@@ -147,7 +110,7 @@ The Platform Team renamed or retagged a scanner image.
 ## Scenario 4 — New setup step required before scanning
 
 The CI component now requires a build step before the scan
-(e.g. Python Fortify needs `uv sync`, Go Fortify needs `go build`).
+(e.g. Fortify Maven needs `mvn dependency:resolve` first).
 
 **Steps:**
 
@@ -156,49 +119,57 @@ The CI component now requires a build step before the scan
 3. Document WHY the setup step is needed with a comment.
 4. Update `Last synced`.
 
-**Example — Python Fortify adding uv sync (already done):**
-```bash
-# SETUP — sync dependencies for full data flow analysis
-if command -v uv >/dev/null 2>&1; then
-  uv sync --all-extras 2>/dev/null || true
-elif [ -f requirements.txt ]; then
-  pip install -r requirements.txt --quiet 2>/dev/null || true
-fi
-```
-
 ---
 
 ## Scenario 5 — Scanner removed from CI pipeline
 
-The CI team retires a scanner entirely.
+The CI team retires a scanner category entirely.
 
 **Steps:**
 
 1. Remove the `scanners/<name>.sh` file.
-2. Remove the corresponding detection block from SKILL.md Step 3.
-3. Remove the PID variable from the `wait` loop.
-4. Remove the parse block from SKILL.md Step 4.
+2. Remove the corresponding `RUN_*` flag block from SKILL.md Step 4.
+3. Remove the PID variable from the wait loop (or the sequential call).
+4. Remove the parse block from SKILL.md Step 5.
 5. Remove the env var from the Prerequisites table.
-6. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
+6. Remove the category block from `config/scanner-preferences.yaml`.
+7. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
+
+---
 
 ## Scenario 6 — Refreshing vendored catalog snapshots
 
-Quarterly or after a component release, run:
+Quarterly or after a component release, run `catalog.sh resolve` with the new
+`version` argument for each of the 4 components:
 
 ```bash
-bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh resolve https://gitlab.com <component-path> /tmp/catalog-refresh
+# Example: refresh all 4 components (adjust version as needed)
+for component in \
+  "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast 25.2.0" \
+  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.0.0" \
+  "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection 1.0.0" \
+  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.0.0"; do
+  path="${component% *}"; ver="${component##* }"
+  bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
+    resolve https://gitlab.com "$path" "$ver" /tmp/catalog-refresh ""
+done
 ```
 
-for each of: `components/sast/sast`, `components/secret-detection/secret-detection`, `components/dependency-scanning/main`, `components/container-scanning/container-scanning`
-
-Copy the new `<tag>/template.yml` + `README.md` from the refresh dir into `reference/catalog/<component-path>/<tag>/` (keep prior tag dirs).
+Copy the new `<tag>/template.yml`, `README.md`, and `AGENTS.md` from the
+refresh dir into `reference/catalog/<component-path>/<tag>/` (keep prior tag
+dirs for reference).
 
 Add or refresh the provenance line at the top of each copied `README.md`:
-`<!-- Vendored snapshot: fetched YYYY-MM-DD from <gitlab instance> CI/CD Catalog (component tag <tag>) -->`
+`<!-- Vendored snapshot: fetched YYYY-MM-DD from gitlab.com CI/CD Catalog (component tag <tag>) -->`
 
-Run `check-drift` for each component against its runner script and update the runner's `# Last synced` header.
+Run `check-drift` for each component against its runner script and update the
+runner's `# Last synced` header.
 
 Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
+
+**Note on fortify-sast@25.2.0:** the AGENTS.md in this snapshot was vendored
+from HEAD (the file was added upstream after the 25.2.0 tag was cut, on
+2026-07-15). Future snapshot refreshes will pick it up from the tag directly.
 
 ---
 
@@ -207,9 +178,10 @@ Commit as: `chore(appsec): refresh catalog snapshots to <tags>`
 | Change | Edit |
 |---|---|
 | CI component script changed | `scanners/<name>.sh` only |
-| New language variant for existing scanner | New `scanners/<name>-<lang>.sh` + one block in SKILL.md |
-| New scanner entirely | New `scanners/<name>.sh` + detection + wait + parse in SKILL.md |
-| Scanner image renamed/retagged | `config/scanner-preferences.yaml` `image:` (categories) or the developer's env var (additional scanners) |
+| New language variant for Fortify | `scanners/fortify-sast.sh` case block + Step 3/4 detection in SKILL.md |
+| New scanner category entirely | New `scanners/<name>.sh` + detection + wait + parse in SKILL.md |
+| Scanner image renamed/retagged | `config/scanner-preferences.yaml` `image:` |
+| Component version pin changed | `config/scanner-preferences.yaml` `version:` + optional snapshot refresh |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |
 | Scanner retired | Remove scanner file + remove blocks from SKILL.md |
 
@@ -223,7 +195,7 @@ The Secret Detection scanner mirrors the GitLab CI/CD Catalog component:
 - Script block: `/analyzer run`
 - Report artifact: `gl-secret-detection-report.json`
 
-For public-image smoke testing, use:
+For public-image smoke testing, use the image from the vendored snapshot:
 
 ```bash
 export SECRET_DETECTION_IMAGE="registry.gitlab.com/security-products/secrets:7"
@@ -244,9 +216,8 @@ Before committing a scanner update, verify it works end-to-end:
 
 ```bash
 # 1. Set required env vars
-export APPSEC_REGISTRY="registry.company.com/security"
-export FORTIFY_PY_IMAGE="fortify-sast:latest-jdk17"
-export DEVSECOPS_IMPORT_URL="https://dtp.company.com"
+export FORTIFY_SAST_IMAGE="registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review"
+export FORTIFY_LANGUAGE="maven"
 
 # 2. Resolve scanner dir
 SKILL_DIR="path/to/skills/appsec-scan"
@@ -255,11 +226,12 @@ SCANNERS_DIR="$SKILL_DIR/scanners"
 # 3. Run just the updated scanner in isolation
 docker run --rm \
   -v "$PWD:/workspace" \
-  -v "$SCANNERS_DIR/fortify-python.sh:/runner.sh:ro" \
+  -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
   -w /workspace \
   -e APP_NAME="test-app" \
   -e SOURCE_PATH="src" \
-  "${APPSEC_REGISTRY}/${FORTIFY_PY_IMAGE}" \
+  -e FORTIFY_LANGUAGE="maven" \
+  "${FORTIFY_SAST_IMAGE}" \
   bash /runner.sh
 
 # 4. Check the output
@@ -276,10 +248,10 @@ enabled (they need docker + internet, so repo CI skips them too):
 
 ```bash
 RUN_SECRET_DETECTION_SMOKE=1 python3 -m pytest tests/test_secret_detection.py -v
-RUN_GITLAB_SAST_SMOKE=1      python3 -m pytest tests/test_skill_doc.py -v
+RUN_FORTIFY_SAST_SMOKE=1     python3 -m pytest tests/test_skill_doc.py -v
 ```
 
-Run them before releasing changes to `secret-detection.sh`, `gitlab-sast.sh`,
+Run them before releasing changes to `secret-detection.sh`, `fortify-sast.sh`,
 or their SKILL.md blocks.
 
 ---

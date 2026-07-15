@@ -105,7 +105,7 @@ The following skills were authored by the Platform Team and are not vendored fro
 
 | Skill | Added on | Notes |
 |---|---|---|
-| `appsec-scan` | 2026-05-20 | Container-based CI-mirror: Fortify SAST, Parasoft Jtest, Pylint, ESLint, Scantist SCA, Trivy |
+| `appsec-scan` | 2026-05-20 | Container-based CI-mirror: 4 components from lobster-thermidor/devops/ci-catalogue (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning). Refactored to v3.0.0 on 2026-07-15 (removed Parasoft, Pylint, ESLint, Scantist, Trivy, GitLab Semgrep SAST). Vendored catalog snapshots: see section below. |
 | `appsec-dast-sim` | 2026-05-20 | LLM-based DAST following WSTG v4.2; no containers required; works at design time |
 | `lint-and-validate` | 2026-05-15 | Pre-commit gate: auto-fix formatters + linters + type checkers |
 | `api-design-principles` | 2026-05-15 | REST/GraphQL design enforcement, RFC 7807, versioning, pagination |
@@ -113,6 +113,19 @@ The following skills were authored by the Platform Team and are not vendored fro
 | `doc-coauthoring` | 2026-05-15 | Interview-first structured docs: ADR, Design Doc, Runbook, Postmortem |
 
 `lint-and-validate` is also included in `plugins/essentials/` as a mandatory pre-commit gate suitable for all developers.
+
+### appsec-scan: vendored CI/CD Catalog snapshots
+
+The `appsec-scan` skill vendors offline fallback snapshots of 4 GitLab CI/CD Catalog components from the private group `lobster-thermidor/devops/ci-catalogue` on gitlab.com. Snapshots live under `plugins/appsec/skills/appsec-scan/reference/catalog/lobster-thermidor/devops/ci-catalogue/`.
+
+| Component | Tag | Fetched | Source |
+|---|---|---|---|
+| `lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast` | 25.2.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
+
+Each snapshot includes `template.yml`, `README.md`, and `AGENTS.md`. **Note:** the `fortify-sast@25.2.0` `AGENTS.md` was fetched from HEAD (the file was added upstream after the 25.2.0 tag was cut, on 2026-07-15); future refreshes will find it at the tag directly. Refresh snapshots quarterly per UPDATE-GUIDE.md Scenario 6.
 
 ---
 

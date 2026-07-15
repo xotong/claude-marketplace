@@ -12,10 +12,11 @@
 settings:
   # Master environment flag.
   #   true  = no public internet. The skill talks ONLY to the active profile's
-  #           gitlab_instance and the configured image registry; the public-test
-  #           profile is refused; "offline" is not treated as an error.
+  #           gitlab_instance and the configured image registry; any profile
+  #           targeting gitlab.com is refused; "offline" is not treated as an
+  #           error.
   #   false = internet available (e.g. testing against gitlab.com).
-  airgap: true
+  airgap: false
 
   # Container runtime. auto = detect docker, then podman. Or force docker/podman.
   container_runtime: auto
@@ -50,93 +51,69 @@ settings:
 # ─────────────────────────────────────────────────────────────────────────
 # Profiles
 # ─────────────────────────────────────────────────────────────────────────
-default_profile: company
+default_profile: catalog
 
 profiles:
-  # company — production preferences (internal GitLab + internal JFrog).
-  # image: is what actually RUNS (admin-pinned; edit to your JFrog path).
-  # component: is the CI/CD Catalog path, resolved every run for its usage guide
-  # (README) and a drift advisory telling you when to bump image:.
-  # Both are placeholders below — set them to your real paths.
-  company:
-    gitlab_instance: https://gitlab.internal.example
-    categories:
-      sast:
-        component: components/sast/sast
-        image: jfrog.internal/security/semgrep:6
-        runner: gitlab-sast.sh
-        enabled: true
-      dependency_scanning:
-        component: components/dependency-scanning/main
-        image: jfrog.internal/security/dependency-scanning:2
-        runner: gitlab-dependency-scanning.sh
-        enabled: true
-      secret_detection:
-        component: components/secret-detection/secret-detection
-        image: jfrog.internal/security/secrets:7
-        runner: secret-detection.sh
-        enabled: true
-      container_scanning:
-        component: components/container-scanning/container-scanning
-        image: jfrog.internal/security/container-scanning:8
-        runner: gitlab-container-scanning.sh
-        enabled: true
-      dast_web:
-        component: components/dast/dast
-        image: ""          # CI-only: DAST needs a running deployed target
-        runner: none
-        enabled: false
-      dast_api:
-        component: components/dast/dast
-        image: ""
-        runner: none
-        enabled: false
-    # Legacy env-var-driven scanners — unchanged v1 behavior. Remove an entry to
-    # stop offering that scanner. image comes from APPSEC_REGISTRY + *_IMAGE env.
-    additional_scanners:
-      parasoft_gradle: { runner: parasoft-gradle.sh, image_env: PARASOFT_IMAGE, condition: HAS_GRADLE }
-      parasoft_maven:  { runner: parasoft-maven.sh,  image_env: PARASOFT_IMAGE, condition: HAS_POM_NO_GRADLE }
-      pylint:          { runner: pylint.sh,          image_env: PYLINT_IMAGE,   condition: HAS_REQUIREMENTS }
-      eslint:          { runner: eslint.sh,          image_env: ESLINT_IMAGE,   condition: HAS_PACKAGE_JSON }
-      scantist_js:     { runner: scantist-js.sh,     image_env: SCANTIST_IMAGE, condition: HAS_PACKAGE_JSON }
-      scantist_maven:  { runner: scantist-maven.sh,  image_env: SCANTIST_IMAGE, condition: HAS_POM_NO_GRADLE }
-      trivy:           { runner: trivy.sh,           image_env: TRIVY_IMAGE,    condition: TRIVY_TARGET_SET }
-      fortify_python:  { runner: fortify-python.sh,  image_env: FORTIFY_PY_IMAGE, condition: HAS_REQUIREMENTS }
-      fortify_js:      { runner: fortify-js.sh,      image_env: FORTIFY_JS_IMAGE, condition: HAS_PACKAGE_JSON }
-
-  # public-test — end-to-end testing against the PUBLIC gitlab.com catalog and
-  # public analyzer images. Requires internet; refused when settings.airgap=true.
-  public-test:
+  # catalog — public private-catalogue defaults for gitlab.com testing.
+  # component: is the CI/CD Catalog path that catalog.sh resolves.
+  # version: ~latest means "pick the highest stable tag"; an exact pin keeps the
+  #          current tag and emits an advisory when a newer stable tag exists.
+  # image: is what actually RUNS locally; admins pin it independently of the
+  #        component version and bump it on their own schedule.
+  catalog:
     gitlab_instance: https://gitlab.com
     categories:
       sast:
-        component: components/sast/sast
-        image: registry.gitlab.com/security-products/semgrep:6
-        runner: gitlab-sast.sh
+        component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
+        version: ~latest
+        image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review
+        runner: fortify-sast.sh
         enabled: true
       dependency_scanning:
-        component: components/dependency-scanning/main
-        image: registry.gitlab.com/security-products/dependency-scanning:2
+        component: lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning
+        version: ~latest
+        image: registry.gitlab.com/security-products/dependency-scanning:2  # Derived from ANALYZER_IMAGE_* template vars; closest literal public default.
         runner: gitlab-dependency-scanning.sh
         enabled: true
       secret_detection:
-        component: components/secret-detection/secret-detection
+        component: lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection
+        version: ~latest
         image: registry.gitlab.com/security-products/secrets:7
         runner: secret-detection.sh
         enabled: true
       container_scanning:
-        component: components/container-scanning/container-scanning
+        component: lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
+        version: ~latest
         image: registry.gitlab.com/security-products/container-scanning:8
         runner: gitlab-container-scanning.sh
         enabled: true
-      dast_web:
-        component: components/dast/dast
-        image: ""
-        runner: none
-        enabled: false
-      dast_api:
-        component: components/dast/dast
-        image: ""
-        runner: none
-        enabled: false
-    additional_scanners: {}
+
+  # company — production preferences (internal GitLab + internal registry).
+  # image: is what actually RUNS (admin-pinned; edit to your real internal path).
+  company:
+    gitlab_instance: https://gitlab.internal.example
+    categories:
+      sast:
+        component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
+        version: ~latest
+        image: jfrog.internal/security/fortify-sca:25.2.0-jdk17-review
+        runner: fortify-sast.sh
+        enabled: true
+      dependency_scanning:
+        component: lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning
+        version: ~latest
+        image: jfrog.internal/security/dependency-scanning:2
+        runner: gitlab-dependency-scanning.sh
+        enabled: true
+      secret_detection:
+        component: lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection
+        version: ~latest
+        image: jfrog.internal/security/secrets:7
+        runner: secret-detection.sh
+        enabled: true
+      container_scanning:
+        component: lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
+        version: ~latest
+        image: jfrog.internal/security/container-scanning:8
+        runner: gitlab-container-scanning.sh
+        enabled: true

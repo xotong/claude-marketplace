@@ -3,15 +3,15 @@ name: appsec-scan
 description: >
   Run the same security scanners as CI — locally, using identical container images —
   before pushing to GitLab, driven by admin-managed scanner preferences and the
-  GitLab CI/CD Catalog (component versions resolved on every run). Categories:
-  SAST (Fortify or GitLab Semgrep), Dependency Scanning (GitLab SBOM),
-  Secret Detection (GitLab), Container Scanning (GTCS), DAST (CI-referenced) —
-  plus legacy Parasoft Jtest, Pylint, ESLint, Scantist SCA, and Trivy scanners.
+  private GitLab CI/CD Catalog at lobster-thermidor/devops/ci-catalogue with
+  per-component version pinning (~latest or exact tag). Categories:
+  SAST (Fortify SCA, multi-language: maven, gradle, python, javascript),
+  Dependency Scanning (GitLab SBOM), Secret Detection (GitLab/Gitleaks),
+  Container Scanning (GTCS).
   Reports findings, then (with approval) creates a fix branch, loops fix→rescan,
   and generates a guided triage plan (.appsec-results/TRIAGE.md) for findings it
   cannot fix, mapped to the GitLab Vulnerability Report dismissal workflow.
   Use when the user says: "appsec scan", "run security scanners", "run Fortify",
-  "run Parasoft", "Scantist scan", "Trivy scan", "ESLint security", "Pylint scan",
   "pre-push security check", "CI security pipeline locally", "mirror CI scanners",
   "container security scan", "SCA scan", "SAST scan", "dependency scan",
   "secret scan", "secret detection", "security before merge", "scan profile",
@@ -23,8 +23,8 @@ description: >
 
 Run the same scanner images your GitLab CI pipeline uses, locally, so you catch
 findings before the push. Which scanner runs for each category is decided by
-admin-managed preferences, and component versions are resolved from the GitLab
-CI/CD Catalog on every run.
+admin-managed preferences, and component versions are resolved from the private
+GitLab CI/CD Catalog (`lobster-thermidor/devops/ci-catalogue`) on every run.
 
 ## How this skill is structured
 
@@ -37,26 +37,30 @@ skills/appsec-scan/
 │   └── PREFERENCES.md            ← schema + switching guide
 ├── scripts/
 │   ├── load-prefs.sh         ← YAML → shell env/RUN_* flags (the model never parses YAML)
-│   ├── catalog.sh            ← CI/CD Catalog resolver (tags, template, README, drift)
+│   ├── catalog.sh            ← CI/CD Catalog resolver (tags, template, README, AGENTS.md, drift)
 │   ├── detect-runtime.sh     ← picks docker or podman
 │   ├── resolve-jq.sh         ← host jq, or fetch from settings.jq.install_url
 │   └── container-target.sh   ← builds/saves a local image, or resolves CS_IMAGE
 ├── scanners/                 ← one runner per scanner; each mirrors one CI component
-│   ├── fortify-python.sh  fortify-js.sh
-│   ├── gitlab-sast.sh     gitlab-dependency-scanning.sh  gitlab-container-scanning.sh
+│   ├── fortify-sast.sh
+│   ├── gitlab-dependency-scanning.sh
+│   ├── gitlab-container-scanning.sh
 │   ├── secret-detection.sh
-│   ├── parasoft-gradle.sh parasoft-maven.sh
-│   ├── pylint.sh  eslint.sh  scantist-js.sh  scantist-maven.sh  trivy.sh
 │   └── preflight.sh
 └── reference/
     └── catalog/              ← vendored component snapshots (offline fallback)
+        └── lobster-thermidor/devops/ci-catalogue/
+            ├── fortify-sast/fortify-sast/25.2.0/
+            ├── dependency-scanning/dependency-scanning/1.0.0/
+            ├── secret-detection/secret-detection/1.0.0/
+            └── container-scanning/container-scanning/1.0.0/
 ```
 
 **To change which scanner runs for a category:** admins edit
 `config/scanner-preferences.yaml` (see `config/PREFERENCES.md`).
 **To update a scanner's commands:** edit the file in `scanners/`. Do not edit SKILL.md.
-**To add a language variant:** add a file in `scanners/`, add one detection block
-in Step 4 below. See UPDATE-GUIDE.md.
+**To update a component version or pin an exact tag:** edit `version:` in the
+relevant category block in `config/scanner-preferences.yaml`. See UPDATE-GUIDE.md.
 
 ---
 
@@ -71,40 +75,18 @@ fallback snapshots are vendored under `reference/catalog/`).
 |---|---|---|
 | `APPSEC_PROFILE` | Active preferences profile | `default_profile` from config |
 | `APPSEC_REGISTRY` | Registry prefix for company scanner images | `registry.company.com/security` |
-| `FORTIFY_PY_IMAGE` | Fortify image for Python (e.g. `fortify-sast:latest-jdk17`) | — |
-| `FORTIFY_JS_IMAGE` | Fortify image for JS/TS | — |
-| `PARASOFT_IMAGE` | Parasoft Jtest image (shared for Gradle and Maven) | — |
-| `PYLINT_IMAGE` | Pylint image (with pylint + pylint2sarif installed) | — |
-| `ESLINT_IMAGE` | ESLint image (with npm/npx) | — |
-| `SCANTIST_IMAGE` | Scantist image (with Java + curl + sudo) | — |
-| `TRIVY_IMAGE` | Trivy image | — |
+| `FORTIFY_SAST_IMAGE` | Fortify SCA image (full ref, e.g. `registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review`) | profile `image:` (env override wins) |
+| `FORTIFY_LANGUAGE` | Fortify scan language (`maven`, `gradle`, `python`, `javascript`); auto-detected from project files, set to override | auto-detected |
 | `SECRET_DETECTION_IMAGE` | GitLab Secret Detection analyzer image (full ref) | profile `image:` (env override wins) |
 | `SECRET_DETECTION_EXCLUDED_PATHS` | Paths excluded by the analyzer | — |
-| `GITLAB_SAST_IMAGE` | GitLab SAST (Semgrep) analyzer image (full ref) | profile `image:` (env override wins) |
 | `GITLAB_DS_IMAGE` | GitLab Dependency Scanning analyzer image (full ref) | profile `image:` (env override wins) |
 | `GITLAB_CS_IMAGE` | GitLab Container Scanning analyzer image (full ref) | profile `image:` (env override wins) |
 | `CS_IMAGE` | Container image:tag for Container Scanning to scan | — |
-| `DEVSECOPS_IMPORT_URL` | DTP server URL for Scantist JAR download | — |
+| `JFROG_TOKEN` | CI-side variable of the container-scanning component; local runs authenticate via the env vars named in `settings.container_registry` (`CS_REGISTRY_USER`/`CS_REGISTRY_PASSWORD`) | — |
 | `APP_NAME` | Application name used in Fortify build IDs | `basename $PWD` |
-| `SOURCE_PATH` | Source directory passed to Fortify and Pylint | `src` |
-| `ESLINT_CONFIG_FILE` | Path to ESLint config file | — |
-| `MAVEN_SETTINGS_XML` | Maven settings.xml (Parasoft Maven + Scantist Maven) | — |
-| `TRIVY_TARGET` | Container image:tag to scan with Trivy | — |
-| `CI_PROJECT_URL` | GitLab project URL (Parasoft source control config) | — |
-
-Company-profile shell setup (`~/.bashrc` / `~/.zshrc`):
-
-```bash
-export APPSEC_REGISTRY="registry.company.com/security"
-export DEVSECOPS_IMPORT_URL="https://dtp.company.com"
-export FORTIFY_PY_IMAGE="fortify-sast:latest-jdk17"
-export FORTIFY_JS_IMAGE="fortify-sast:latest-jdk17"
-export PARASOFT_IMAGE="parasoft-jtest:latest-jdk17"
-export PYLINT_IMAGE="pylint-scanner:latest"
-export ESLINT_IMAGE="eslint-scanner:latest-node20"
-export SCANTIST_IMAGE="scantist-scanner:latest"
-export TRIVY_IMAGE="trivy-scanner:latest"
-```
+| `SOURCE_PATH` | Source directory passed to Fortify | `src` |
+| `MAVEN_SETTINGS` | Maven settings.xml path (Fortify Maven builds) | `settings.xml` |
+| `CI_PROJECT_URL` | GitLab project URL (Fortify source control config) | — |
 
 ---
 
@@ -145,8 +127,9 @@ PREFS_ENV="$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-prefer
 eval "$PREFS_ENV"
 # Now set: APPSEC_PROFILE, APPSEC_AIRGAP, CONTAINER_RUNTIME, JQ_INSTALL_URL,
 # CATALOG_MODE, CATALOG_AUTH_ENV, CS_USER_ENV, CS_PASS_ENV, GITLAB_INSTANCE,
-# SECRET_DETECTION_IMAGE, GITLAB_SAST_IMAGE, GITLAB_DS_IMAGE, GITLAB_CS_IMAGE,
-# one RUN_* flag per enabled runner, and ENABLED_COMPONENTS ("component|runner" pairs).
+# FORTIFY_SAST_IMAGE, SECRET_DETECTION_IMAGE, GITLAB_DS_IMAGE, GITLAB_CS_IMAGE,
+# RUN_FORTIFY_SAST, RUN_GITLAB_DS, RUN_SECRET_DETECTION, RUN_GITLAB_CS,
+# and ENABLED_COMPONENTS (space-separated "component|version|runner" triples).
 
 # Detect the container runtime (docker or podman) — hard requirement.
 RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
@@ -158,8 +141,9 @@ echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE   Runtime: $RUNTIME   
 - The emitted `*_IMAGE` values are what actually run (pinned by the admin);
   Step 2.5 resolves `component:` only for its usage guide and a drift advisory.
   An explicit `*_IMAGE` env var set before the run still wins over the YAML.
-- If load-prefs.sh exits nonzero (unknown profile, or `public-test` requested
-  while `airgap: true`), show its stderr to the user verbatim and stop.
+- If load-prefs.sh exits nonzero (unknown profile, or `airgap: true` with a
+  profile whose `gitlab_instance` contains gitlab.com), show its stderr to the
+  user verbatim and stop.
 - If `GITLAB_INSTANCE` still points at a `*.example` host or the images still
   point at `jfrog.internal/...`, the admin has not configured this profile yet —
   stop and direct the user to the repo README section "AppSec airgap setup".
@@ -195,10 +179,10 @@ thing that talks to the network, and only to `$GITLAB_INSTANCE`. When
 CATALOG_CACHE=".appsec-results/catalog"
 mkdir -p "$CATALOG_CACHE"
 
-# ENABLED_COMPONENTS comes from Step 1.5: space-separated "component|runner" pairs.
+# ENABLED_COMPONENTS comes from Step 1.5: space-separated "component|version|runner" triples.
 for pair in $ENABLED_COMPONENTS; do
-  component="${pair%|*}"; runner="${pair#*|}"
-  bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "$component" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
+  component="${pair%%|*}"; rest="${pair#*|}"; version="${rest%%|*}"; runner="${rest#*|}"
+  bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "$component" "$version" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
   if [ "$runner" != "none" ]; then
     bash "$SCRIPTS_DIR/catalog.sh" check-drift "$component" "$CATALOG_CACHE" "$SCANNERS_DIR/$runner"
   fi
@@ -216,14 +200,20 @@ Then present the user a resolution table before scanning:
 
 | Category | Component | Version | Source | Drift |
 |---|---|---|---|---|
-| sast | components/sast/sast | 3.4.0 | online | — |
+| sast | lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0 | online | — |
 
-- `resolve` prints `<component>@<tag> [online|offline-fallback]` and logs which
-  tags were considered and why one was chosen (highest stable release).
+- `resolve` accepts an exact tag (e.g. `25.2.0`) or `~latest` (resolves to the
+  highest stable release each run). Prints `<component>@<tag> [online|offline-fallback]`
+  and logs which tags were considered and why one was chosen.
+- When an exact version is pinned and a newer stable tag exists, `resolve` prints:
+  `ADVISORY: <component> pinned <X>, newer stable <Y> available` — surface this
+  to the user verbatim so admins know when to bump the pin.
 - `check-drift` prints `DRIFT:` lines when the component's defaults have moved
   ahead of the local runner — surface these to the user verbatim.
-- The resolved `template.yml` and `README.md` are **advisory only**: the README
-  is the component's official usage guide (offer to summarize it), and `DRIFT:`
+- `catalog.sh` also caches `AGENTS.md` per component (alongside `template.yml`
+  and `README.md`) — the AGENTS.md is the component's agent-oriented usage
+  reference (offer to summarize it if the user wants component details).
+- The resolved `template.yml` and `README.md` are **advisory only**: `DRIFT:`
   lines tell the admin when to bump the pinned `image:` in the preferences.
   Never derive the Step 4 analyzer images from the catalog — they were fixed in
   Step 1.5.
@@ -239,12 +229,11 @@ SOURCE_PATH="${SOURCE_PATH:-src}"
 CI_PROJECT_DIR="${CI_PROJECT_DIR:-$PWD}"
 APPSEC_REGISTRY="${APPSEC_REGISTRY:-registry.company.com/security}"
 
-# Analyzer images (SECRET_DETECTION_IMAGE, GITLAB_SAST_IMAGE, GITLAB_DS_IMAGE,
+# Analyzer images (FORTIFY_SAST_IMAGE, SECRET_DETECTION_IMAGE, GITLAB_DS_IMAGE,
 # GITLAB_CS_IMAGE) were set from each category's image: in Step 1.5. The Step 2.5
 # drift advisory tells you when the catalog moved ahead of a pinned image.
 
-FORTIFY_PY_PID=""; FORTIFY_JS_PID=""; PYLINT_PID=""; ESLINT_PID=""; SCANTIST_JS_PID=""
-SECRET_DETECTION_PID=""; GITLAB_SAST_PID=""; GITLAB_DS_PID=""; GITLAB_CS_PID=""
+FORTIFY_SAST_PID=""; GITLAB_DS_PID=""; SECRET_DETECTION_PID=""; GITLAB_CS_PID=""
 
 HAS_POM=false; HAS_GRADLE=false; HAS_PACKAGE_JSON=false
 HAS_REQUIREMENTS=false; HAS_DOCKERFILE=false
@@ -254,10 +243,8 @@ HAS_REQUIREMENTS=false; HAS_DOCKERFILE=false
 { [ -f requirements.txt ] || [ -f pyproject.toml ]; } && HAS_REQUIREMENTS=true
 [ -f Dockerfile ]                                      && HAS_DOCKERFILE=true
 
-# Composite flags — exactly the names used by the `condition:` field on
-# additional_scanners entries in config/scanner-preferences.yaml:
+# Composite flag used in scanner-preferences.yaml condition: field
 HAS_POM_NO_GRADLE=false; { $HAS_POM && ! $HAS_GRADLE; } && HAS_POM_NO_GRADLE=true
-TRIVY_TARGET_SET=false;  [ -n "${TRIVY_TARGET:-}" ]     && TRIVY_TARGET_SET=true
 
 echo "Project: $APP_NAME  Branch: $BRANCH"
 echo "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Docker=$HAS_DOCKERFILE"
@@ -276,72 +263,48 @@ The container executes the runner with `bash` or `sh`, depending on the analyzer
 image. All output paths inside the script use `/workspace/...` which maps to
 `$PWD` on the host.
 
-Run a category block only when its `RUN_*` flag from Step 1.5 is true; legacy
-`additional_scanners` blocks additionally require their image env vars (v1
-behavior). Run the parallel scanners first (background `&`), then the
-sequential ones.
+Run a category block only when its `RUN_*` flag from Step 1.5 is true. Run
+the parallel scanners first (background `&`), then the sequential ones.
 
-### Fortify SAST — Python
-*Additional scanner (`additional_scanners.fortify_python`). Applies when: Python
-project detected and `FORTIFY_PY_IMAGE` is set. Image: `APPSEC_REGISTRY/$FORTIFY_PY_IMAGE`.
-Runner: `scanners/fortify-python.sh`.*
-
-```bash
-if $RUN_FORTIFY && $HAS_REQUIREMENTS && [ -n "${FORTIFY_PY_IMAGE:-}" ]; then
-  echo "[Fortify/Python] Starting in background..."
-  "$RUNTIME" run --rm \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/fortify-python.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e APP_NAME="$APP_NAME" \
-    -e SOURCE_PATH="$SOURCE_PATH" \
-    "${APPSEC_REGISTRY}/${FORTIFY_PY_IMAGE:-}" \
-    bash /runner.sh > .appsec-results/fortify-python.log 2>&1 &
-  FORTIFY_PY_PID=$!
-fi
-```
-
-### Fortify SAST — JS/TS
-*Additional scanner (`additional_scanners.fortify_js`). Applies when: JS/TS
-project detected and `FORTIFY_JS_IMAGE` is set. Image: `APPSEC_REGISTRY/$FORTIFY_JS_IMAGE`.
-Runner: `scanners/fortify-js.sh`.*
+### Fortify SCA (SAST)
+*Category: sast. Multi-language (maven, gradle, python, javascript). Language
+auto-detected from project files; set `FORTIFY_LANGUAGE` to override.
+Image: `FORTIFY_SAST_IMAGE`. Runner: `scanners/fortify-sast.sh`. Output:
+`.appsec-results/fortify-sast.fpr`.*
 
 ```bash
-if $RUN_FORTIFY && $HAS_PACKAGE_JSON && [ -n "${FORTIFY_JS_IMAGE:-}" ]; then
-  echo "[Fortify/JS] Starting in background..."
-  "$RUNTIME" run --rm \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/fortify-js.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e APP_NAME="$APP_NAME" \
-    -e SOURCE_PATH="$SOURCE_PATH" \
-    "${APPSEC_REGISTRY}/${FORTIFY_JS_IMAGE:-}" \
-    bash /runner.sh > .appsec-results/fortify-js.log 2>&1 &
-  FORTIFY_JS_PID=$!
-fi
-```
-
-### GitLab SAST (Semgrep)
-*Category: sast (public-test, or any profile that selects `gitlab-sast.sh`).
-Language-agnostic. Runner: `scanners/gitlab-sast.sh`.*
-
-```bash
-if $RUN_GITLAB_SAST && [ -n "${GITLAB_SAST_IMAGE:-}" ]; then
-  echo "[GitLab SAST] Pulling ${GITLAB_SAST_IMAGE}..."
-  if "$RUNTIME" pull "${GITLAB_SAST_IMAGE}"; then
-    echo "[GitLab SAST] Starting in background..."
-    "$RUNTIME" run --rm \
-      --entrypoint "" \
-      -v "$PWD:/workspace" \
-      -v "$SCANNERS_DIR/gitlab-sast.sh:/runner.sh:ro" \
-      -w /workspace \
-      -e CI_PROJECT_DIR="/workspace" \
-      -e SAST_EXCLUDED_PATHS="${SAST_EXCLUDED_PATHS:-}" \
-      "${GITLAB_SAST_IMAGE}" \
-      sh /runner.sh > .appsec-results/gitlab-sast.log 2>&1 &
-    GITLAB_SAST_PID=$!
-  else
-    echo "[GitLab SAST] Failed to pull ${GITLAB_SAST_IMAGE}; skipping scan"
+if $RUN_FORTIFY_SAST && [ -n "${FORTIFY_SAST_IMAGE:-}" ]; then
+  # Auto-detect language (precedence: gradle > maven > python > javascript)
+  if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
+    if $HAS_GRADLE;       then FORTIFY_LANGUAGE=gradle
+    elif $HAS_POM;        then FORTIFY_LANGUAGE=maven
+    elif $HAS_REQUIREMENTS; then FORTIFY_LANGUAGE=python
+    elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
+    else
+      echo "[Fortify SCA] No supported project type detected (need build.gradle, pom.xml, requirements.txt, or package.json); skipping"
+      RUN_FORTIFY_SAST=false
+    fi
+  fi
+  if $RUN_FORTIFY_SAST; then
+    echo "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
+    if "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
+      echo "[Fortify SCA] Starting in background (language: $FORTIFY_LANGUAGE)..."
+      "$RUNTIME" run --rm \
+        -v "$PWD:/workspace" \
+        -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
+        -w /workspace \
+        -e APP_NAME="$APP_NAME" \
+        -e SOURCE_PATH="$SOURCE_PATH" \
+        -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" \
+        -e MAVEN_SETTINGS="${MAVEN_SETTINGS:-}" \
+        -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" \
+        -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" \
+        "${FORTIFY_SAST_IMAGE}" \
+        sh /runner.sh > .appsec-results/fortify-sast.log 2>&1 &
+      FORTIFY_SAST_PID=$!
+    else
+      echo "[Fortify SCA] Failed to pull ${FORTIFY_SAST_IMAGE}; skipping scan"
+    fi
   fi
 fi
 ```
@@ -405,6 +368,27 @@ else
 fi
 ```
 
+### Wait for all parallel scanners
+
+```bash
+echo "Waiting for parallel scanners..."
+for pid_var in FORTIFY_SAST_PID GITLAB_DS_PID SECRET_DETECTION_PID; do
+  pid="${!pid_var:-}"
+  if [ -n "$pid" ]; then
+    if wait "$pid"; then
+      echo "[${pid_var/_PID/}] Done"
+    else
+      rc=$?
+      if [ "$pid_var" = "GITLAB_DS_PID" ] && [ "$rc" -eq 2 ]; then
+        echo "[GITLAB_DS] Local run unsupported by this analyzer — run Dependency Scanning in the CI pipeline"
+      else
+        echo "[${pid_var/_PID/}] Failed — check .appsec-results/ for logs"
+      fi
+    fi
+  fi
+done
+```
+
 ### GitLab Container Scanning (GTCS)
 *Category: container_scanning. Runner: `scanners/gitlab-container-scanning.sh`.
 Sequential (it builds/saves an image). GTCS is **registry-only**, so the target
@@ -454,159 +438,9 @@ if $RUN_GITLAB_CS && [ -n "${GITLAB_CS_IMAGE:-}" ]; then
       ;;
     *)
       echo "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
-      echo "  Container scanning runs post-build in the pipeline (see the DAST/CI section)."
+      echo "  Container scanning runs post-build in the pipeline."
       ;;
   esac
-fi
-```
-
-### Pylint
-*Additional scanner. Applies when: Python project. Entrypoint overridden to `""`. Runner: `scanners/pylint.sh`.*
-
-```bash
-if $RUN_PYLINT && $HAS_REQUIREMENTS && [ -n "${PYLINT_IMAGE:-}" ]; then
-  echo "[Pylint] Starting in background..."
-  "$RUNTIME" run --rm \
-    --entrypoint "" \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/pylint.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e SOURCE_PATH="$SOURCE_PATH" \
-    "${APPSEC_REGISTRY}/${PYLINT_IMAGE:-}" \
-    bash /runner.sh > .appsec-results/pylint.log 2>&1 &
-  PYLINT_PID=$!
-fi
-```
-
-### ESLint
-*Additional scanner. Applies when: JS/TS project and `ESLINT_CONFIG_FILE` is set. Runner: `scanners/eslint.sh`.*
-
-```bash
-if $RUN_ESLINT && $HAS_PACKAGE_JSON && [ -n "${ESLINT_IMAGE:-}" ] && [ -n "${ESLINT_CONFIG_FILE:-}" ]; then
-  echo "[ESLint] Starting in background..."
-  "$RUNTIME" run --rm \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/eslint.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e ESLINT_CONFIG_FILE="${ESLINT_CONFIG_FILE:-}" \
-    "${APPSEC_REGISTRY}/${ESLINT_IMAGE:-}" \
-    bash /runner.sh > .appsec-results/eslint.log 2>&1 &
-  ESLINT_PID=$!
-fi
-```
-
-### Scantist SCA — JS
-*Additional scanner. Applies when: JS/TS project. Needs `--network=host` to reach DTP. Runner: `scanners/scantist-js.sh`.*
-
-```bash
-if $RUN_SCANTIST && $HAS_PACKAGE_JSON && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ]; then
-  echo "[Scantist/JS] Starting in background..."
-  "$RUNTIME" run --rm \
-    --network=host \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/scantist-js.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e DEVSECOPS_IMPORT_URL="${DEVSECOPS_IMPORT_URL:-}" \
-    -e BRANCH="$BRANCH" \
-    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE:-}" \
-    bash /runner.sh > .appsec-results/scantist-js.log 2>&1 &
-  SCANTIST_JS_PID=$!
-fi
-```
-
-### Wait for all parallel scanners
-
-```bash
-echo "Waiting for parallel scanners..."
-for pid_var in FORTIFY_PY_PID FORTIFY_JS_PID PYLINT_PID ESLINT_PID SCANTIST_JS_PID \
-               SECRET_DETECTION_PID GITLAB_SAST_PID GITLAB_DS_PID GITLAB_CS_PID; do
-  pid="${!pid_var:-}"
-  if [ -n "$pid" ]; then
-    if wait "$pid"; then
-      echo "[${pid_var/_PID/}] Done"
-    else
-      rc=$?
-      if [ "$pid_var" = "GITLAB_DS_PID" ] && [ "$rc" -eq 2 ]; then
-        echo "[GITLAB_DS] Local run unsupported by this analyzer — run Dependency Scanning in the CI pipeline"
-      else
-        echo "[${pid_var/_PID/}] Failed — check .appsec-results/ for logs"
-      fi
-    fi
-  fi
-done
-```
-
-### Parasoft Jtest — Gradle
-*Additional scanner, sequential. Applies when: Gradle project. Runner: `scanners/parasoft-gradle.sh`.*
-
-```bash
-if $RUN_PARASOFT && $HAS_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ]; then
-  echo "[Parasoft/Gradle] Running..."
-  "$RUNTIME" run --rm \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/parasoft-gradle.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e BRANCH="$BRANCH" \
-    -e CI_PROJECT_URL="${CI_PROJECT_URL:-$(git remote get-url origin 2>/dev/null || echo local)}" \
-    -e CI_PROJECT_DIR="/workspace" \
-    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE:-}" \
-    bash /runner.sh 2>&1 | tee .appsec-results/parasoft-gradle.log
-fi
-```
-
-### Parasoft Jtest — Maven
-*Additional scanner, sequential. Applies when: Maven project (no Gradle). Runner: `scanners/parasoft-maven.sh`.*
-
-```bash
-if $RUN_PARASOFT && $HAS_POM_NO_GRADLE && [ -n "${PARASOFT_IMAGE:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
-  echo "[Parasoft/Maven] Running..."
-  "$RUNTIME" run --rm \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/parasoft-maven.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e BRANCH="$BRANCH" \
-    -e CI_PROJECT_URL="${CI_PROJECT_URL:-$(git remote get-url origin 2>/dev/null || echo local)}" \
-    -e CI_PROJECT_DIR="/workspace" \
-    -e MAVEN_SETTINGS_XML="${MAVEN_SETTINGS_XML:-}" \
-    "${APPSEC_REGISTRY}/${PARASOFT_IMAGE:-}" \
-    bash /runner.sh 2>&1 | tee .appsec-results/parasoft-maven.log
-fi
-```
-
-### Scantist SCA — Maven
-*Additional scanner, sequential — runs after Parasoft Maven (needs compiled artifacts). Runner: `scanners/scantist-maven.sh`.*
-
-```bash
-if $RUN_SCANTIST && $HAS_POM_NO_GRADLE && [ -n "${SCANTIST_IMAGE:-}" ] && [ -n "${DEVSECOPS_IMPORT_URL:-}" ] && [ -n "${MAVEN_SETTINGS_XML:-}" ]; then
-  echo "[Scantist/Maven] Running..."
-  "$RUNTIME" run --rm \
-    --network=host \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/scantist-maven.sh:/runner.sh:ro" \
-    -w /workspace \
-    -e DEVSECOPS_IMPORT_URL="${DEVSECOPS_IMPORT_URL:-}" \
-    -e BRANCH="$BRANCH" \
-    -e MAVEN_SETTINGS_XML="${MAVEN_SETTINGS_XML:-}" \
-    "${APPSEC_REGISTRY}/${SCANTIST_IMAGE:-}" \
-    bash /runner.sh 2>&1 | tee .appsec-results/scantist-maven.log
-fi
-```
-
-### Trivy — Container image
-*Additional scanner. Run if `TRIVY_TARGET` is set. Runner: `scanners/trivy.sh`.*
-
-```bash
-if $RUN_TRIVY && $TRIVY_TARGET_SET && [ -n "${TRIVY_IMAGE:-}" ]; then
-  echo "[Trivy] Scanning ${TRIVY_TARGET:-}..."
-  "$RUNTIME" run --rm \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -v "$PWD:/workspace" \
-    -v "$SCANNERS_DIR/trivy.sh:/runner.sh:ro" \
-    -e TRIVY_TARGET="${TRIVY_TARGET:-}" \
-    "${APPSEC_REGISTRY}/${TRIVY_IMAGE:-}" \
-    bash /runner.sh
-elif $RUN_TRIVY; then
-  echo "[Trivy] Skipped — set TRIVY_TARGET=<image:tag> to enable"
 fi
 ```
 
@@ -628,18 +462,15 @@ HAS_MISSING_REPORT=false
 
 HAS_JQ=true
 HAS_UNZIP=true
-HAS_XMLLINT=true
 # Resolve jq: use host jq, else fetch from settings.jq.install_url (Step 1.5).
 JQ_BIN="$(JQ_INSTALL_URL="${JQ_INSTALL_URL:-}" APPSEC_RESULTS_DIR=".appsec-results" bash "$SCRIPTS_DIR/resolve-jq.sh" || true)"
 if [ -n "$JQ_BIN" ]; then PATH="$(dirname "$JQ_BIN"):$PATH"; else HAS_JQ=false; fi
 command -v unzip >/dev/null 2>&1 || HAS_UNZIP=false
-command -v xmllint >/dev/null 2>&1 || HAS_XMLLINT=false
 
-if ! $HAS_JQ || ! $HAS_UNZIP || ! $HAS_XMLLINT; then
+if ! $HAS_JQ || ! $HAS_UNZIP; then
   echo "WARNING: One or more summary parsers are unavailable; some counts may show as UNKNOWN."
-  ! $HAS_JQ && echo "  - jq not found: Pylint, ESLint, Secret Detection, GitLab SAST/DS/CS, and Trivy counts may be unavailable."
+  ! $HAS_JQ && echo "  - jq not found: Secret Detection, GitLab DS/CS counts may be unavailable."
   ! $HAS_UNZIP && echo "  - unzip not found: Fortify FPR counts may be unavailable."
-  ! $HAS_XMLLINT && echo "  - xmllint not found: Parasoft XML counts may be unavailable."
 fi
 
 print_missing_report() {
@@ -672,28 +503,22 @@ print_gl_report() {  # $1=label  $2=report-file  $3=count-into-totals(true/false
   fi
 }
 
-# Fortify: count <Vulnerability> tags in the embedded fvdl (only if selected)
-if $RUN_FORTIFY; then
-for fpr_label in "fortify-python:Fortify/Python" "fortify-js:Fortify/JS"; do
-  fpr_file=".appsec-results/${fpr_label%%:*}.fpr"
-  label="${fpr_label##*:}"
+# Fortify SCA — count <Vulnerability> tags in the embedded fvdl
+if $RUN_FORTIFY_SAST; then
+  fpr_file=".appsec-results/fortify-sast.fpr"
   if [ -f "$fpr_file" ]; then
     if ! $HAS_UNZIP; then
-      print_unknown_report "$label"
+      print_unknown_report "Fortify SCA (SAST)"
     elif unzip -p "$fpr_file" audit.fvdl >/dev/null 2>&1; then
       count=$(unzip -p "$fpr_file" audit.fvdl 2>/dev/null | grep -c '<Vulnerability>' || true)
-      printf "%-22s %-10s\n" "$label" "$count total (see .fpr for severity breakdown)"
+      printf "%-22s %-10s\n" "Fortify SCA (SAST)" "$count total (see .fpr for severity breakdown)"
     else
-      print_unknown_report "$label"
+      print_unknown_report "Fortify SCA (SAST)"
     fi
   else
-    print_missing_report "$label"
+    print_missing_report "Fortify SCA (SAST)"
   fi
-done
 fi
-
-# GitLab SAST (only when it ran)
-[ -n "$GITLAB_SAST_PID" ] && print_gl_report "GitLab SAST" .appsec-results/gl-sast-report.json true
 
 # GitLab Dependency Scanning — SBOM inventory, findings matched server-side
 if [ -n "$GITLAB_DS_PID" ]; then
@@ -713,13 +538,13 @@ fi
 if [ -n "$GITLAB_CS_PID" ]; then
   if [ -f .appsec-results/gl-container-scanning-report.json ]; then
     print_gl_report "GitLab CS" .appsec-results/gl-container-scanning-report.json true
-  elif [ -f .appsec-results/container-scan-trivy.json ]; then
+  elif [ -f .appsec-results/container-scan-archive.json ]; then
     if ! $HAS_JQ; then
       print_unknown_report "GitLab CS"
-    elif CS_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' .appsec-results/container-scan-trivy.json 2>/dev/null) && \
-         CS_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")]     | length' .appsec-results/container-scan-trivy.json 2>/dev/null) && \
-         CS_MED=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")]   | length' .appsec-results/container-scan-trivy.json 2>/dev/null) && \
-         CS_LOW=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")]      | length' .appsec-results/container-scan-trivy.json 2>/dev/null); then
+    elif CS_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' .appsec-results/container-scan-archive.json 2>/dev/null) && \
+         CS_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")]     | length' .appsec-results/container-scan-archive.json 2>/dev/null) && \
+         CS_MED=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")]   | length' .appsec-results/container-scan-archive.json 2>/dev/null) && \
+         CS_LOW=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")]      | length' .appsec-results/container-scan-archive.json 2>/dev/null); then
       printf "%-22s %-10s %-6s %-8s %-5s\n" "GitLab CS (local)" "$CS_CRIT" "$CS_HIGH" "$CS_MED" "$CS_LOW"
       TOTAL_CRITICAL=$((TOTAL_CRITICAL + CS_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + CS_HIGH))
     else
@@ -728,57 +553,6 @@ if [ -n "$GITLAB_CS_PID" ]; then
   else
     print_missing_report "GitLab CS"
   fi
-fi
-
-# Pylint — drop the ##tool header line added by pylint.sh before parsing JSON
-if [ -f .appsec-results/pylint-report.json ]; then
-  if ! $HAS_JQ; then
-    print_unknown_report "Pylint"
-  else
-    PYLINT_JSON=$(grep -v '^##tool' .appsec-results/pylint-report.json || true)
-    if PY_ERR=$(printf '%s\n' "$PYLINT_JSON" | jq '[.[] | select(.type=="fatal" or .type=="error")] | length' 2>/dev/null) && \
-       PY_WARN=$(printf '%s\n' "$PYLINT_JSON" | jq '[.[] | select(.type=="warning")] | length' 2>/dev/null); then
-      printf "%-22s %-10s %-6s\n" "Pylint" "$PY_ERR" "$PY_WARN"
-      TOTAL_CRITICAL=$((TOTAL_CRITICAL + PY_ERR))
-    else
-      print_unknown_report "Pylint"
-    fi
-  fi
-elif $RUN_PYLINT; then
-  print_missing_report "Pylint"
-fi
-
-# ESLint
-if [ -f .appsec-results/eslint.json ]; then
-  if ! $HAS_JQ; then
-    print_unknown_report "ESLint"
-  elif ES_ERR=$(jq '[.[].messages[] | select(.severity==2)] | length' .appsec-results/eslint.json 2>/dev/null) && \
-       ES_WARN=$(jq '[.[].messages[] | select(.severity==1)] | length' .appsec-results/eslint.json 2>/dev/null); then
-    printf "%-22s %-10s %-6s\n" "ESLint" "$ES_ERR" "$ES_WARN"
-    TOTAL_CRITICAL=$((TOTAL_CRITICAL + ES_ERR))
-  else
-    print_unknown_report "ESLint"
-  fi
-elif $RUN_ESLINT; then
-  print_missing_report "ESLint"
-fi
-
-# Parasoft
-PARASOFT_REPORT=".appsec-results/parasoft-reports/report.xml"
-if [ -f "$PARASOFT_REPORT" ]; then
-  if ! $HAS_XMLLINT; then
-    print_unknown_report "Parasoft"
-  elif PARA_CRIT=$(xmllint --xpath "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=1])" "$PARASOFT_REPORT" 2>/dev/null) && \
-       PARA_HIGH=$(xmllint --xpath "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=2])" "$PARASOFT_REPORT" 2>/dev/null) && \
-       PARA_MED=$(xmllint --xpath  "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=3])" "$PARASOFT_REPORT" 2>/dev/null) && \
-       PARA_LOW=$(xmllint --xpath  "count(/ResultsSession/CodingStandards/Rules/SeverityList/Severity[@id=4])" "$PARASOFT_REPORT" 2>/dev/null); then
-    printf "%-22s %-10s %-6s %-8s %-5s\n" "Parasoft" "$PARA_CRIT" "$PARA_HIGH" "$PARA_MED" "$PARA_LOW"
-    TOTAL_CRITICAL=$((TOTAL_CRITICAL + PARA_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + PARA_HIGH))
-  else
-    print_unknown_report "Parasoft"
-  fi
-elif $RUN_PARASOFT; then
-  print_missing_report "Parasoft"
 fi
 
 # GitLab Secret Detection
@@ -812,23 +586,6 @@ elif $RUN_SECRET_DETECTION; then
   print_missing_report "Secret Detection"
 fi
 
-# Trivy
-if [ -f .appsec-results/trivy-results.json ]; then
-  if ! $HAS_JQ; then
-    print_unknown_report "Trivy"
-  elif TRIVY_CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' .appsec-results/trivy-results.json 2>/dev/null) && \
-       TRIVY_HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="HIGH")]    | length' .appsec-results/trivy-results.json 2>/dev/null) && \
-       TRIVY_MED=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="MEDIUM")]  | length' .appsec-results/trivy-results.json 2>/dev/null) && \
-       TRIVY_LOW=$(jq  '[.Results[]?.Vulnerabilities[]? | select(.Severity=="LOW")]     | length' .appsec-results/trivy-results.json 2>/dev/null); then
-    printf "%-22s %-10s %-6s %-8s %-5s\n" "Trivy" "$TRIVY_CRIT" "$TRIVY_HIGH" "$TRIVY_MED" "$TRIVY_LOW"
-    TOTAL_CRITICAL=$((TOTAL_CRITICAL + TRIVY_CRIT)); TOTAL_HIGH=$((TOTAL_HIGH + TRIVY_HIGH))
-  else
-    print_unknown_report "Trivy"
-  fi
-elif $RUN_TRIVY; then
-  print_missing_report "Trivy"
-fi
-
 echo "============================================================"
 printf "%-22s %-10s %-6s\n" "TOTAL C+H" "$TOTAL_CRITICAL" "$TOTAL_HIGH"
 echo "============================================================"
@@ -859,7 +616,7 @@ echo "Tip: Run /appsec-scan before every commit or push to catch issues early."
 ## Step 6 — Findings review and fix loop
 
 When any scanner reports findings, walk this loop. It generalizes remediation
-across all categories (secrets, SAST, container, and legacy scanners).
+across all categories (secrets, SAST, container, dependency).
 
 ### 6.1 Classify every finding
 
@@ -897,8 +654,8 @@ Then loop, for a **maximum of 5 iterations**:
    patterns; for secrets use environment variables, CI/CD variables,
    `.env.example` placeholders, or a secret manager lookup).
 2. Rerun **only the affected scanners**, not the full suite. For secret
-   findings, Rerun only GitLab Secret Detection first; for SAST fixes rerun only
-   GitLab SAST (or Fortify); for container fixes rerun only Container Scanning.
+   findings, rerun only GitLab Secret Detection first; for SAST fixes rerun only
+   Fortify SCA; for container fixes rerun only Container Scanning.
 3. Reclassify what remains. Findings that stopped appearing are done; findings
    that survived a genuine fix attempt twice get reclassified as *not fixable
    here* with a note.
@@ -973,26 +730,10 @@ TRIAGE.md — they resolve automatically in the next default-branch pipeline.
 
 ---
 
-## DAST (web + API) — CI-referenced
+## DAST (web + API)
 
-DAST needs a **running, deployed target**, so it cannot run in this pre-push
-loop; it belongs in the pipeline against a review/staging environment. What
-this skill does for the `dast_web` / `dast_api` categories:
-
-1. Resolve the DAST component from the catalog (Step 2.5) and show its guide.
-2. Gather the inputs a CI DAST job needs — look in the repo for an OpenAPI spec
-   (`openapi.*`, `swagger.*`) or a Postman collection (`*.postman_collection.json`);
-   if none found, ask the user for the target URL (web) and/or API spec (api).
-3. Emit a ready-to-paste snippet for `.gitlab-ci.yml`:
-
-```yaml
-include:
-  - component: <gitlab_instance_host>/components/dast/dast@<resolved-version>
-# DAST_WEBSITE / DAST_API_SPECIFICATION etc. per the component README
-```
-
-For local, design-time DAST-style coverage (no running app required), point the
-user at the **appsec-dast-sim** skill from this same plugin.
+For local, design-time DAST-style coverage (no running app required), use the
+**appsec-dast-sim** skill from this same plugin.
 
 ---
 
@@ -1000,8 +741,6 @@ user at the **appsec-dast-sim** skill from this same plugin.
 
 - Do not edit scanner commands directly in this file — edit `scanners/*.sh` instead
 - Do not add `fortifyclient` upload steps — scan-only is the local model
-- Do not remove `--network=host` from Scantist — it needs to reach the DTP server
-- Do not run Scantist Maven before Parasoft Maven — it needs compiled artifacts
 - Do not print raw secret values from `gl-secret-detection-report.json`
 - Do not treat removing a detected value from source as credential rotation
 - Do not commit `.appsec-results/` to git

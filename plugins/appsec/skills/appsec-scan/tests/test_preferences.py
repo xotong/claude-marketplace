@@ -25,8 +25,6 @@ EXPECTED_CATEGORIES = {
     "dependency_scanning",
     "secret_detection",
     "container_scanning",
-    "dast_web",
-    "dast_api",
 }
 
 with PREFERENCES_PATH.open("r", encoding="utf-8") as fh:
@@ -58,8 +56,9 @@ class SettingsBlockTest(unittest.TestCase):
 
 
 class ScannerPreferencesTest(unittest.TestCase):
-    def test_default_profile_exists_and_names_profile(self) -> None:
-        self.assertIn(PREFERENCES.get("default_profile"), PREFERENCES.get("profiles", {}))
+    def test_default_profile_is_catalog(self) -> None:
+        self.assertEqual(PREFERENCES.get("default_profile"), "catalog")
+        self.assertIn("catalog", PREFERENCES.get("profiles", {}))
 
     def test_every_profile_has_expected_categories(self) -> None:
         for profile_name, profile in PREFERENCES["profiles"].items():
@@ -70,10 +69,12 @@ class ScannerPreferencesTest(unittest.TestCase):
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
                 with self.subTest(profile=profile_name, category=category_name):
-                    self.assertEqual(set(category), {"component", "image", "runner", "enabled"})
+                    self.assertEqual(set(category), {"component", "version", "image", "runner", "enabled"})
                     self.assertIsInstance(category["component"], str)
                     self.assertGreaterEqual(category["component"].count("/"), 2)
-                    self.assertIsInstance(category["image"], str)  # may be "" for CI-only
+                    self.assertIsInstance(category["version"], str)
+                    self.assertTrue(category["version"])
+                    self.assertIsInstance(category["image"], str)
                     self.assertIsInstance(category["runner"], str)
                     self.assertIsInstance(category["enabled"], bool)
 
@@ -81,31 +82,23 @@ class ScannerPreferencesTest(unittest.TestCase):
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
                 runner = category["runner"]
-                if runner == "none":
-                    continue
                 with self.subTest(profile=profile_name, category=category_name, runner=runner):
                     self.assertTrue((SCANNERS_DIR / runner).is_file())
 
-    def test_enabled_non_dast_category_has_image(self) -> None:
-        # Any enabled category that runs a real runner must name an image to run.
+    def test_enabled_runner_category_has_image(self) -> None:
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
-                if category["enabled"] and category["runner"] != "none":
+                if category["enabled"]:
                     with self.subTest(profile=profile_name, category=category_name):
                         self.assertTrue(category["image"], "enabled runner needs an image")
 
-    def test_additional_scanner_runners_exist(self) -> None:
-        for profile_name, profile in PREFERENCES["profiles"].items():
-            for scanner_name, cfg in profile.get("additional_scanners", {}).items():
-                with self.subTest(profile=profile_name, scanner=scanner_name):
-                    self.assertTrue((SCANNERS_DIR / cfg["runner"]).is_file())
-
-    def test_public_test_targets_gitlab_com(self) -> None:
+    def test_catalog_profile_targets_gitlab_com(self) -> None:
         self.assertEqual(
-            PREFERENCES["profiles"]["public-test"]["gitlab_instance"], "https://gitlab.com"
+            PREFERENCES["profiles"]["catalog"]["gitlab_instance"], "https://gitlab.com"
         )
 
-    def test_company_profile_exists(self) -> None:
+    def test_catalog_and_company_profiles_exist(self) -> None:
+        self.assertIn("catalog", PREFERENCES["profiles"])
         self.assertIn("company", PREFERENCES["profiles"])
 
 

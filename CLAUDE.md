@@ -54,7 +54,7 @@ This repo must work fully offline once cloned. Do not add:
 
 MCP SDK docs and other reference material should be vendored locally under `skills/<name>/reference/`.
 
-**Narrow exception — appsec-scan catalog integration:** the `appsec-scan` skill may make runtime HTTP calls, from its helper scripts only (`scripts/catalog.sh`), to the single GitLab instance configured in `config/scanner-preferences.yaml` (`gitlab_instance`; the `company` profile points at the internal GitLab, the `public-test` profile at gitlab.com). These calls fetch CI/CD Catalog metadata (tags, component templates, READMEs) for version resolution and drift warnings. The skill must keep working fully offline via the vendored snapshots in `plugins/appsec/skills/appsec-scan/reference/catalog/` — never add WebFetch instructions to SKILL.md prose.
+**Narrow exception — appsec-scan catalog integration:** the `appsec-scan` skill may make runtime HTTP calls, from its helper scripts only (`scripts/catalog.sh`), to the single GitLab instance configured in `config/scanner-preferences.yaml` (`gitlab_instance`; the `catalog` profile points at gitlab.com, the `company` profile at the internal mirror). These calls fetch CI/CD Catalog metadata (tags, component templates, READMEs, AGENTS.md) for version resolution and drift warnings. The skill must keep working fully offline via the vendored snapshots in `plugins/appsec/skills/appsec-scan/reference/catalog/lobster-thermidor/devops/ci-catalogue/` — never add WebFetch instructions to SKILL.md prose.
 
 ## Skill safety scanner
 
