@@ -5,6 +5,13 @@
 # Fails fast with a clear message if required vars are missing.
 set -euo pipefail
 
+_uname=$(uname -s 2>/dev/null || echo Unknown)
+case "$_uname" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo 'INFO: Native Windows Git Bash/MSYS detected. WSL2 is the supported path for full Docker volume mounts and sandboxing. Proceeding in best-effort mode.' >&2
+    ;;
+esac
+
 ERRORS=()
 
 if [ -n "${CATALOG_AUTH_ENV:-}" ]; then

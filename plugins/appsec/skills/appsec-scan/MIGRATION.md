@@ -1,6 +1,8 @@
 # Migration Guide — Internet → Airgapped Platform
 
-Use this runbook when moving from the default `catalog` profile (which resolves live against gitlab.com) to the `company` profile (internal GitLab + internal JFrog registry). Cross-references: `config/PREFERENCES.md` (schema), `UPDATE-GUIDE.md` (snapshot refresh), `README.md` (architecture).
+Use this runbook when moving from the default `catalog` profile (which resolves live against gitlab.com) to the `company` profile (internal GitLab + internal JFrog registry). Cross-references: `config/PREFERENCES.md` (schema), `UPDATE-GUIDE.md` (snapshot refresh), `README.md` (architecture, platform support matrix).
+
+> **Platform note:** airgapped and internal-platform targets should run on Linux or WSL2 for full functionality. Native Windows Git Bash lacks auto-download of `python3`/`jq` and has partial process-cleanup support — WSL2 avoids these limitations entirely.
 
 ---
 

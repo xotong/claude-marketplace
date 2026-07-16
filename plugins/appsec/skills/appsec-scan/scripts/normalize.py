@@ -450,6 +450,8 @@ def normalize_reports(results_dir):
     """Normalize every supported report; one bad file can never stop the run."""
     findings = []
     for path in sorted(Path(results_dir).rglob("*")):
+        if any(part in path.parts for part in ("bin", "catalog")):
+            continue
         if not path.is_file() or path.name in OUTPUT_FILES:
             continue
         name = path.name.lower()

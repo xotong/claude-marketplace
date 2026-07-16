@@ -8,22 +8,21 @@
 set -euo pipefail
 
 usage() {
-  echo "ERROR: usage: catalog.sh resolve <instance_url> <component_path> <version> <cache_dir> [token_env]" >&2
+  echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
   echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none>" >&2
   exit 1
 }
 
 skill_dir() {
-  local script_path script_dir
-  script_path=$(realpath "$0")
-  script_dir=$(dirname "$script_path")
+  local script_dir
+  script_dir=$(cd "$(dirname "$0")" && pwd)
   dirname "$script_dir"
 }
 
 urlencode_path() { printf '%s' "$1" | sed 's/\//%2F/g'; }
 
 curl_get() {
-  local url token_env token_value
+  local url token_env token_value _tmpf curl_status
   url=$1
   token_env=${2:-}
   if [ -n "$token_env" ]; then
@@ -32,7 +31,18 @@ curl_get() {
     token_value=
   fi
   if [ -n "$token_value" ]; then
-    curl -sf --max-time 10 --config <(printf 'header = "PRIVATE-TOKEN: %s"\n' "$token_value") "$url"
+    _tmpf=$(mktemp) || return 1
+    printf 'header = "PRIVATE-TOKEN: %s"\n' "$token_value" >"$_tmpf" || {
+      rm -f "$_tmpf"
+      return 1
+    }
+    if curl -sf --max-time 10 --config "$_tmpf" "$url"; then
+      curl_status=0
+    else
+      curl_status=$?
+    fi
+    rm -f "$_tmpf"
+    return "$curl_status"
   else
     curl -sf --max-time 10 "$url"
   fi
@@ -186,18 +196,23 @@ fetch_online() {
 }
 
 resolve_cmd() {
-  local instance_url component_path version cache_dir token_env snapshot_root snapshot_tag
+  local instance_url component_path version cache_dir token_env offline snapshot_root snapshot_tag
   instance_url=$1
   component_path=$2
   version=$3
   cache_dir=$4
   token_env=${5:-}
+  offline=${6:-false}
 
-  if fetch_online "$instance_url" "$component_path" "$version" "$cache_dir" "$token_env"; then
-    return 0
+  if [ "$offline" = true ] || [ "${CATALOG_MODE:-}" = offline ]; then
+    echo "INFO: catalog offline mode for ${component_path}; using vendored snapshot" >&2
+  else
+    if fetch_online "$instance_url" "$component_path" "$version" "$cache_dir" "$token_env"; then
+      return 0
+    fi
+    echo "WARN: catalog resolve failed online for ${component_path}; trying vendored snapshot" >&2
   fi
 
-  echo "WARN: catalog resolve failed online for ${component_path}; trying vendored snapshot" >&2
   snapshot_root="$(skill_dir)/reference/catalog/${component_path}"
 
   if [ "$version" != "~latest" ] && [ -f "$snapshot_root/$version/template.yml" ]; then
@@ -235,10 +250,16 @@ extract_image_tag_default() {
 }
 
 date_to_epoch() {
-  if command -v gdate >/dev/null 2>&1; then
-    gdate -d "$1" +%s
+  local epoch
+  # ponytail: probes by success not uname; add awk fallback if date portability widens.
+  if epoch=$(date -d "$1 00:00:00" +%s 2>/dev/null); then
+    printf '%s\n' "$epoch"
+  elif epoch=$(gdate -d "$1" +%s 2>/dev/null); then
+    printf '%s\n' "$epoch"
+  elif epoch=$(date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null); then
+    printf '%s\n' "$epoch"
   else
-    date -j -f "%Y-%m-%d" "$1" +%s
+    printf '0\n'
   fi
 }
 
@@ -352,11 +373,27 @@ self_test_cmd() {
 }
 
 main() {
+  local offline
   [ $# -ge 1 ] || usage
   case "$1" in
     resolve)
-      [ $# -ge 5 ] && [ $# -le 6 ] || usage
-      resolve_cmd "$2" "$3" "$4" "$5" "${6:-}"
+      offline=false
+      if [ "${2:-}" = --offline ]; then
+        offline=true
+        shift
+      fi
+      [ $# -ge 5 ] && [ $# -le 7 ] || usage
+      if [ "${7:-}" = --offline ]; then
+        offline=true
+      elif [ $# -eq 7 ]; then
+        usage
+      fi
+      if [ "${6:-}" = --offline ]; then
+        offline=true
+        resolve_cmd "$2" "$3" "$4" "$5" "" "$offline"
+      else
+        resolve_cmd "$2" "$3" "$4" "$5" "${6:-}" "$offline"
+      fi
       ;;
     check-drift)
       [ $# -eq 4 ] || usage

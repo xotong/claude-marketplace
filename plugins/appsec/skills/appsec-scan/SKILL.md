@@ -22,6 +22,10 @@ description: >
 
 Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-scan.sh` orchestrates all four scanners; `scripts/normalize.py` emits `.appsec-results/findings.triaged.json` with per-finding `verification_status` and drives the severity gate. `scripts/fix-branch.sh` guards the fix loop. Scan mechanics live in `scripts/`, scanner commands in `scanners/` — never edit SKILL.md for those. New in v3.1: `run-scan.sh`, `normalize.py`, `fix-branch.sh`, `resolve-python.sh`, `CHANGELOG.md`, `MIGRATION.md`. **Config:** `config/scanner-preferences.yaml`. **Scanners:** `scanners/*.sh`. **Versions/pins:** `version:` in category block → UPDATE-GUIDE.md.
 
+**Shell session:** Steps 1–3 assume one persistent shell so exports carry forward.
+`run-scan.sh` self-locates its directories and self-loads preferences if run standalone (RUN_* flags absent), so Step 3 is also safe to re-run independently.
+**Exit-code contract:** `run-scan.sh` exits 0 (gate passed), 1 (gate failed / findings present), 2 (usage/config error — e.g. unrecognised `ci_gate` value).
+
 ## Prerequisites
 
 | Variable | Description |
@@ -65,7 +69,7 @@ script, and the runner→`RUN_*` flag mapping table lives in its header comment.
 PREFS_ENV="$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-preferences.yaml")" || {
   echo "ERROR: failed to load scanner preferences — see the message above."
   echo "Fix config/scanner-preferences.yaml (or unset APPSEC_PROFILE) and re-run."
-  return 1
+  return 1 2>/dev/null || exit 1
 }
 eval "$PREFS_ENV"
 # Now set: APPSEC_PROFILE, APPSEC_AIRGAP, CONTAINER_RUNTIME, JQ_INSTALL_URL,
@@ -75,8 +79,11 @@ eval "$PREFS_ENV"
 # PYTHON_INSTALL_URL, and ENABLED_COMPONENTS (space-separated "component|version|runner" triples).
 
 # Detect the container runtime (docker or podman) — hard requirement.
-export RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
-  echo "ERROR: no container runtime (docker or podman) found"; return 1; }
+RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
+  echo "ERROR: no container runtime (docker or podman) found"
+  return 1 2>/dev/null || exit 1
+}
+export RUNTIME
 
 echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE   Runtime: $RUNTIME   Airgap: $APPSEC_AIRGAP"
 ```
@@ -101,7 +108,7 @@ shellchecked and can be run standalone.
 ```bash
 CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" APPSEC_AIRGAP="$APPSEC_AIRGAP" \
   APPSEC_PROFILE="$APPSEC_PROFILE" CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
-  bash "$SCANNERS_DIR/preflight.sh" || return 1
+  bash "$SCANNERS_DIR/preflight.sh" || { return 1 2>/dev/null || exit 1; }
 ```
 
 If preflight fails, show its output to the user and stop — its error lines name
@@ -132,12 +139,12 @@ for pair in $ENABLED_COMPONENTS; do
 done
 ```
 
-If `CATALOG_MODE=offline`, skip the `resolve` network call and read straight
-from `reference/catalog/`. If `resolve` reports an authentication failure
-(HTTP 401/403), tell the user: anonymous catalog reads are disabled on this
-instance — create a `read_api` Personal Access Token, put it in an env var, and
-set `settings.catalog.auth_token_env` to that var's name; meanwhile the run
-continues on the vendored snapshot.
+catalog.sh resolves live when online and uses vendored snapshots in
+`reference/catalog/` automatically when `CATALOG_MODE=offline` or the fetch
+fails — no manual skip needed. If `resolve` reports HTTP 401/403, tell the
+user: anonymous catalog reads are disabled — create a `read_api` PAT, put it
+in an env var, set `settings.catalog.auth_token_env`; the run continues on the
+vendored snapshot meanwhile.
 
 Then present the user a resolution table before scanning:
 
@@ -145,21 +152,13 @@ Then present the user a resolution table before scanning:
 |---|---|---|---|---|
 | sast | lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0 | online | — |
 
-- `resolve` accepts an exact tag (e.g. `25.2.0`) or `~latest` (resolves to the
-  highest stable release each run). Prints `<component>@<tag> [online|offline-fallback]`
-  and logs which tags were considered and why one was chosen.
-- When an exact version is pinned and a newer stable tag exists, `resolve` prints:
-  `ADVISORY: <component> pinned <X>, newer stable <Y> available` — surface this
-  to the user verbatim so admins know when to bump the pin.
-- `check-drift` prints `DRIFT:` lines when the component's defaults have moved
-  ahead of the local runner — surface these to the user verbatim.
-- `catalog.sh` also caches `AGENTS.md` per component (alongside `template.yml`
-  and `README.md`) — the AGENTS.md is the component's agent-oriented usage
-  reference (offer to summarize it if the user wants component details).
-- The resolved `template.yml` and `README.md` are **advisory only**: `DRIFT:`
-  lines tell the admin when to bump the pinned `image:` in the preferences.
-  Never derive the Step 4 analyzer images from the catalog — they were fixed in
-  Step 1.5.
+- `resolve` prints `<component>@<tag> [online|offline-fallback]`. When an exact
+  pin has a newer stable tag, it prints `ADVISORY: <component> pinned <X>,
+  newer stable <Y> available` — surface verbatim.
+- `check-drift` prints `DRIFT:` lines when runner lags the catalog — surface verbatim.
+- `catalog.sh` caches `AGENTS.md` per component (offer to summarize on request).
+- Resolved `template.yml`/`README.md` are advisory only — never derive Step 4
+  analyzer images from catalog; they were fixed in Step 1.5.
 
 ---
 

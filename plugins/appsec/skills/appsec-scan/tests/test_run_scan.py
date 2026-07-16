@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -148,6 +149,113 @@ class RunScanDryRunTest(unittest.TestCase):
         self.assertNotIn("unbound variable", output)
         self.assertIn(str(SKILL_DIR / "scanners" / "fortify-sast.sh"), output)
 
+    def test_unset_run_flags_self_load_preferences(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env()
+            for name in (
+                "RUN_FORTIFY_SAST",
+                "RUN_GITLAB_DS",
+                "RUN_SECRET_DETECTION",
+                "RUN_GITLAB_CS",
+            ):
+                env.pop(name, None)
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("RUN_* vars absent, self-loading preferences", result.stderr)
+        self.assertIn("fake-runtime run --rm", output)
+        self.assertNotEqual(output.strip(), "Gate verdict: PASSED")
+
+    def test_all_disabled_preferences_exit_two(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "repo").mkdir()
+            repo = self.make_repo(str(root / "repo"))
+            temp_skill = root / "skill"
+            config_dir = temp_skill / "config"
+            config_dir.mkdir(parents=True)
+            preferences = (
+                SKILL_DIR / "config" / "scanner-preferences.yaml"
+            ).read_text(encoding="utf-8")
+            (config_dir / "scanner-preferences.yaml").write_text(
+                preferences.replace("enabled: true", "enabled: false"),
+                encoding="utf-8",
+            )
+            env = self.base_env(SKILL_DIR=str(temp_skill))
+            for name in (
+                "RUN_FORTIFY_SAST",
+                "RUN_GITLAB_DS",
+                "RUN_SECRET_DETECTION",
+                "RUN_GITLAB_CS",
+            ):
+                env.pop(name, None)
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("WARNING: no scanners enabled", result.stderr)
+
+    def test_fast_scanner_reaps_watchdog_without_pipe_hang(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "repo").mkdir()
+            repo = self.make_repo(str(root / "repo"))
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_runtime = bin_dir / "fake-docker"
+            fake_runtime.write_text(
+                '#!/bin/sh\nif [ "${1:-}" = run ]; then\n'
+                "  attempts=0\n"
+                '  while [ ! -s "$SLEEP_PID_LOG" ] && [ "$attempts" -lt 100 ]; do\n'
+                "    /bin/sleep 0.01\n"
+                "    attempts=$((attempts + 1))\n"
+                "  done\n"
+                "fi\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_runtime.chmod(0o755)
+            sleep_pid_log = root / "sleep-pids"
+            fake_sleep = bin_dir / "sleep"
+            fake_sleep.write_text(
+                '#!/bin/sh\nprintf \'%s\\n\' "$$" >>"$SLEEP_PID_LOG"\n'
+                'exec /bin/sleep "$@"\n',
+                encoding="utf-8",
+            )
+            fake_sleep.chmod(0o755)
+            env = self.base_env(
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                RUNTIME=str(fake_runtime),
+                APPSEC_SCAN_TIMEOUT="8",
+                SLEEP_PID_LOG=str(sleep_pid_log),
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+            )
+            started = time.monotonic()
+            result = subprocess.run(
+                [BASH, str(RUN_SCAN)],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            elapsed = time.monotonic() - started
+            sleep_pids = [
+                int(pid)
+                for pid in sleep_pid_log.read_text(encoding="utf-8").splitlines()
+            ]
+
+        output = result.stdout + result.stderr
+        self.assertLess(elapsed, 3, output)
+        self.assertTrue(sleep_pids, output)
+        self.assertNotIn("Terminated", output)
+        for pid in sleep_pids:
+            with self.subTest(pid=pid):
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+
     def test_container_timeout_cleanup_policy_is_valid_bash(self) -> None:
         result = subprocess.run(
             [BASH, "-n", str(RUN_SCAN)], capture_output=True, text=True
@@ -173,10 +281,11 @@ class RunScanDryRunTest(unittest.TestCase):
                 (bin_dir / name).symlink_to(target)
             env = self.base_env(
                 PATH=str(bin_dir),
-                RUN_FORTIFY_SAST="false",
+                RUN_FORTIFY_SAST="true",
                 RUN_GITLAB_DS="false",
                 RUN_SECRET_DETECTION="false",
                 RUN_GITLAB_CS="false",
+                FORTIFY_SAST_IMAGE="",
                 PYTHON_INSTALL_URL="",
             )
             result = self.run_scan(repo, "--dry-run", env=env)

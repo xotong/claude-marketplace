@@ -231,6 +231,18 @@ The editable source is [`docs/architecture.drawio`](docs/architecture.drawio)
 (diagrams.net). Re-export the PNG after editing:
 `draw.io -x -f png -s 1.5 -o docs/architecture.png docs/architecture.drawio`.
 
+## Supported platforms
+
+| Platform | Status | Notes |
+|---|---|---|
+| macOS | Fully supported | Docker Desktop or podman required |
+| Linux (Ubuntu / Debian) | Fully supported | Docker or podman; host `python3` preferred |
+| WSL2 (Windows) | Fully supported — **recommended Windows path** | Full sandboxing; avoids all native-Windows caveats |
+| Native Windows (Git Bash + Docker Desktop) | Best-effort | Claude Code can run `.sh` scripts only via Git for Windows (Git Bash); without it Claude Code uses PowerShell and this skill cannot run. Docker Desktop required. Known caveats: Docker volume-mount path translation may need `MSYS_NO_PATHCONV=1`; scan timeout process cleanup is best-effort. WSL2 avoids these. |
+| Native PowerShell / cmd | Not supported | — |
+
+**Prerequisites (all platforms):** a container runtime (Docker Desktop or podman) and either host `python3` or an admin-configured `settings.python.install_url`. Auto-download of `python3`/`jq` does not work in native Git Bash — install them in the environment; on WSL2/Linux it works automatically.
+
 ## Platform team: bumping a component version
 
 1. Edit the category's `version:` in `config/scanner-preferences.yaml` (exact tag or

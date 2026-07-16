@@ -10,6 +10,12 @@ declared here so the model only reads config, never guesses endpoints.** Pin
 `scripts/load-prefs.sh` converts this file into shell variables and `RUN_*`
 flags — the model never parses the YAML itself.
 
+**Platform support:** macOS, Linux, and WSL2 are fully supported. Native Windows
+requires Git for Windows (Git Bash) so Claude Code can run `.sh` scripts, plus
+Docker Desktop; WSL2 is strongly recommended instead. See README.md for the full
+matrix. Auto-download of `python3`/`jq` does not work in native Git Bash —
+install them in the environment (on WSL2/Linux the `install_url` path works).
+
 ## Switching profiles
 
 ```bash

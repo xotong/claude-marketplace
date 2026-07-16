@@ -41,6 +41,14 @@ SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 SKILL_DIR="${SKILL_DIR:-$(dirname "$SCRIPTS_DIR")}"
 SCANNERS_DIR="${SCANNERS_DIR:-$SKILL_DIR/scanners}"
 
+if [ -z "${RUN_FORTIFY_SAST+x}" ] && \
+   [ -z "${RUN_GITLAB_DS+x}" ] && \
+   [ -z "${RUN_SECRET_DETECTION+x}" ] && \
+   [ -z "${RUN_GITLAB_CS+x}" ]; then
+  echo '[run-scan] RUN_* vars absent, self-loading preferences...' >&2
+  eval "$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-preferences.yaml")"
+fi
+
 validate_env() {
   missing=
   for name in RUNTIME APPSEC_PROFILE; do
@@ -110,8 +118,22 @@ run_cmd() {
 
 start_watchdog() {
   scanner_pid=$1
-  # ponytail: APPSEC_SCAN_TIMEOUT defaults to a 3600-second per-scanner ceiling
-  ( sleep "${APPSEC_SCAN_TIMEOUT:-3600}" && kill "$scanner_pid" 2>/dev/null ) &
+  watchdog_timeout=${APPSEC_SCAN_TIMEOUT:-3600}
+  case "$watchdog_timeout" in
+    ''|*[!0-9]*) watchdog_timeout=3600 ;;
+  esac
+  # ponytail: APPSEC_SCAN_TIMEOUT defaults to a 3600-second per-scanner ceiling;
+  # without portable process groups, the deadline can only target the scanner PID.
+  (
+    watchdog_started=$SECONDS
+    while kill -0 "$scanner_pid" 2>/dev/null; do
+      if [ $((SECONDS - watchdog_started)) -ge "$watchdog_timeout" ]; then
+        kill "$scanner_pid" 2>/dev/null || true
+        break
+      fi
+      sleep 1
+    done
+  ) </dev/null >/dev/null 2>&1 &
   WATCHDOG_PID=$!
 }
 
@@ -182,6 +204,15 @@ RUN_FORTIFY_SAST="${RUN_FORTIFY_SAST:-false}"
 RUN_GITLAB_DS="${RUN_GITLAB_DS:-false}"
 RUN_SECRET_DETECTION="${RUN_SECRET_DETECTION:-false}"
 RUN_GITLAB_CS="${RUN_GITLAB_CS:-false}"
+
+if [ "$RUN_FORTIFY_SAST" = false ] && \
+   [ "$RUN_GITLAB_DS" = false ] && \
+   [ "$RUN_SECRET_DETECTION" = false ] && \
+   [ "$RUN_GITLAB_CS" = false ]; then
+  warning "no scanners enabled — check scanner-preferences.yaml or set RUN_* vars"
+  exit 2
+fi
+
 FORTIFY_SAST_IMAGE="${FORTIFY_SAST_IMAGE:-}"
 GITLAB_DS_IMAGE="${GITLAB_DS_IMAGE:-}"
 SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-}"
@@ -331,7 +362,7 @@ if ! $DRY_RUN; then
       fi
       watchdog_var="${pid_var%_PID}_WATCHDOG"
       watchdog_pid="${!watchdog_var:-}"
-      [ -z "$watchdog_pid" ] || kill "$watchdog_pid" 2>/dev/null || true
+      [ -z "$watchdog_pid" ] || wait "$watchdog_pid" 2>/dev/null || true
     fi
   done
 fi

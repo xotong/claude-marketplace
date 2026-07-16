@@ -18,6 +18,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - SKILL.md reduced to ~258 lines (CI hard limit: 260 lines / 13,000 chars)
 - Salvaged from unmerged chronicle harness commit 48c19ba (tagged `archive/appsec-chronicle`): single-entrypoint harness concept; parsers and triage logic absorbed into `normalize.py`; gate logic absorbed into `run-scan.sh`
 
+### Cross-platform
+- GNU/BSD/MSYS `date` portability fix (no `-d`, uses `+%s` arithmetic)
+- `curl` temp-file (no process substitution, avoids WSL2/Git-Bash pipe hangs)
+- `realpath` replaced with `cd`/`pwd` for POSIX portability
+- `.gitattributes` enforcing LF line endings for all shell scripts
+- `catalog.sh`: offline-mode network enforcement (resolve skips network when `CATALOG_MODE=offline`)
+- Watchdog pipe-hang fix (background scanner cleanup)
+- Zero-scanner false-PASSED fix: `run-scan.sh` self-loads prefs when `RUN_*` flags absent
+- Normalize rglob hygiene (no accidental `.appsec-results/` recursion)
+- Preflight WSL2 advisory for native-Windows users
+- Platform support matrix added to README.md, PREFERENCES.md, MIGRATION.md (macOS/Linux/WSL2 fully supported; native Windows via Git Bash + Docker Desktop best-effort; native PowerShell not supported)
+
 ### Changed
 - SKILL.md Steps 3–5 replaced by single `bash "$SCRIPTS_DIR/run-scan.sh"` invocation; Steps 1–2.5 byte-identical to v3.0.0
 

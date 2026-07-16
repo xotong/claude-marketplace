@@ -269,6 +269,18 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(findings[0]["severity"], "HIGH")
         self.assertEqual(findings[0]["rule_id"], "unsupported_report")
 
+    def test_cached_bin_and_catalog_reports_are_ignored(self):
+        bin_dir = self.results / "bin"
+        catalog_dir = self.results / "catalog"
+        bin_dir.mkdir()
+        catalog_dir.mkdir()
+        (bin_dir / "foo.json").write_text("{}", encoding="utf-8")
+        (catalog_dir / "bar.xml").write_text("<report />", encoding="utf-8")
+
+        findings = normalize.normalize_reports(self.results)
+
+        self.assertEqual(findings, [])
+
     def test_environment_medium_gate_fails_on_medium_finding(self):
         self.write_json(
             "gl-secret-detection-report.json",

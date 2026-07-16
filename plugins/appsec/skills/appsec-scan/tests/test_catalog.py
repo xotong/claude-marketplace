@@ -173,6 +173,49 @@ exit 7
         self.assertTrue((tag_dirs[-1] / "README.md").is_file())
         self.assertTrue((tag_dirs[-1] / "AGENTS.md").is_file())
 
+    def test_resolve_offline_mode_never_calls_curl(self) -> None:
+        script = """#!/bin/sh
+set -eu
+: > "$CURL_CALLED_FILE"
+exit 99
+"""
+        tmp, env = self.make_env_with_fake_curl(script)
+        self.addCleanup(tmp.cleanup)
+        called_file = Path(tmp.name) / "curl-called"
+        env["CATALOG_MODE"] = "offline"
+        env["CURL_CALLED_FILE"] = str(called_file)
+
+        result = run(
+            [
+                "bash",
+                str(CATALOG_SCRIPT),
+                "resolve",
+                "https://example.invalid",
+                SECRET_COMPONENT,
+                "~latest",
+                str(Path(tmp.name) / "cache"),
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+        )
+
+        self.assertFalse(called_file.exists(), result.stdout)
+        self.assertTrue(
+            result.stdout.strip().endswith("[offline-fallback]"),
+            result.stdout,
+        )
+
+    def test_date_to_epoch_accepts_today_on_this_host(self) -> None:
+        source = CATALOG_SCRIPT.read_text(encoding="utf-8")
+        start = source.index("date_to_epoch() {")
+        end = source.index("\n}\n", start) + 3
+        result = run(
+            ["bash", "-c", source[start:end] + '\ndate_to_epoch "$(date +%F)"'],
+            cwd=REPO_ROOT,
+        )
+
+        self.assertGreater(int(result.stdout.strip()), 1_700_000_000)
+
     def test_resolve_supports_nested_template_path_when_flat_path_404s(self) -> None:
         script = """#!/bin/sh
 set -eu
