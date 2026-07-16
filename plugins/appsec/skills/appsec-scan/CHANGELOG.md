@@ -15,7 +15,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `settings.python.install_url` in scanner-preferences.yaml: mirrors `settings.jq.install_url`; admin points at platform-hosted portable python3 tarballs
 - `settings.ci_gate.fail_on` in scanner-preferences.yaml: `critical` | `high` | `medium` | `none`
 - `CHANGELOG.md` (this file) and `MIGRATION.md` (internet → airgapped platform runbook)
-- SKILL.md ≤250 lines enforced by CI (hard limit: 260 lines / 13 000 chars)
+- SKILL.md reduced to ~258 lines (CI hard limit: 260 lines / 13,000 chars)
 - Salvaged from unmerged chronicle harness commit 48c19ba (tagged `archive/appsec-chronicle`): single-entrypoint harness concept; parsers and triage logic absorbed into `normalize.py`; gate logic absorbed into `run-scan.sh`
 
 ### Changed

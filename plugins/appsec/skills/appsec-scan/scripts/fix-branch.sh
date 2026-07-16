@@ -13,7 +13,7 @@ write_state() {
 }
 
 read_iteration() {
-  [ -f "$STATE_FILE" ] || { printf '%s\n' 1; return; }
+  [ -f "$STATE_FILE" ] || { printf '%s\n' 0; return; }
   sed -n 's/.*"iteration"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$STATE_FILE" | sed -n '1p'
 }
 
@@ -44,13 +44,13 @@ case "${1:-}" in
       fi
       [ -z "$parsed" ] || total=$parsed
     fi
-    write_state 1 "$total"
+    write_state 0 "$total"
     printf '%s\n' "$branch"
     ;;
   --check-progress)
     [ "$#" -eq 3 ] || { error "usage: fix-branch.sh --check-progress <prev_total> <curr_total>"; exit 2; }
     iteration="$(read_iteration)"
-    [ -n "$iteration" ] || iteration=1
+    [ -n "$iteration" ] || iteration=0
     iteration=$((iteration + 1))
     write_state "$iteration" "$3"
     if [ "$iteration" -gt 5 ]; then

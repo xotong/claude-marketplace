@@ -30,7 +30,7 @@
 set -u
 
 emit() {
-  printf '%s=%q\n' "$1" "$2"
+  printf 'export %s=%q\n' "$1" "$2"
 }
 
 warn() {

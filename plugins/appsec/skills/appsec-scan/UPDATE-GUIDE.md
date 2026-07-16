@@ -260,8 +260,8 @@ RUN_SECRET_DETECTION_SMOKE=1 python3 -m pytest tests/test_secret_detection.py -v
 RUN_FORTIFY_SAST_SMOKE=1     python3 -m pytest tests/test_skill_doc.py -v
 ```
 
-Run them before releasing changes to `secret-detection.sh`, `fortify-sast.sh`,
-or their SKILL.md blocks.
+Run them before releasing changes to `scripts/run-scan.sh` (orchestration)
+or `scanners/*.sh` (scanner commands).
 
 ---
 

@@ -75,7 +75,7 @@ company:
       enabled: true
 ```
 
-If your internal GitLab hosts the catalog components under a different namespace, update `component:` to match. Use exact `version:` pins for reproducibility — the ADVISORY line will fire when you need to bump.
+**Note:** the shipped `company:` profile uses `~latest` for all four `version:` fields. As part of this step, change each to the exact tag you want pinned (e.g. `"25.2.0"` as shown above) — `~latest` resolves to a different tag on each run and defeats airgap reproducibility. The ADVISORY line will fire when you need to bump a pin.
 
 ---
 

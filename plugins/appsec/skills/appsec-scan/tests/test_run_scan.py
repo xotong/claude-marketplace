@@ -223,7 +223,7 @@ class FixBranchTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(branch.startswith("appsec/fix-"), branch)
-        self.assertEqual(state, '{"iteration":1,"last_total":-1}\n')
+        self.assertEqual(state, '{"iteration":0,"last_total":-1}\n')
 
     def test_init_counts_findings_in_triaged_array(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -238,7 +238,7 @@ class FixBranchTest(unittest.TestCase):
             state = (results / "loop-state").read_text(encoding="utf-8")
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(state, '{"iteration":1,"last_total":2}\n')
+        self.assertEqual(state, '{"iteration":0,"last_total":2}\n')
 
     def test_check_progress_increments_and_rejects_no_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -251,18 +251,18 @@ class FixBranchTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERROR: no progress", result.stderr)
-        self.assertEqual(state, '{"iteration":2,"last_total":10}\n')
+        self.assertEqual(state, '{"iteration":1,"last_total":10}\n')
 
-    def test_check_progress_aborts_after_five_iterations(self) -> None:
+    def test_check_progress_allows_five_fix_cycles_then_aborts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_committed_repo(tmp)
             self.assertEqual(self.run_fix(repo, "--init").returncode, 0)
-            for previous, current in ((10, 9), (9, 8), (8, 7), (7, 6)):
+            for previous, current in ((10, 9), (9, 8), (8, 7), (7, 6), (6, 5)):
                 result = self.run_fix(
                     repo, "--check-progress", str(previous), str(current)
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-            result = self.run_fix(repo, "--check-progress", "6", "5")
+            result = self.run_fix(repo, "--check-progress", "5", "4")
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERROR: fix loop exceeded 5 iterations", result.stderr)

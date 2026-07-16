@@ -43,9 +43,9 @@ being scanned. Resolve this path first — subsequent steps depend on it.
 ```bash
 # SKILL_DIR is the absolute path to skills/appsec-scan/
 # Adjust this path if your plugin is installed at a different location.
-SKILL_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-SCANNERS_DIR="$SKILL_DIR/scanners"
-SCRIPTS_DIR="$SKILL_DIR/scripts"
+export SKILL_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+export SCANNERS_DIR="$SKILL_DIR/scanners"
+export SCRIPTS_DIR="$SKILL_DIR/scripts"
 
 if [ ! -d "$SCANNERS_DIR" ] || [ ! -d "$SCRIPTS_DIR" ]; then
   echo "ERROR: scanners/ or scripts/ not found under $SKILL_DIR"
@@ -74,10 +74,10 @@ eval "$PREFS_ENV"
 # CATALOG_MODE, CATALOG_AUTH_ENV, CS_USER_ENV, CS_PASS_ENV, GITLAB_INSTANCE,
 # FORTIFY_SAST_IMAGE, SECRET_DETECTION_IMAGE, GITLAB_DS_IMAGE, GITLAB_CS_IMAGE,
 # RUN_FORTIFY_SAST, RUN_GITLAB_DS, RUN_SECRET_DETECTION, RUN_GITLAB_CS,
-# and ENABLED_COMPONENTS (space-separated "component|version|runner" triples).
+# PYTHON_INSTALL_URL, and ENABLED_COMPONENTS (space-separated "component|version|runner" triples).
 
 # Detect the container runtime (docker or podman) — hard requirement.
-RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
+export RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
   echo "ERROR: no container runtime (docker or podman) found"; return 1; }
 
 echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE   Runtime: $RUNTIME   Airgap: $APPSEC_AIRGAP"
@@ -171,7 +171,7 @@ Then present the user a resolution table before scanning:
 bash "$SCRIPTS_DIR/run-scan.sh"
 ```
 
-run-scan.sh invokes `"$RUNTIME" run` for each scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A selected scanner that produces no report becomes a HIGH coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). Stdout is the summary table from `normalize.py`; exit 1 → findings, go Step 4; exit 0 → done. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning).
+run-scan.sh invokes `"$RUNTIME" run` per scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). Stdout: summary from `normalize.py`; exit 1 → findings, go Step 4; exit 0 → done. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning).
 
 ---
 
