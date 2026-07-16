@@ -38,20 +38,13 @@ flowchart TD
     S15 --> RT["detect-runtime.sh — docker or podman"]
     RT --> S2["Step 2 — preflight.sh environment checks"]
     S2 --> S25["Step 2.5 — catalog.sh resolve + check-drift per component<br/>(version-aware: ~latest or exact pin)"]
-    S25 --> S3["Step 3 — detect project type<br/>HAS_POM · HAS_GRADLE · HAS_REQUIREMENTS · HAS_PACKAGE_JSON · HAS_DOCKERFILE"]
-    S3 --> RUN{"Step 4 — run enabled scanners"}
-    RUN --> F["Fortify SCA (SAST)<br/>fortify-sast.sh · FORTIFY_LANGUAGE auto-detected"]
-    RUN --> D["Dependency Scanning<br/>gitlab-dependency-scanning.sh"]
-    RUN --> SD["Secret Detection<br/>secret-detection.sh"]
-    RUN --> C["Container Scanning (GTCS)<br/>gitlab-container-scanning.sh · container-target.sh picks registry/archive"]
-    F --> S5
-    D --> S5
-    SD --> S5
-    C --> S5["Step 5 — resolve-jq.sh · parse reports<br/>severity table · Critical+High gate · missing-report guard"]
-    S5 --> Q{"findings?"}
-    Q -->|"none"| DONE["all clear"]
-    Q -->|"yes"| S6["Step 6 — classify findings · one approval ·<br/>fix branch appsec/fix-YYYYMMDD-sha · ≤5 fix→rescan iterations"]
-    S6 --> S7["Step 7 — TRIAGE.md for everything not fixed"]
+    S25 --> S3["Step 3 — run-scan.sh (single command)<br/>Fortify + DS + Secrets parallel · GTCS sequential · resolve-jq.sh · container-target.sh"]
+    S3 --> NP["normalize.py → findings.triaged.json<br/>verification_status per finding · coverage findings · severity gate"]
+    NP --> Q{"exit 0?"}
+    Q -->|"yes"| DONE["all clear"]
+    Q -->|"no"| S4["Step 4 — review findings.triaged.json<br/>severity · scanner · location · verification_status · triage_reason"]
+    S4 --> S5["Step 5 — fix-branch.sh --init · one approval · new branch<br/>≤5 × fix → run-scan.sh --only category → fix-branch.sh --check-progress · tests"]
+    S5 --> S6["Step 6 — TRIAGE.md for everything not fixed"]
 ```
 
 Fortify, Dependency Scanning, and Secret Detection run **in parallel** (backgrounded,
@@ -109,7 +102,9 @@ touch. Full schema and switching guide: [`config/PREFERENCES.md`](config/PREFERE
 |---|---|
 | `settings.airgap` | `true` = no public internet: profiles whose `gitlab_instance` is gitlab.com are refused; offline is not an error. Ships `false` (default profile targets gitlab.com) |
 | `settings.container_runtime` | `auto` (docker, then podman) or forced |
-| `settings.jq.*` | host jq preferred; optional install URL; degrades to UNKNOWN severity summary |
+| `settings.jq.*` | host jq preferred; optional `install_url`; degrades to UNKNOWN severity summary |
+| `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
+| `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — controls run-scan.sh exit code |
 | `settings.catalog.mode` | `online` (resolve live) or `offline` (snapshots only) |
 | `settings.catalog.auth_token_env` | env var holding a `read_api` PAT; empty = anonymous |
 | `settings.container_registry.*` | env var *names* for registry credentials used by GTCS |
@@ -141,6 +136,20 @@ sast:
 
 `image:` stays independently pinned — bump it when a DRIFT/ADVISORY line says the
 component moved and you have mirrored the new image.
+
+## Findings model
+
+`scripts/normalize.py` processes raw scanner reports into three output files under `.appsec-results/`:
+
+- **`findings.triaged.json`** — one object per finding, fields: `category`, `severity`, `scanner`, `location`, `verification_status`, `remediation_status`, `triage_reason`, `fingerprint`
+- **`findings.normalized.json`** — all findings normalized to a common schema before triage
+- **`scan-coverage.json`** — which scanners ran, their reports, and any coverage findings
+
+**`verification_status` values:** `confirmed_true_positive` | `likely_false_positive` | `not_fixable_locally` | `needs_human_review`
+
+**FP-fails-gate:** `likely_false_positive` findings still count toward the severity gate — they must be dismissed in GitLab's Vulnerability Report, not silently dropped. **Coverage findings:** a selected scanner that produces no report generates a HIGH-severity coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). The model may override a `verification_status` with explicit reasoning.
+
+For the internet → airgapped platform migration runbook, see [`MIGRATION.md`](MIGRATION.md).
 
 ## Network and airgap policy
 
@@ -192,12 +201,18 @@ appsec-scan/
 ├── config/
 │   ├── scanner-preferences.yaml   admin-owned truth: profiles, components, versions, images
 │   └── PREFERENCES.md             schema + switching guide
+├── CHANGELOG.md           version history (Keep a Changelog format)
+├── MIGRATION.md           internet → airgapped platform runbook
 ├── scripts/               host-side helpers — bash 3.2 / POSIX awk safe
 │   ├── load-prefs.sh      YAML → eval-ready env; the model never parses YAML
 │   ├── catalog.sh         resolve / check-drift / self-test
 │   ├── detect-runtime.sh  docker | podman
 │   ├── resolve-jq.sh      jq from PATH or configured URL, else degrade
-│   └── container-target.sh  what GTCS scans: registry | archive | none
+│   ├── resolve-python.sh  python3 from PATH or configured URL, else degrade
+│   ├── container-target.sh  what GTCS scans: registry | archive | none
+│   ├── run-scan.sh        scan orchestrator: invokes all scanners, calls normalize.py
+│   ├── fix-branch.sh      fix-loop guard: --init and --check-progress
+│   └── normalize.py       raw reports → findings.triaged.json (verification statuses)
 ├── scanners/              run INSIDE Linux analyzer containers (mounted at /runner.sh)
 │   ├── preflight.sh
 │   ├── fortify-sast.sh    multi-language SAST: maven | gradle | python | javascript

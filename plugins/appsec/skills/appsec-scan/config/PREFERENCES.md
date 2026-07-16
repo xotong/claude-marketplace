@@ -32,6 +32,11 @@ settings:
   jq:
     prefer: host              # use PATH jq if present
     install_url: ""           # optional: fetch jq if missing ({os}/{arch} filled from uname)
+  python:
+    prefer: host              # use PATH python3 if present
+    install_url: ""           # optional: fetch portable python3 tarball if missing
+  ci_gate:
+    fail_on: high             # critical | high | medium | none
   catalog:
     mode: online              # online = resolve live | offline = snapshots only
     auth_token_env: ""        # env var NAME holding a read_api PAT (blank = anonymous)
@@ -49,12 +54,23 @@ settings:
 - **container_runtime** — the skill detects docker, then podman. Force one if
   both are present. The container-scan verbs used (`build`, `save`, `run`,
   `pull`) are identical across docker and podman.
-- **jq** — powers the Step 5 severity summary and is **optional**. If jq is not
-  on `PATH` and `install_url` is set, the skill downloads it (once, to
+- **jq** — powers legacy count parsing and is **optional**. If jq is not on
+  `PATH` and `install_url` is set, the skill downloads it (once, to
   `.appsec-results/bin/`); `{os}` and `{arch}` are filled from `uname` (e.g.
   `linux/amd64`, `darwin/arm64`) so one URL can serve mixed fleets. Leave
-  `install_url` empty to simply show `UNKNOWN` counts when jq is absent — the
-  scan still runs.
+  `install_url` empty to degrade to UNKNOWN severity counts — the scan still runs.
+- **python** — powers `scripts/normalize.py` (findings.triaged.json, gate). Three tiers:
+  1. **Host python3** (preferred) — `scripts/resolve-python.sh` uses `python3` from PATH.
+  2. **install_url download** — if host python3 is absent and `install_url` is set, the
+     skill downloads a portable python3 tarball and extracts it to `.appsec-results/bin/`.
+     Template uses `{os}` and `{arch}` (e.g. `linux/amd64`); admin hosts tarballs on the
+     platform artifact server (see MIGRATION.md step 2).
+  3. **Legacy degrade** — if neither is available, falls back to jq-based counts with
+     UNKNOWN `verification_status` on all findings.
+- **ci_gate** — `settings.ci_gate.fail_on` controls the severity threshold at which
+  `scripts/run-scan.sh` exits 1 (gate failed). Values: `critical` | `high` (default) |
+  `medium` | `none`. Set `none` to always exit 0 (report-only mode). `likely_false_positive`
+  findings still count toward the gate — dismiss them in GitLab's Vulnerability Report.
 - **catalog.mode** — `online` resolves component versions live against
   `gitlab_instance` each run; `offline` skips the network and uses the vendored
   snapshots in `../reference/catalog/`.

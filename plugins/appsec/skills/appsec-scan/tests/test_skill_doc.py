@@ -19,6 +19,8 @@ SKILL_MD = SKILL_DIR / "SKILL.md"
 SAST_RUNNER = SKILL_DIR / "scanners" / "fortify-sast.sh"
 DS_RUNNER = SKILL_DIR / "scanners" / "gitlab-dependency-scanning.sh"
 CS_RUNNER = SKILL_DIR / "scanners" / "gitlab-container-scanning.sh"
+RUN_SCAN = SKILL_DIR / "scripts" / "run-scan.sh"
+NORMALIZE = SKILL_DIR / "scripts" / "normalize.py"
 SECRET_TEMPLATE = (
     SKILL_DIR
     / "reference"
@@ -37,6 +39,7 @@ if PUBLIC_IMAGE_MATCH is None:  # pragma: no cover - static shipped fixture
     raise AssertionError(f"could not derive public secret-detection image from {SECRET_TEMPLATE}")
 PUBLIC_IMAGE = PUBLIC_IMAGE_MATCH.group(1)
 SKILL_TEXT = SKILL_MD.read_text(encoding="utf-8")
+RUN_SCAN_TEXT = RUN_SCAN.read_text(encoding="utf-8")
 
 
 def run(cmd: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -60,7 +63,6 @@ class SkillDocumentationContractTest(unittest.TestCase):
             "create a new branch",
             "run the app's relevant tests",
             "Secret Detection findings (redacted)",
-            "GITLAB_FEATURES",
             "appsec/fix-",
             "FORTIFY_SAST_IMAGE",
             "RUN_FORTIFY_SAST",
@@ -83,8 +85,6 @@ class SkillDocumentationContractTest(unittest.TestCase):
 
     def test_skill_documents_airgap_and_runtime_abstraction(self) -> None:
         required_strings = [
-            '"$RUNTIME" run',
-            '"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"',
             "APPSEC_AIRGAP",
             "detect-runtime.sh",
             "resolve-jq.sh",
@@ -104,6 +104,28 @@ class SkillDocumentationContractTest(unittest.TestCase):
         self.assertNotIn("IMAGE_PREFIX", SKILL_TEXT)
         self.assertNotIn("docker run --rm", SKILL_TEXT)
         self.assertNotIn("if docker pull", SKILL_TEXT)
+
+        for expected in (
+            '"$RUNTIME" run',
+            '"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"',
+            "GITLAB_FEATURES",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, RUN_SCAN_TEXT)
+
+    def test_normalizer_preserves_redacted_secret_summary_contract(self) -> None:
+        normalizer = NORMALIZE.read_text(encoding="utf-8")
+
+        self.assertIn("Secret Detection findings (redacted)", SKILL_TEXT)
+        self.assertIn("Secret Detection findings (redacted)", normalizer)
+
+
+class SkillDocTokenBudgetTest(unittest.TestCase):
+    def test_skill_stays_within_host_orchestrator_token_budget(self) -> None:
+        lines = SKILL_TEXT.splitlines()
+
+        self.assertLessEqual(len(lines), 260)
+        self.assertLessEqual(len(SKILL_TEXT), 13000)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):

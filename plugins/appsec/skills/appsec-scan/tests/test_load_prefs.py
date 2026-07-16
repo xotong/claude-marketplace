@@ -68,6 +68,8 @@ class LoadPrefsTest(unittest.TestCase):
             "FORTIFY_SAST_IMAGE",
             "GITLAB_INSTANCE",
             "ENABLED_COMPONENTS",
+            "PYTHON_INSTALL_URL",
+            "CI_GATE_FAIL_ON",
         )
 
         self.assertEqual(values["APPSEC_PROFILE"], "catalog")
@@ -80,6 +82,8 @@ class LoadPrefsTest(unittest.TestCase):
             "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review",
         )
         self.assertEqual(values["GITLAB_INSTANCE"], "https://gitlab.com")
+        self.assertEqual(values["PYTHON_INSTALL_URL"], "")
+        self.assertEqual(values["CI_GATE_FAIL_ON"], "high")
         self.assertIn(
             "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast|~latest|fortify-sast.sh",
             values["ENABLED_COMPONENTS"],

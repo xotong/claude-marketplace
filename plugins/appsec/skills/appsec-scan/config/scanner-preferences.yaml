@@ -31,6 +31,16 @@ settings:
     prefer: host
     install_url: ""   # e.g. https://jfrog.internal/artifactory/tools/jq/{os}/{arch}/jq
 
+  # python3 powers normalized findings, triage, coverage, and the CI gate. Without
+  # it, the scan degrades to legacy counts with UNKNOWN status.
+  #   prefer: host  = use python3 from PATH if present.
+  #   install_url   = if python3 is absent, download a tarball from here.
+  #                   {os} and {arch} are filled from `uname`. Leave empty to
+  #                   rely on host python3 and degrade to legacy counts if absent.
+  python:
+    prefer: host
+    install_url: ""   # e.g. https://jfrog.internal/artifactory/tools/python/{os}/{arch}/python.tar.gz
+
   # CI/CD Catalog resolution (per run).
   catalog:
     #   online  = resolve component versions live against gitlab_instance.
@@ -47,6 +57,10 @@ settings:
   container_registry:
     user_env: CS_REGISTRY_USER
     password_env: CS_REGISTRY_PASSWORD
+
+  # Severity threshold for the normalized scan gate: critical|high|medium|none.
+  ci_gate:
+    fail_on: high
 
 # ─────────────────────────────────────────────────────────────────────────
 # Profiles

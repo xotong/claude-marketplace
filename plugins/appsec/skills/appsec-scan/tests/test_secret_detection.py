@@ -23,6 +23,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_DIR.parents[3]
 RUNNER = SKILL_DIR / "scanners" / "secret-detection.sh"
 SKILL_MD = SKILL_DIR / "SKILL.md"
+RUN_SCAN = SKILL_DIR / "scripts" / "run-scan.sh"
 SECRET_TEMPLATE = (
     SKILL_DIR
     / "reference"
@@ -62,13 +63,15 @@ class SecretDetectionDocumentationTest(unittest.TestCase):
         skill = SKILL_MD.read_text(encoding="utf-8")
 
         self.assertIn("GitLab Secret Detection", skill)
-        self.assertIn('"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"', skill)
         self.assertIn("gl-secret-detection-report.json", skill)
         self.assertIn("Secret Detection findings (redacted)", skill)
         self.assertIn("Ask for approval once before making changes", skill)
         self.assertIn("create a new branch", skill)
         self.assertIn("rerun only GitLab Secret Detection first", skill)
         self.assertIn("run the app's relevant tests", skill)
+
+        run_scan = RUN_SCAN.read_text(encoding="utf-8")
+        self.assertIn('"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"', run_scan)
 
     def test_runner_mirrors_catalog_script(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")

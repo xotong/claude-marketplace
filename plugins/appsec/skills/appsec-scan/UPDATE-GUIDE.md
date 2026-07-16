@@ -57,7 +57,8 @@ A CI component had its `script:` block updated (new flags, new steps, different 
 4. If the component added `before_script` or `after_script` blocks, add them to
    the SETUP section or the AFTER SCRIPT section respectively.
 5. Update the `# Last synced` header line to today's date.
-6. Commit: `git commit -m "sync: update <scanner> to match CI component change"`
+6. If the scanner's output schema changed, update the corresponding parser in `scripts/normalize.py`.
+7. Commit: `git commit -m "sync: update <scanner> to match CI component change"`
 
 **Example — Fortify added a new `-filter-file` flag:**
 ```bash
@@ -80,10 +81,9 @@ The upstream component added a new language variant (e.g. Go support).
 
 1. Open `scanners/fortify-sast.sh` and add a new language branch in the
    `case "$FORTIFY_LANGUAGE" in` block.
-2. Open `SKILL.md` Step 3 and add the new project-type detection flag
-   (e.g. `HAS_GO`) and extend the language auto-detection precedence chain
-   in Step 4.
-3. Add the new language to the Prerequisites table `FORTIFY_LANGUAGE` row.
+2. Open `scripts/run-scan.sh` and add the new project-type detection flag
+   (e.g. `HAS_GO`) and extend the language auto-detection precedence chain.
+3. Add the new language to the Prerequisites table `FORTIFY_LANGUAGE` row in SKILL.md.
 4. Update `# Last synced` in `fortify-sast.sh`.
 5. Commit: `git commit -m "feat: add Go language support to Fortify SCA scanner"`
 
@@ -128,12 +128,11 @@ The CI team retires a scanner category entirely.
 **Steps:**
 
 1. Remove the `scanners/<name>.sh` file.
-2. Remove the corresponding `RUN_*` flag block from SKILL.md Step 4.
-3. Remove the PID variable from the wait loop (or the sequential call).
-4. Remove the parse block from SKILL.md Step 5.
-5. Remove the env var from the Prerequisites table.
-6. Remove the category block from `config/scanner-preferences.yaml`.
-7. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
+2. Remove the corresponding invocation block from `scripts/run-scan.sh`.
+3. Remove the parse/triage logic from `scripts/normalize.py`.
+4. Remove the env var from the Prerequisites table in SKILL.md.
+5. Remove the category block from `config/scanner-preferences.yaml`.
+6. Commit: `git commit -m "chore: remove <scanner> — retired from CI pipeline"`
 
 ---
 
@@ -177,13 +176,15 @@ from HEAD (the file was added upstream after the 25.2.0 tag was cut, on
 
 | Change | Edit |
 |---|---|
-| CI component script changed | `scanners/<name>.sh` only |
-| New language variant for Fortify | `scanners/fortify-sast.sh` case block + Step 3/4 detection in SKILL.md |
-| New scanner category entirely | New `scanners/<name>.sh` + detection + wait + parse in SKILL.md |
+| CI component script changed | `scanners/<name>.sh` only (+ `normalize.py` if schema changed) |
+| New language variant for Fortify | `scanners/fortify-sast.sh` case block + detection in `scripts/run-scan.sh` |
+| New scanner category entirely | New `scanners/<name>.sh` + `scripts/run-scan.sh` invocation + `scripts/normalize.py` parser |
+| Scan orchestration logic changed | `scripts/run-scan.sh` |
+| Report parsing / triage / gate | `scripts/normalize.py` |
 | Scanner image renamed/retagged | `config/scanner-preferences.yaml` `image:` |
 | Component version pin changed | `config/scanner-preferences.yaml` `version:` + optional snapshot refresh |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |
-| Scanner retired | Remove scanner file + remove blocks from SKILL.md |
+| Scanner retired | Remove scanner file + remove from `run-scan.sh` + `normalize.py` |
 
 ## GitLab Secret Detection notes
 
@@ -202,7 +203,7 @@ export SECRET_DETECTION_IMAGE="registry.gitlab.com/security-products/secrets:7"
 ```
 
 When the GitLab component changes, update `scanners/secret-detection.sh`, the
-Secret Detection Docker block in `SKILL.md`, and the smoke test parser together.
+invocation block in `scripts/run-scan.sh`, and `scripts/normalize.py` together.
 Keep result summaries redacted: never print raw values from
 `gl-secret-detection-report.json`.
 
@@ -236,10 +237,18 @@ docker run --rm \
 
 # 4. Check the output
 ls -la .appsec-results/
+
+# 5. Dry-run the full orchestrator (no containers)
+APPSEC_PROFILE=catalog bash "$SKILL_DIR/scripts/run-scan.sh" --dry-run
+
+# 6. Test normalize.py with existing results (empty RAN list for unit test)
+python3 "$SKILL_DIR/scripts/normalize.py" .appsec-results --ran ""
+
+# 7. Budget check (CI enforces ≤260 lines / ≤13000 chars)
+wc -l "$SKILL_DIR/SKILL.md" && wc -c "$SKILL_DIR/SKILL.md"
 ```
 
-If the isolated run passes, run the full `appsec-scan` skill to confirm the
-orchestration still works end-to-end.
+If the isolated run passes, run the full orchestrator to confirm end-to-end orchestration.
 
 ## Opt-in docker smoke tests
 

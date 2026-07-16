@@ -9,10 +9,12 @@
 #   - settings.airgap
 #   - settings.container_runtime
 #   - settings.jq.install_url
+#   - settings.python.install_url
 #   - settings.catalog.mode
 #   - settings.catalog.auth_token_env
 #   - settings.container_registry.user_env
 #   - settings.container_registry.password_env
+#   - settings.ci_gate.fail_on
 #   - default_profile
 #   - profiles.<name>.gitlab_instance
 #   - profiles.<name>.categories.<category>.{component,version,image,runner,enabled}
@@ -158,6 +160,10 @@ function split_key_value(s,    idx) {
       settings_block = "jq"
       next
     }
+    if (indent == 2 && key == "python" && strip_comment(value) == "") {
+      settings_block = "python"
+      next
+    }
     if (indent == 2 && key == "catalog" && strip_comment(value) == "") {
       settings_block = "catalog"
       next
@@ -166,8 +172,16 @@ function split_key_value(s,    idx) {
       settings_block = "container_registry"
       next
     }
+    if (indent == 2 && key == "ci_gate" && strip_comment(value) == "") {
+      settings_block = "ci_gate"
+      next
+    }
     if (indent == 4 && settings_block == "jq" && key == "install_url") {
       settings["jq.install_url"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "python" && key == "install_url") {
+      settings["python.install_url"] = parse_scalar(value)
       next
     }
     if (indent == 4 && settings_block == "catalog" && key == "mode") {
@@ -184,6 +198,10 @@ function split_key_value(s,    idx) {
     }
     if (indent == 4 && settings_block == "container_registry" && key == "password_env") {
       settings["container_registry.password_env"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "ci_gate" && key == "fail_on") {
+      settings["ci_gate.fail_on"] = parse_scalar(value)
       next
     }
   }
@@ -243,10 +261,12 @@ END {
   print "SETTING\tairgap\t" settings["airgap"]
   print "SETTING\tcontainer_runtime\t" settings["container_runtime"]
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
+  print "SETTING\tpython.install_url\t" settings["python.install_url"]
   print "SETTING\tcatalog.mode\t" settings["catalog.mode"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
   print "SETTING\tcontainer_registry.user_env\t" settings["container_registry.user_env"]
   print "SETTING\tcontainer_registry.password_env\t" settings["container_registry.password_env"]
+  print "SETTING\tci_gate.fail_on\t" settings["ci_gate.fail_on"]
 
   if (profile_seen[active_profile]) {
     print "GITLAB_INSTANCE\t" profile_gitlab[active_profile]
@@ -271,10 +291,12 @@ profile_found=false
 appsec_airgap=
 container_runtime=
 jq_install_url=
+python_install_url=
 catalog_mode=
 catalog_auth_env=
 cs_user_env=
 cs_pass_env=
+ci_gate_fail_on=high
 gitlab_instance=
 
 sast_component=
@@ -329,10 +351,12 @@ while IFS="$tab" read -r record field1 field2 field3; do
         airgap) appsec_airgap=$field2 ;;
         container_runtime) container_runtime=$field2 ;;
         jq.install_url) jq_install_url=$field2 ;;
+        python.install_url) python_install_url=$field2 ;;
         catalog.mode) catalog_mode=$field2 ;;
         catalog.auth_token_env) catalog_auth_env=$field2 ;;
         container_registry.user_env) cs_user_env=$field2 ;;
         container_registry.password_env) cs_pass_env=$field2 ;;
+        ci_gate.fail_on) [ -z "$field2" ] || ci_gate_fail_on=$field2 ;;
       esac
       ;;
     GITLAB_INSTANCE)
@@ -476,10 +500,12 @@ emit APPSEC_PROFILE "$active_profile"
 emit APPSEC_AIRGAP "$appsec_airgap"
 emit CONTAINER_RUNTIME "$container_runtime"
 emit JQ_INSTALL_URL "$jq_install_url"
+emit PYTHON_INSTALL_URL "$python_install_url"
 emit CATALOG_MODE "$catalog_mode"
 emit CATALOG_AUTH_ENV "$catalog_auth_env"
 emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"
+emit CI_GATE_FAIL_ON "$ci_gate_fail_on"
 emit GITLAB_INSTANCE "$gitlab_instance"
 emit FORTIFY_SAST_IMAGE "$fortify_sast_image"
 emit SECRET_DETECTION_IMAGE "$secret_detection_image"

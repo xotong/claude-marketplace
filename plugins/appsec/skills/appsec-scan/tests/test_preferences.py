@@ -48,8 +48,13 @@ class SettingsBlockTest(unittest.TestCase):
     def test_catalog_mode_valid(self) -> None:
         self.assertIn(self.settings.get("catalog", {}).get("mode"), {"online", "offline"})
 
-    def test_jq_and_container_registry_keys(self) -> None:
+    def test_tooling_gate_and_container_registry_keys(self) -> None:
         self.assertIn("install_url", self.settings.get("jq", {}))
+        self.assertIn("install_url", self.settings.get("python", {}))
+        self.assertIn(
+            self.settings.get("ci_gate", {}).get("fail_on"),
+            {"critical", "high", "medium", "none"},
+        )
         cr = self.settings.get("container_registry", {})
         self.assertIn("user_env", cr)
         self.assertIn("password_env", cr)
@@ -141,7 +146,15 @@ class HelperScriptsTest(unittest.TestCase):
         )
 
     def test_helper_scripts_present_and_executable(self) -> None:
-        for name in ("detect-runtime.sh", "resolve-jq.sh", "container-target.sh", "catalog.sh"):
+        for name in (
+            "detect-runtime.sh",
+            "resolve-jq.sh",
+            "container-target.sh",
+            "catalog.sh",
+            "run-scan.sh",
+            "resolve-python.sh",
+            "fix-branch.sh",
+        ):
             path = SCRIPTS_DIR / name
             with self.subTest(script=name):
                 self.assertTrue(path.is_file(), f"{name} missing")
