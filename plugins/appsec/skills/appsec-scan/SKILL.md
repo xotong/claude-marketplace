@@ -41,16 +41,14 @@ The scanner scripts are relative to the skill's own directory, not the project
 being scanned. Resolve this path first — subsequent steps depend on it.
 
 ```bash
-# SKILL_DIR is the absolute path to skills/appsec-scan/
-# Adjust this path if your plugin is installed at a different location.
-export SKILL_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+export SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
 export SCANNERS_DIR="$SKILL_DIR/scanners"
 export SCRIPTS_DIR="$SKILL_DIR/scripts"
-
 if [ ! -d "$SCANNERS_DIR" ] || [ ! -d "$SCRIPTS_DIR" ]; then
-  echo "ERROR: scanners/ or scripts/ not found under $SKILL_DIR"
-  echo "Ensure the full appsec-scan skill directory is present, not just SKILL.md"
-  exit 1
+  echo "ERROR: skill directory not found (SKILL_DIR='$SKILL_DIR')." >&2
+  echo "Set it explicitly and re-run, e.g.:" >&2
+  echo "  export SKILL_DIR=/abs/path/to/plugins/appsec/skills/appsec-scan" >&2
+  return 1 2>/dev/null || exit 1
 fi
 ```
 

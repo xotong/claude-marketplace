@@ -124,6 +124,44 @@ class RunScanDryRunTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_dry_run_redacts_registry_password(self) -> None:
+        sentinel = "SUPERSECRET123"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env(TEST_CS_PASS=sentinel)
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(sentinel, result.stdout)
+        self.assertIn("CS_REGISTRY_PASSWORD=***", result.stdout)
+
+    def test_self_locates_skill_paths_when_environment_paths_are_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env()
+            for name in ("SKILL_DIR", "SCANNERS_DIR", "SCRIPTS_DIR"):
+                env.pop(name, None)
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn("unbound variable", output)
+        self.assertIn(str(SKILL_DIR / "scanners" / "fortify-sast.sh"), output)
+
+    def test_container_timeout_cleanup_policy_is_valid_bash(self) -> None:
+        result = subprocess.run(
+            [BASH, "-n", str(RUN_SCAN)], capture_output=True, text=True
+        )
+        script = RUN_SCAN.read_text(encoding="utf-8")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # A hermetic timeout test would require portable fake docker process-tree
+        # semantics; macOS lacks setsid, so verify the explicit cleanup policy.
+        self.assertIn("APPSEC_SCAN_TIMEOUT", script)
+        self.assertIn("command -v setsid", script)
+        self.assertIn('kill -TERM -- "-$container_pid"', script)
+        self.assertIn("macOS/Bash 3.2", script)
+
     def test_pythonless_tier_warns_and_never_claims_all_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_repo(tmp, pom=False)

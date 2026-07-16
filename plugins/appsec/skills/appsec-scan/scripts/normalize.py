@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -41,12 +42,20 @@ TEST_PATH_RE = re.compile(
 SECRET_NAME_RE = re.compile(
     r"(?:TOKEN|PASSWORD|SECRET|KEY|AUTH|CREDENTIAL)", re.IGNORECASE
 )
+SECRET_VALUE_RE = re.compile(
+    r"(?:glpat-[A-Za-z0-9_-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|"
+    r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{32,}={0,2}"
+    r"(?![A-Za-z0-9+/=_-]))"
+)
 
-def read_json_loose(path):
+def _json_text(path):
     text = Path(path).read_text(encoding="utf-8", errors="replace")
-    text = "\n".join(
+    return "\n".join(
         line for line in text.splitlines() if not line.startswith("##tool")
     )
+
+def read_json_loose(path):
+    text = _json_text(path)
     return json.loads(text or "null")
 
 def write_json(path, value):
@@ -58,10 +67,11 @@ def fingerprint(parts):
     raw = "|".join(str(part or "") for part in parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
-def normalize_severity(value):
+def normalize_severity(value, rule_id=None):
     if value is None:
-        return "LOW"
-    text = str(value).strip().upper()
+        text = ""
+    else:
+        text = str(value).strip().upper()
     aliases = {
         "BLOCKER": "CRITICAL",
         "FATAL": "CRITICAL",
@@ -72,17 +82,24 @@ def normalize_severity(value):
         "MODERATE": "MEDIUM",
         "INFO": "LOW",
         "INFORMATIONAL": "LOW",
-        "UNKNOWN": "LOW",
-        "": "LOW",
     }
     if text in SEVERITIES:
+        return text
+    if text == "UNKNOWN":
         return text
     if text in aliases:
         return aliases[text]
     try:
         numeric = float(text)
-    except ValueError:
-        return "LOW"
+    except (TypeError, ValueError):
+        numeric = None
+    if numeric is None or not math.isfinite(numeric):
+        print(
+            "WARNING: unrecognized severity for rule "
+            + str(rule_id or "unknown_rule"),
+            file=sys.stderr,
+        )
+        return "UNKNOWN"
     if numeric >= 4.0:
         return "CRITICAL"
     if numeric >= 3.0:
@@ -123,8 +140,16 @@ def new_finding(
     evidence = dict(evidence or {})
     rule_id = rule_id or evidence.pop("rule_id", None) or "unknown_rule"
     category = category or _category_for_scanner(scanner)
+    has_context = bool(evidence) or bool(
+        isinstance(location, dict)
+        and any(location.get(key) for key in ("file", "image", "package"))
+    )
     location = _clean_location(location)
-    normalized = normalize_severity(severity)
+    normalized = (
+        "LOW"
+        if severity is None and not has_context
+        else normalize_severity(severity, rule_id)
+    )
     stable = fingerprint(
         [
             category,
@@ -139,7 +164,9 @@ def new_finding(
     return {
         "category": category,
         "severity": normalized,
-        "verification_status": "unverified",
+        "verification_status": (
+            "needs_human_review" if normalized == "UNKNOWN" else "unverified"
+        ),
         "remediation_status": "unassessed",
         "triage_reason": "Not triaged.",
         "location": location,
@@ -364,7 +391,7 @@ def parse_generic_xml(path):
         ) or element.get("name") or element_tag
         severity = first_text(
             element, ["Severity", "Priority"]
-        ) or element.get("severity") or "LOW"
+        ) or element.get("severity")
         file_name = first_text(
             element, ["File", "FileName", "Path"]
         ) or element.get("file") or str(path)
@@ -406,6 +433,9 @@ def unsupported_report_finding(path):
     )
 
 def parse_failure_finding(path, error):
+    rule_id = "APPSEC-REPORT-PARSE-FAILED"
+    if _report_category(path) and Path(path).suffix.lower() == ".json":
+        rule_id = "APPSEC-REPORT-UNPARSEABLE"
     return new_finding(
         "normalizer",
         "Failed to parse " + Path(path).name,
@@ -413,7 +443,7 @@ def parse_failure_finding(path, error):
         {"file": str(path), "line": None},
         {"error": str(error), "raw_report": str(path)},
         category=_report_category(path) or _fallback_category(path),
-        rule_id="APPSEC-REPORT-PARSE-FAILED",
+        rule_id=rule_id,
     )
 
 def normalize_reports(results_dir):
@@ -468,7 +498,16 @@ def triage_findings(findings):
         category = finding.get("category")
         path = str(location.get("file") or "").replace("\\", "/")
         concrete = any(location.get(key) for key in ("file", "image", "package"))
-        if rule_id in {"APPSEC-REPORT-MISSING", "unsupported_report"}:
+        if finding.get("severity") == "UNKNOWN":
+            finding["verification_status"] = "needs_human_review"
+            finding["remediation_status"] = "needs_user_decision"
+            finding["triage_reason"] = "Scanner severity requires human review."
+        elif rule_id in {
+            "APPSEC-REPORT-MISSING",
+            "APPSEC-REPORT-PARSE-FAILED",
+            "APPSEC-REPORT-UNPARSEABLE",
+            "unsupported_report",
+        }:
             finding["verification_status"] = "needs_human_review"
             finding["remediation_status"] = "parser_or_report_fix_required"
             finding["triage_reason"] = (
@@ -506,13 +545,21 @@ def _gate_severities(gate):
 
 def gate_failed(findings, gate="high"):
     failing = _gate_severities(gate)
-    return any(normalize_severity(item.get("severity")) in failing for item in findings)
+    if not failing:
+        return False
+    for item in findings:
+        severity = normalize_severity(item.get("severity"))
+        if severity in failing or severity == "UNKNOWN":
+            return True
+    return False
 
-def redact_value(value):
+def redact_value(value, matched_only=False):
     """Keep only a four-character hint for secret finding text."""
     if value is None:
         return None
     text = str(value)
+    if matched_only:
+        return SECRET_VALUE_RE.sub("***", text)
     if text.endswith("...") and len(text) <= 7:
         return text
     return text[:4] + "..."
@@ -526,44 +573,87 @@ def secret_values():
     ]
     return sorted(set(values), key=len, reverse=True)
 
-def _redact_structure(value):
+def _redact_structure(value, matched_only=False):
     if isinstance(value, dict):
-        return {key: _redact_structure(item) for key, item in value.items()}
+        return {
+            key: _redact_structure(item, matched_only)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [_redact_structure(item) for item in value]
+        return [_redact_structure(item, matched_only) for item in value]
     if isinstance(value, str):
-        return redact_value(value)
+        return redact_value(value, matched_only)
     return value
 
-def redact_secret_findings(findings):
+def redact_secret_findings(findings, matched_only=False):
     for finding in findings:
-        if finding.get("category") != "secret_detection":
-            continue
-        finding["name"] = redact_value(finding.get("name"))
-        if "description" in finding:
-            finding["description"] = redact_value(finding.get("description"))
-        finding["evidence"] = _redact_structure(finding.get("evidence") or {})
+        finding_matched_only = (
+            matched_only or finding.get("category") != "secret_detection"
+        )
+        for key in ("name", "title", "description"):
+            if key in finding:
+                finding[key] = redact_value(finding.get(key), finding_matched_only)
+        finding["evidence"] = _redact_structure(
+            finding.get("evidence") or {}, finding_matched_only
+        )
+        finding["location"] = _redact_structure(
+            finding.get("location") or {}, True
+        )
     return findings
 
-def coverage_findings(results_dir, scanners_run):
-    recognized = set()
+def coverage_findings(results_dir, scanners_run, existing_findings=None):
+    reports = {category: [] for category in CATEGORIES}
     for path in Path(results_dir).rglob("*"):
         if path.is_file():
             category = _report_category(path)
             if category:
-                recognized.add(category)
-    missing = [category for category in scanners_run if category not in recognized]
+                reports[category].append(path)
+    states = {}
+    for category in scanners_run:
+        paths = reports[category]
+        if not paths or all(path.stat().st_size == 0 for path in paths):
+            states[category] = "missing"
+            continue
+        json_paths = [path for path in paths if path.suffix.lower() == ".json"]
+        if json_paths:
+            valid = False
+            for path in json_paths:
+                if path.stat().st_size == 0:
+                    continue
+                try:
+                    text = _json_text(path)
+                    if not text.strip():
+                        continue
+                    json.loads(text)
+                    valid = True
+                    break
+                except (OSError, ValueError, json.JSONDecodeError):
+                    pass
+            if not valid:
+                states[category] = "unparseable"
+    missing = [category for category in scanners_run if category in states]
     findings = []
-    for category in missing:
+    existing_findings = existing_findings or []
+    for category, state in states.items():
+        rule_id = (
+            "APPSEC-REPORT-MISSING"
+            if state == "missing"
+            else "APPSEC-REPORT-UNPARSEABLE"
+        )
+        if any(
+            item.get("category") == category and item.get("rule_id") == rule_id
+            for item in existing_findings
+        ):
+            continue
         findings.append(
             new_finding(
                 "normalizer",
-                "Scanner report missing: " + category,
+                "Scanner report " + state + ": " + category,
                 "HIGH",
                 {"file": "scan results", "line": None},
                 {"category_attempted": category},
                 category=category,
-                rule_id="APPSEC-REPORT-MISSING",
+                rule_id=rule_id,
             )
         )
     return findings, missing
@@ -592,9 +682,14 @@ def print_summary(findings, gate, failed):
     totals = {severity: 0 for severity in SEVERITIES}
     for scanner in scanners:
         counts = {severity: 0 for severity in SEVERITIES}
+        unknown = 0
         for finding in findings:
             if str(finding.get("scanner") or "unknown") == scanner:
-                counts[normalize_severity(finding.get("severity"))] += 1
+                severity = normalize_severity(finding.get("severity"))
+                if severity == "UNKNOWN":
+                    unknown += 1
+                else:
+                    counts[severity] += 1
         for severity in SEVERITIES:
             totals[severity] += counts[severity]
         label = scanner[: widths[0]]
@@ -603,6 +698,8 @@ def print_summary(findings, gate, failed):
             f"{counts['HIGH']:>{widths[2]}}|{counts['MEDIUM']:>{widths[3]}}|"
             f"{counts['LOW']:>{widths[4]}}"
         )
+        if unknown:
+            print(f"  UNKNOWN severity requiring review: {unknown}")
     print(f"TOTAL C+H: {totals['CRITICAL'] + totals['HIGH']}")
     verdict = "FAILED" if failed else "PASSED"
     print(f"Gate verdict: {verdict} (threshold: {gate})")
@@ -656,7 +753,7 @@ def main(argv=None):
         parsed = normalize_reports(results_dir)
         if args.only:
             parsed = [item for item in parsed if item.get("category") == args.only]
-        coverage, missing = coverage_findings(results_dir, scanners_run)
+        coverage, missing = coverage_findings(results_dir, scanners_run, parsed)
         normalized_new = parsed + coverage
         triaged_new = triage_findings(json.loads(json.dumps(normalized_new)))
         redact_secret_findings(normalized_new)
@@ -673,6 +770,8 @@ def main(argv=None):
             triaged = triaged_new
             gate_scope = triaged
 
+        redact_secret_findings(normalized, matched_only=True)
+        redact_secret_findings(triaged, matched_only=True)
         failed = gate_failed(gate_scope, gate)
         write_json(normalized_path, normalized)
         write_json(triaged_path, triaged)

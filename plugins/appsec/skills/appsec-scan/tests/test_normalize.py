@@ -200,6 +200,56 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(coverage["missing_report"], ["sast"])
         self.assertIn("NOT an all-clear", output.getvalue())
 
+    def test_ran_category_with_empty_report_fails_coverage(self):
+        (self.results / "gl-secret-detection-report.json").write_bytes(b"")
+
+        exit_code = normalize.main(
+            [str(self.results), "--ran", "secret_detection", "--gate", "high"]
+        )
+
+        findings = json.loads(
+            (self.results / "findings.normalized.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            [item["rule_id"] for item in findings], ["APPSEC-REPORT-MISSING"]
+        )
+        self.assertEqual(findings[0]["severity"], "HIGH")
+
+    def test_ran_category_with_malformed_report_fails_as_unparseable(self):
+        (self.results / "gl-secret-detection-report.json").write_text(
+            '{"vulnerabilities": [', encoding="utf-8"
+        )
+
+        exit_code = normalize.main(
+            [str(self.results), "--ran", "secret_detection", "--gate", "high"]
+        )
+
+        findings = json.loads(
+            (self.results / "findings.normalized.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            [item["rule_id"] for item in findings],
+            ["APPSEC-REPORT-UNPARSEABLE"],
+        )
+        self.assertEqual(findings[0]["severity"], "HIGH")
+
+    def test_ran_category_with_valid_empty_findings_report_is_clean(self):
+        self.write_json(
+            "gl-secret-detection-report.json", {"vulnerabilities": []}
+        )
+
+        exit_code = normalize.main(
+            [str(self.results), "--ran", "secret_detection", "--gate", "high"]
+        )
+
+        findings = json.loads(
+            (self.results / "findings.normalized.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(findings, [])
+
     def test_sbom_is_supported_with_zero_findings(self):
         self.write_json(
             "gl-sbom-python.cdx.json",
@@ -238,6 +288,44 @@ class NormalizeTests(unittest.TestCase):
             exit_code = normalize.main([str(self.results), "--ran", ""])
 
         self.assertEqual(exit_code, 1)
+
+    def test_unrecognized_severity_requires_review_and_fails_gate(self):
+        errors = io.StringIO()
+        with mock.patch("sys.stderr", errors):
+            finding = normalize.new_finding(
+                "fortify",
+                "Invalid scanner severity",
+                "garbage",
+                {"file": "src/app.py", "line": 4},
+                {},
+                category="sast",
+                rule_id="RULE-GARBAGE",
+            )
+        normalize.triage_findings([finding])
+
+        self.assertEqual(finding["severity"], "UNKNOWN")
+        self.assertEqual(finding["verification_status"], "needs_human_review")
+        self.assertTrue(normalize.gate_failed([finding], "high"))
+        self.assertIn("RULE-GARBAGE", errors.getvalue())
+
+    def test_missing_severity_with_real_location_is_conservative(self):
+        errors = io.StringIO()
+        with mock.patch("sys.stderr", errors):
+            finding = normalize.new_finding(
+                "fortify",
+                "Missing scanner severity",
+                None,
+                {"file": "src/app.py", "line": 5},
+                {},
+                category="sast",
+                rule_id="RULE-MISSING-SEVERITY",
+            )
+        normalize.triage_findings([finding])
+
+        self.assertEqual(finding["severity"], "UNKNOWN")
+        self.assertEqual(finding["verification_status"], "needs_human_review")
+        self.assertTrue(normalize.gate_failed([finding], "high"))
+        self.assertIn("RULE-MISSING-SEVERITY", errors.getvalue())
 
     def test_gate_none_always_exits_zero(self):
         self.write_json(
@@ -342,6 +430,31 @@ class NormalizeTests(unittest.TestCase):
         self.assertNotIn("super-secret-value", json.dumps(findings))
         self.assertIn("Secret Detection findings (redacted)", output.getvalue())
         self.assertNotIn("Exposed production credential", output.getvalue())
+
+    def test_sast_secret_pattern_is_redacted_in_all_written_outputs(self):
+        token = "glpat-abc123xyz789"
+        self.write_json(
+            "sast-report.json",
+            {
+                "vulnerabilities": [
+                    {
+                        "name": "Token embedded in source",
+                        "description": "Observed " + token + " in a request",
+                        "severity": "HIGH",
+                        "identifiers": [{"value": "SAST-TOKEN-1"}],
+                        "location": {"file": "src/client.py", "line": 12},
+                    }
+                ]
+            },
+        )
+
+        exit_code = normalize.main([str(self.results), "--gate", "none"])
+
+        self.assertEqual(exit_code, 0)
+        for name in ("findings.normalized.json", "findings.triaged.json"):
+            output = (self.results / name).read_text(encoding="utf-8")
+            self.assertNotIn(token, output)
+            self.assertIn("Observed *** in a request", output)
 
     def test_fingerprint_is_stable(self):
         first = normalize.new_finding(

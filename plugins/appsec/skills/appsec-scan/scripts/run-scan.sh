@@ -37,9 +37,13 @@ case "$ONLY_CATEGORY" in
   *) error "unknown category: $ONLY_CATEGORY"; exit 2 ;;
 esac
 
+SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+SKILL_DIR="${SKILL_DIR:-$(dirname "$SCRIPTS_DIR")}"
+SCANNERS_DIR="${SCANNERS_DIR:-$SKILL_DIR/scanners}"
+
 validate_env() {
   missing=
-  for name in RUNTIME SKILL_DIR SCANNERS_DIR SCRIPTS_DIR APPSEC_PROFILE; do
+  for name in RUNTIME APPSEC_PROFILE; do
     eval "value=\${$name:-}"
     [ -n "$value" ] || missing="$missing $name"
   done
@@ -64,10 +68,33 @@ mark_attempted() {
   fi
 }
 
+is_sensitive_env_name() {
+  case "$1" in
+    *[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]*|\
+    *[Tt][Oo][Kk][Ee][Nn]*|\
+    *[Ss][Ee][Cc][Rr][Ee][Tt]*|\
+    *[Kk][Ee][Yy]*|\
+    *[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]*|\
+    CS_REGISTRY_USER|ARTIFACTORY_USER) return 0 ;;
+  esac
+  return 1
+}
+
 print_dry_run() {
   printf 'DRY-RUN:'
   while [ "$#" -gt 0 ]; do
-    printf ' %q' "$1"
+    if [ "$1" = "-e" ] && [ "$#" -ge 2 ]; then
+      printf ' %q' "$1"
+      shift
+      env_name=${1%%=*}
+      if [ "$env_name" != "$1" ] && is_sensitive_env_name "$env_name"; then
+        printf ' %q=***' "$env_name"
+      else
+        printf ' %q' "$1"
+      fi
+    else
+      printf ' %q' "$1"
+    fi
     shift
   done
   printf '\n'
@@ -86,6 +113,67 @@ start_watchdog() {
   # ponytail: APPSEC_SCAN_TIMEOUT defaults to a 3600-second per-scanner ceiling
   ( sleep "${APPSEC_SCAN_TIMEOUT:-3600}" && kill "$scanner_pid" 2>/dev/null ) &
   WATCHDOG_PID=$!
+}
+
+run_container_scan() {
+  container_log=$1
+  shift
+  container_timeout=${APPSEC_SCAN_TIMEOUT:-3600}
+  case "$container_timeout" in
+    ''|*[!0-9]*)
+      warning "Invalid APPSEC_SCAN_TIMEOUT '$container_timeout'; using 3600 seconds"
+      container_timeout=3600
+      ;;
+  esac
+
+  container_process_group=false
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" >"$container_log" 2>&1 &
+    container_pid=$!
+    container_process_group=true
+  else
+    "$@" >"$container_log" 2>&1 &
+    container_pid=$!
+  fi
+
+  # ponytail: the default 3600-second ceiling can only terminate the runtime PID
+  # on macOS/Bash 3.2; installing setsid upgrades cleanup to the full process group.
+  container_started=$SECONDS
+  container_timed_out=false
+  while kill -0 "$container_pid" 2>/dev/null; do
+    if [ $((SECONDS - container_started)) -ge "$container_timeout" ]; then
+      container_timed_out=true
+      warning "Container scan timed out after ${container_timeout}s; terminating it"
+      if $container_process_group; then
+        kill -TERM -- "-$container_pid" 2>/dev/null || true
+      else
+        kill -TERM "$container_pid" 2>/dev/null || true
+      fi
+      sleep 2
+      if $container_process_group; then
+        if kill -0 -- "-$container_pid" 2>/dev/null; then
+          kill -KILL -- "-$container_pid" 2>/dev/null || true
+        fi
+      else
+        if kill -0 "$container_pid" 2>/dev/null; then
+          kill -KILL "$container_pid" 2>/dev/null || true
+        fi
+      fi
+      break
+    fi
+    sleep 1
+  done
+
+  if wait "$container_pid"; then
+    container_rc=0
+  else
+    container_rc=$?
+  fi
+  cat "$container_log"
+  if $container_timed_out; then
+    return 124
+  fi
+  return "$container_rc"
 }
 
 validate_env
@@ -270,7 +358,7 @@ if selected container_scanning && $RUN_GITLAB_CS && [ -n "$GITLAB_CS_IMAGE" ]; t
       if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
         if $DRY_RUN; then
           print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
-        elif "$RUNTIME" run --rm --entrypoint "" \
+        elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
           -v "$PWD:/workspace" \
           -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
           -w /workspace \
@@ -280,7 +368,7 @@ if selected container_scanning && $RUN_GITLAB_CS && [ -n "$GITLAB_CS_IMAGE" ]; t
           -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" \
           -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" \
           "${GITLAB_CS_IMAGE}" \
-          sh /runner.sh 2>&1 | tee .appsec-results/gitlab-cs.log; then
+          sh /runner.sh; then
           GITLAB_CS_PID="ran"
         else
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
@@ -295,7 +383,7 @@ if selected container_scanning && $RUN_GITLAB_CS && [ -n "$GITLAB_CS_IMAGE" ]; t
       if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
         if $DRY_RUN; then
           print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
-        elif "$RUNTIME" run --rm --entrypoint "" \
+        elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
           -v "$PWD:/workspace" \
           -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
           -w /workspace \
@@ -303,7 +391,7 @@ if selected container_scanning && $RUN_GITLAB_CS && [ -n "$GITLAB_CS_IMAGE" ]; t
           -e CS_SCAN_MODE="archive" \
           -e CS_ARCHIVE="/workspace/.appsec-results/container-image.tar" \
           "${GITLAB_CS_IMAGE}" \
-          sh /runner.sh 2>&1 | tee .appsec-results/gitlab-cs.log; then
+          sh /runner.sh; then
           GITLAB_CS_PID="ran"
         else
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
