@@ -478,6 +478,33 @@ class NormalizeTests(unittest.TestCase):
             self.assertNotIn(token, output)
             self.assertIn("Observed *** in a request", output)
 
+    def test_secret_pattern_in_rule_id_is_redacted_in_all_written_outputs(self):
+        for rule_id in ("glpat-ruleid123", "AKIA1234567890ABCDEF"):
+            with self.subTest(rule_id=rule_id):
+                self.write_json(
+                    "sast-report.json",
+                    {
+                        "vulnerabilities": [
+                            {
+                                "name": "Credential-shaped rule identifier",
+                                "severity": "HIGH",
+                                "identifiers": [{"value": rule_id}],
+                                "location": {"file": "src/client.py", "line": 12},
+                            }
+                        ]
+                    },
+                )
+
+                exit_code = normalize.main([str(self.results), "--gate", "none"])
+
+                self.assertEqual(exit_code, 0)
+                for name in ("findings.normalized.json", "findings.triaged.json"):
+                    findings = json.loads(
+                        (self.results / name).read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(findings[0]["rule_id"], "***")
+                    self.assertNotIn(rule_id, json.dumps(findings))
+
     def test_fingerprint_is_stable(self):
         first = normalize.new_finding(
             "fortify",

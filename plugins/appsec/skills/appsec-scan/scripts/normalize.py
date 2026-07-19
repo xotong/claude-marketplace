@@ -577,6 +577,8 @@ def _redact_structure(value, matched_only=False):
 
 def redact_secret_findings(findings, matched_only=False):
     for finding in findings:
+        for key, value in list(finding.items()):
+            finding[key] = _redact_structure(value, True)
         finding_matched_only = (
             matched_only or finding.get("category") != "secret_detection"
         )

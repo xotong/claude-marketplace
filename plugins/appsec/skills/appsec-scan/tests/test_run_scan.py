@@ -125,6 +125,34 @@ class RunScanDryRunTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_enabled_scanner_with_empty_image_exits_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env(
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+                FORTIFY_SAST_IMAGE="",
+            )
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn(
+            "WARNING: [Fortify SCA] Enabled but FORTIFY_SAST_IMAGE is empty",
+            result.stderr,
+        )
+        self.assertIn("WARNING: no scanners ran", result.stderr)
+
+    def test_only_disabled_category_exits_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env(RUN_FORTIFY_SAST="false")
+            result = self.run_scan(repo, "--only", "sast", "--dry-run", env=env)
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("WARNING: no scanners ran", result.stderr)
+        self.assertIn("filtered by --only sast", result.stderr)
+
     def test_bogus_run_flag_is_not_executed_and_scanner_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_repo(tmp)
@@ -137,9 +165,10 @@ class RunScanDryRunTest(unittest.TestCase):
             result = self.run_scan(repo, "--dry-run", env=env)
 
         output = result.stdout + result.stderr
-        self.assertEqual(result.returncode, 0, output)
+        self.assertEqual(result.returncode, 2, output)
         self.assertNotIn("pwned", output)
         self.assertNotIn("example/fortify:test", output)
+        self.assertIn("WARNING: no scanners ran", output)
 
     def test_missing_required_environment_exits_two(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,6 +318,43 @@ class RunScanDryRunTest(unittest.TestCase):
                 with self.assertRaises(ProcessLookupError):
                     os.kill(pid, 0)
 
+    def test_parallel_watchdog_kills_term_ignoring_scanner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "repo").mkdir()
+            repo = self.make_repo(str(root / "repo"))
+            fake_runtime = root / "fake-docker"
+            fake_runtime.write_text(
+                '#!/bin/sh\nif [ "${1:-}" = run ]; then\n'
+                "  trap '' TERM\n"
+                "  while :; do /bin/sleep 0.1; done\n"
+                "fi\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_runtime.chmod(0o755)
+            env = self.base_env(
+                RUNTIME=str(fake_runtime),
+                APPSEC_SCAN_TIMEOUT="1",
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+            )
+            started = time.monotonic()
+            result = subprocess.run(
+                [BASH, str(RUN_SCAN)],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=7,
+            )
+            elapsed = time.monotonic() - started
+
+        output = result.stdout + result.stderr
+        self.assertLess(elapsed, 6, output)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("[FORTIFY_SAST] Failed", output)
+
     def test_container_timeout_cleanup_policy_is_valid_bash(self) -> None:
         result = subprocess.run(
             [BASH, "-n", str(RUN_SCAN)], capture_output=True, text=True
@@ -305,7 +371,7 @@ class RunScanDryRunTest(unittest.TestCase):
 
     def test_pythonless_tier_warns_and_never_claims_all_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            repo = self.make_repo(tmp, pom=False)
+            repo = self.make_repo(tmp)
             bin_dir = repo / "bin"
             bin_dir.mkdir()
             for name in ("bash", "basename", "git", "grep", "mkdir"):
@@ -318,7 +384,6 @@ class RunScanDryRunTest(unittest.TestCase):
                 RUN_GITLAB_DS="false",
                 RUN_SECRET_DETECTION="false",
                 RUN_GITLAB_CS="false",
-                FORTIFY_SAST_IMAGE="",
                 PYTHON_INSTALL_URL="",
             )
             result = self.run_scan(repo, "--dry-run", env=env)

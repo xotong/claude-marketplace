@@ -5,6 +5,7 @@ ONLY_CATEGORY=
 DRY_RUN=false
 RAN_CATEGORIES=
 DS_RAN=false
+SKIPPED_IMAGE_SCANNERS=
 
 info() { printf 'INFO: %s\n' "$*" >&2; }
 warning() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -76,6 +77,15 @@ mark_attempted() {
   fi
 }
 
+record_missing_image() {
+  warning "[$1] Enabled but $2 is empty; skipping scanner"
+  if [ -n "$SKIPPED_IMAGE_SCANNERS" ]; then
+    SKIPPED_IMAGE_SCANNERS="$SKIPPED_IMAGE_SCANNERS,$1"
+  else
+    SKIPPED_IMAGE_SCANNERS=$1
+  fi
+}
+
 is_sensitive_env_name() {
   case "$1" in
     *[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]*|\
@@ -122,13 +132,18 @@ start_watchdog() {
   case "$watchdog_timeout" in
     ''|*[!0-9]*) watchdog_timeout=3600 ;;
   esac
-  # ponytail: APPSEC_SCAN_TIMEOUT defaults to a 3600-second per-scanner ceiling;
-  # without portable process groups, the deadline can only target the scanner PID.
+  # ponytail: APPSEC_SCAN_TIMEOUT defaults to a 3600-second per-scanner ceiling.
+  # Only the scanner PID is portable here, so grandchildren may survive; launching
+  # parallel scanners under setsid would upgrade cleanup to the full process group.
   (
     watchdog_started=$SECONDS
     while kill -0 "$scanner_pid" 2>/dev/null; do
       if [ $((SECONDS - watchdog_started)) -ge "$watchdog_timeout" ]; then
-        kill "$scanner_pid" 2>/dev/null || true
+        kill -TERM "$scanner_pid" 2>/dev/null || true
+        sleep 2
+        if kill -0 "$scanner_pid" 2>/dev/null; then
+          kill -KILL "$scanner_pid" 2>/dev/null || true
+        fi
         break
       fi
       # ponytail: 0.25s poll so a finished scanner is reaped promptly (fractional
@@ -222,6 +237,19 @@ SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-}"
 GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-}"
 CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
+
+if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -z "$FORTIFY_SAST_IMAGE" ]; then
+  record_missing_image "Fortify SCA" FORTIFY_SAST_IMAGE
+fi
+if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -z "$GITLAB_DS_IMAGE" ]; then
+  record_missing_image "GitLab DS" GITLAB_DS_IMAGE
+fi
+if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && [ -z "$SECRET_DETECTION_IMAGE" ]; then
+  record_missing_image "Secret Detection" SECRET_DETECTION_IMAGE
+fi
+if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -z "$GITLAB_CS_IMAGE" ]; then
+  record_missing_image "GitLab CS" GITLAB_CS_IMAGE
+fi
 
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
@@ -445,6 +473,15 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
   esac
 fi
 
+if [ -z "$RAN_CATEGORIES" ]; then
+  if [ -n "$ONLY_CATEGORY" ]; then
+    warning "no scanners ran — enabled scanners were skipped (missing image?) or filtered by --only $ONLY_CATEGORY"
+  else
+    warning "no scanners ran — enabled scanners were skipped (missing image?) or disabled"
+  fi
+  exit 2
+fi
+
 if $DRY_RUN; then
   if dry_python="$(command -v python3 2>/dev/null)" && \
      "$dry_python" -c "import sys" >/dev/null 2>&1; then
@@ -460,6 +497,7 @@ if $DRY_RUN; then
     print_dry_run bash "$SCRIPTS_DIR/resolve-python.sh"
     info "A downloaded python3 would run normalize.py after resolution."
   fi
+  [ -z "$SKIPPED_IMAGE_SCANNERS" ] || exit 2
   exit 0
 fi
 
@@ -475,6 +513,10 @@ if [ -n "$PY_BIN" ]; then
     "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES"
     gate_rc=$?
     set -e
+  fi
+  if [ "$gate_rc" -eq 0 ] && [ -n "$SKIPPED_IMAGE_SCANNERS" ]; then
+    warning "enabled scanners skipped for missing images: $SKIPPED_IMAGE_SCANNERS"
+    exit 2
   fi
   exit "$gate_rc"
 fi
@@ -495,4 +537,5 @@ if [ -n "$JQ_BIN" ]; then
 else
   warning "jq is also unavailable; legacy finding counts are UNKNOWN."
 fi
+[ -z "$SKIPPED_IMAGE_SCANNERS" ] || exit 2
 exit 0
