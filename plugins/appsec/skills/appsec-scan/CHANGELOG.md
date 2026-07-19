@@ -36,8 +36,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Removed
 - Scanner orchestration bash from SKILL.md Steps 3–5 (~500 lines)
 
-<!-- SCORES -->
-> **Production-readiness gate (4-judge panel):** scores recorded here after the loop.
+> **Production-readiness gate — small-model (gemma:9b-class) executability.**
+> Weighted rubric: executability 30%, correctness 25%, safety 20%, docs 15%, airgap 10%.
+> Gate = min of two independent final judges ≥ 9.0. **Met: 9.1.**
+>
+> | Round | Fable | gpt-5.6-sol | Empirical (Haiku) | Key defects found |
+> |---|---|---|---|---|
+> | 1 | — | — | exec 5 | missing `export` broke Step 3 in a child shell; fix-loop off-by-one |
+> | 2 | — | 3.8 | exec 6 | dry-run credential leak; empty-report false all-clear; severity→LOW; redaction gaps |
+> | 3 (blockers) | 7.5 | 6.2 | — | watchdog pipe-hang (1 h stdout block); zero-scanner false PASSED; offline still hit network |
+> | 4 (final) | **9.1** | 7.3 → **9.2** | — | incomplete false all-clear (empty-image / `--only` disabled); watchdog TERM-only; `rule_id` redaction |
+>
+> Final: **Fable 9.1** (exec 9 / corr 9 / safety 9 / docs 9 / airgap 10) · **gpt-5.6-sol 9.2**
+> (exec 9.1 / corr 9.3 / safety 9.3 / docs 9.0 / airgap 9.2). Every judge finding was
+> reproduced first-hand before fixing; the adversarial deep-code judge repeatedly caught
+> real safety gaps (false all-clears, credential leaks) that happy-path review missed.
+>
+> Documented non-blocking limitations: parallel-scanner timeout kills the scanner PID but
+> not grandchildren without `setsid`; bare interactive paste of Step 1 can mis-resolve
+> `SKILL_DIR` (the model-harness path and `run-scan.sh` self-location are unaffected).
 
 ---
 
