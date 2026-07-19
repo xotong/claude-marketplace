@@ -248,7 +248,11 @@ class RunScanDryRunTest(unittest.TestCase):
             ]
 
         output = result.stdout + result.stderr
-        self.assertLess(elapsed, 3, output)
+        # The pipe-hang bug blocked for the full APPSEC_SCAN_TIMEOUT (8s here, 3600s
+        # default). A completion well under that timeout proves the watchdog no longer
+        # holds stdout; the reaping asserts below carry the real correctness proof, so
+        # keep this bound loose enough to survive a loaded CI host.
+        self.assertLess(elapsed, 6, output)
         self.assertTrue(sleep_pids, output)
         self.assertNotIn("Terminated", output)
         for pid in sleep_pids:

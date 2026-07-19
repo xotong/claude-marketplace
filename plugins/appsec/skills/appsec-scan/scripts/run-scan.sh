@@ -131,7 +131,10 @@ start_watchdog() {
         kill "$scanner_pid" 2>/dev/null || true
         break
       fi
-      sleep 1
+      # ponytail: 0.25s poll so a finished scanner is reaped promptly (fractional
+      # sleep is supported on macOS/Linux/WSL/Git-Bash); coarser only saves CPU on
+      # scans that already run for minutes.
+      sleep 0.25
     done
   ) </dev/null >/dev/null 2>&1 &
   WATCHDOG_PID=$!
