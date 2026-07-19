@@ -57,7 +57,7 @@ validate_env() {
   done
   if [ -n "$missing" ]; then
     error "required environment variables are unset:$missing"
-    exit 1
+    exit 2
   fi
 }
 
@@ -254,7 +254,8 @@ mkdir -p .appsec-results
 grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
   info "Reminder: add .appsec-results/ to .gitignore"
 
-if selected sast && $RUN_FORTIFY_SAST && [ -n "$FORTIFY_SAST_IMAGE" ]; then
+# ponytail: RUN_* values are data; only the literal string true enables a scanner.
+if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE" ]; then
   if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
     if $HAS_GRADLE; then FORTIFY_LANGUAGE=gradle
     elif $HAS_POM; then FORTIFY_LANGUAGE=maven
@@ -265,7 +266,7 @@ if selected sast && $RUN_FORTIFY_SAST && [ -n "$FORTIFY_SAST_IMAGE" ]; then
       RUN_FORTIFY_SAST=false
     fi
   fi
-  if $RUN_FORTIFY_SAST; then
+  if [ "$RUN_FORTIFY_SAST" = true ]; then
     mark_attempted sast
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
     if run_cmd "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
@@ -294,7 +295,7 @@ if selected sast && $RUN_FORTIFY_SAST && [ -n "$FORTIFY_SAST_IMAGE" ]; then
   fi
 fi
 
-if selected dependency_scanning && $RUN_GITLAB_DS && [ -n "$GITLAB_DS_IMAGE" ]; then
+if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_DS_IMAGE" ]; then
   DS_RAN=true
   mark_attempted dependency_scanning
   info "[GitLab DS] Pulling ${GITLAB_DS_IMAGE}..."
@@ -320,7 +321,7 @@ if selected dependency_scanning && $RUN_GITLAB_DS && [ -n "$GITLAB_DS_IMAGE" ]; 
   fi
 fi
 
-if selected secret_detection && $RUN_SECRET_DETECTION && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -n "$SECRET_DETECTION_IMAGE" ]; then
+if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -n "$SECRET_DETECTION_IMAGE" ]; then
   mark_attempted secret_detection
   info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
   if run_cmd "$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"; then
@@ -344,7 +345,7 @@ if selected secret_detection && $RUN_SECRET_DETECTION && git rev-parse --is-insi
   else
     warning "[Secret Detection] Failed to pull ${SECRET_DETECTION_IMAGE}; skipping scan"
   fi
-elif selected secret_detection && $RUN_SECRET_DETECTION; then
+elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
   info "[Secret Detection] Skipped — not a Git worktree or image unset"
 fi
 
@@ -370,7 +371,7 @@ if ! $DRY_RUN; then
   done
 fi
 
-if selected container_scanning && $RUN_GITLAB_CS && [ -n "$GITLAB_CS_IMAGE" ]; then
+if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_CS_IMAGE" ]; then
   if $DRY_RUN; then
     print_dry_run bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$APP_NAME" .appsec-results
     if [ -n "${CS_IMAGE:-}" ]; then

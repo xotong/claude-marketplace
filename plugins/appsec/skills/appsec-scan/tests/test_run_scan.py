@@ -125,6 +125,35 @@ class RunScanDryRunTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_bogus_run_flag_is_not_executed_and_scanner_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env(
+                RUN_FORTIFY_SAST="echo pwned",
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+            )
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn("pwned", output)
+        self.assertNotIn("example/fortify:test", output)
+
+    def test_missing_required_environment_exits_two(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self.base_env()
+            env.pop("RUNTIME")
+            env.pop("APPSEC_PROFILE")
+            result = self.run_scan(Path(tmp), "--dry-run", env=env)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "ERROR: required environment variables are unset: RUNTIME APPSEC_PROFILE",
+            result.stderr,
+        )
+
     def test_dry_run_redacts_registry_password(self) -> None:
         sentinel = "SUPERSECRET123"
         with tempfile.TemporaryDirectory() as tmp:

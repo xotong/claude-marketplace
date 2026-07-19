@@ -198,6 +198,29 @@ class HelperScriptsTest(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "")
         self.assertIn("unsupported CONTAINER_RUNTIME 'bogus'", result.stderr)
 
+    def test_preflight_allows_unset_gitlab_instance_under_set_u(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {"docker": "#!/bin/sh\nexit 0\n"},
+            )
+            env = dict(
+                os.environ,
+                APPSEC_AIRGAP="true",
+                CONTAINER_RUNTIME="auto",
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            )
+            env.pop("GITLAB_INSTANCE", None)
+            result = subprocess.run(
+                ["bash", str(SCANNERS_DIR / "preflight.sh")],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("unbound variable", result.stderr)
+
     def test_resolve_jq_returns_existing_jq_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = self.make_stub_dir(

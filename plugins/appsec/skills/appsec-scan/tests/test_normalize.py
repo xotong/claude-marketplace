@@ -274,12 +274,22 @@ class NormalizeTests(unittest.TestCase):
         catalog_dir = self.results / "catalog"
         bin_dir.mkdir()
         catalog_dir.mkdir()
-        (bin_dir / "foo.json").write_text("{}", encoding="utf-8")
-        (catalog_dir / "bar.xml").write_text("<report />", encoding="utf-8")
+        (bin_dir / "fortify-sast.fpr").write_bytes(b"cached")
+        (catalog_dir / "gl-secret-detection-report.json").write_text(
+            '{"vulnerabilities": []}', encoding="utf-8"
+        )
 
         findings = normalize.normalize_reports(self.results)
+        coverage, missing = normalize.coverage_findings(
+            self.results, ["sast", "secret_detection"]
+        )
 
         self.assertEqual(findings, [])
+        self.assertEqual(missing, ["sast", "secret_detection"])
+        self.assertEqual(
+            [finding["rule_id"] for finding in coverage],
+            ["APPSEC-REPORT-MISSING", "APPSEC-REPORT-MISSING"],
+        )
 
     def test_environment_medium_gate_fails_on_medium_finding(self):
         self.write_json(

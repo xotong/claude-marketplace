@@ -25,7 +25,9 @@ if ! RT="$(CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}" "$SKILL_DIR/scripts/detect
   ERRORS+=("no container runtime: install docker or podman, or set settings.container_runtime")
 fi
 
-if [ "${APPSEC_AIRGAP:-}" = "true" ] && [ "${GITLAB_INSTANCE%/}" = "https://gitlab.com" ]; then
+# ponytail: normalize unset to empty before trimming a trailing slash under set -u.
+gitlab_instance="${GITLAB_INSTANCE:-}"
+if [ "${APPSEC_AIRGAP:-}" = "true" ] && [ "${gitlab_instance%/}" = "https://gitlab.com" ]; then
   ERRORS+=("profile '${APPSEC_PROFILE:-catalog}' targets gitlab.com and is not allowed when airgap=true")
 fi
 

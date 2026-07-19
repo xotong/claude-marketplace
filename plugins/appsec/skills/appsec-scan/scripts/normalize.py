@@ -39,9 +39,6 @@ REPORT_CATEGORIES = {
 TEST_PATH_RE = re.compile(
     r"(?:^|/)(?:test|tests|vendor|node_modules|dist|build)(?:/|$)", re.IGNORECASE
 )
-SECRET_NAME_RE = re.compile(
-    r"(?:TOKEN|PASSWORD|SECRET|KEY|AUTH|CREDENTIAL)", re.IGNORECASE
-)
 SECRET_VALUE_RE = re.compile(
     r"(?:glpat-[A-Za-z0-9_-]+|(?:AKIA|ASIA)[A-Z0-9]{16}|"
     r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{32,}={0,2}"
@@ -566,15 +563,6 @@ def redact_value(value, matched_only=False):
         return text
     return text[:4] + "..."
 
-def secret_values():
-    """Return environment secret values, longest first, for callers that need them."""
-    values = [
-        value
-        for key, value in os.environ.items()
-        if SECRET_NAME_RE.search(key) and value
-    ]
-    return sorted(set(values), key=len, reverse=True)
-
 def _redact_structure(value, matched_only=False):
     if isinstance(value, dict):
         return {
@@ -606,6 +594,9 @@ def redact_secret_findings(findings, matched_only=False):
 def coverage_findings(results_dir, scanners_run, existing_findings=None):
     reports = {category: [] for category in CATEGORIES}
     for path in Path(results_dir).rglob("*"):
+        # ponytail: cached tools and catalog payloads are not scanner evidence.
+        if any(part in path.parts for part in ("bin", "catalog")):
+            continue
         if path.is_file():
             category = _report_category(path)
             if category:
