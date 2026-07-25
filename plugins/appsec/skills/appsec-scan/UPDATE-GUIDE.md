@@ -314,5 +314,3 @@ March, June, September, and December. Check for:
 - Image tag updates
 
 Drift detection runs automatically at every scan via `scripts/catalog.sh check-drift`, in two forms: **image drift** (configured `image:` vs the component's effective job image) and **contract drift** (declared inputs, `options:` and report artifacts vs `scanners/<runner>.contract`). The quarterly task is refreshing snapshots, contracts and `Last synced` headers (Scenario 6).
-
-Note that `catalog.mode: offline` makes both checks inert — the contracts were generated from the same vendored snapshots they would be compared against. Run drift checks against a live instance.

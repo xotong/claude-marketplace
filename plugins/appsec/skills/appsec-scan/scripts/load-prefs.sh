@@ -10,7 +10,6 @@
 #   - settings.container_runtime
 #   - settings.jq.install_url
 #   - settings.python.install_url
-#   - settings.catalog.mode
 #   - settings.catalog.auth_token_env
 #   - settings.container_registry.user_env
 #   - settings.container_registry.password_env
@@ -184,10 +183,6 @@ function split_key_value(s,    idx) {
       settings["python.install_url"] = parse_scalar(value)
       next
     }
-    if (indent == 4 && settings_block == "catalog" && key == "mode") {
-      settings["catalog.mode"] = parse_scalar(value)
-      next
-    }
     if (indent == 4 && settings_block == "catalog" && key == "auth_token_env") {
       settings["catalog.auth_token_env"] = parse_scalar(value)
       next
@@ -229,6 +224,16 @@ function split_key_value(s,    idx) {
     next
   }
 
+  # auth_token_env is a property of the INSTANCE, so it belongs with
+  # gitlab_instance. A profile-level value (including an explicit "") overrides
+  # settings.catalog.auth_token_env; without one the global default applies.
+  if (indent == 4 && key == "auth_token_env") {
+    profile_auth[current_profile] = parse_scalar(value)
+    profile_auth_set[current_profile] = 1
+    current_block = ""
+    next
+  }
+
   if (indent == 4 && key == "categories" && value == "") {
     current_block = "categories"
     current_category = ""
@@ -262,7 +267,6 @@ END {
   print "SETTING\tcontainer_runtime\t" settings["container_runtime"]
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
   print "SETTING\tpython.install_url\t" settings["python.install_url"]
-  print "SETTING\tcatalog.mode\t" settings["catalog.mode"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
   print "SETTING\tcontainer_registry.user_env\t" settings["container_registry.user_env"]
   print "SETTING\tcontainer_registry.password_env\t" settings["container_registry.password_env"]
@@ -270,6 +274,9 @@ END {
 
   if (profile_seen[active_profile]) {
     print "GITLAB_INSTANCE\t" profile_gitlab[active_profile]
+    if (profile_auth_set[active_profile]) {
+      print "PROFILE_AUTH_TOKEN_ENV\t" profile_auth[active_profile]
+    }
     for (i = 1; i <= cat_count[active_profile]; i++) {
       category = cat_order[active_profile, i]
       print "CATEGORY\t" category "\tcomponent\t" category_value[active_profile, category, "component"]
@@ -292,7 +299,6 @@ appsec_airgap=
 container_runtime=
 jq_install_url=
 python_install_url=
-catalog_mode=
 catalog_auth_env=
 cs_user_env=
 cs_pass_env=
@@ -352,12 +358,14 @@ while IFS="$tab" read -r record field1 field2 field3; do
         container_runtime) container_runtime=$field2 ;;
         jq.install_url) jq_install_url=$field2 ;;
         python.install_url) python_install_url=$field2 ;;
-        catalog.mode) catalog_mode=$field2 ;;
         catalog.auth_token_env) catalog_auth_env=$field2 ;;
         container_registry.user_env) cs_user_env=$field2 ;;
         container_registry.password_env) cs_pass_env=$field2 ;;
         ci_gate.fail_on) [ -z "$field2" ] || ci_gate_fail_on=$field2 ;;
       esac
+      ;;
+    PROFILE_AUTH_TOKEN_ENV)
+      catalog_auth_env=$field1
       ;;
     GITLAB_INSTANCE)
       gitlab_instance=$field1
@@ -510,7 +518,6 @@ emit APPSEC_AIRGAP "$appsec_airgap"
 emit CONTAINER_RUNTIME "$container_runtime"
 emit JQ_INSTALL_URL "$jq_install_url"
 emit PYTHON_INSTALL_URL "$python_install_url"
-emit CATALOG_MODE "$catalog_mode"
 emit CATALOG_AUTH_ENV "$catalog_auth_env"
 emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"

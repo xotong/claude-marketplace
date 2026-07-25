@@ -41,11 +41,16 @@ settings:
     prefer: host
     install_url: ""   # e.g. https://jfrog.internal/artifactory/tools/python/{os}/{arch}/python.tar.gz
 
-  # CI/CD Catalog resolution (per run).
+  # CI/CD Catalog resolution (per run). Components are always resolved live
+  # against the active profile's gitlab_instance; if that fetch fails for any
+  # reason, catalog.sh falls back to the vendored snapshots in
+  # reference/catalog/ automatically and says so. There is deliberately no
+  # "offline" switch: exact version: pins already give reproducibility, the
+  # fallback already gives airgap resilience, and forcing offline only disabled
+  # drift detection (the contracts are generated from those same snapshots, so
+  # the comparison could never fail).
   catalog:
-    #   online  = resolve component versions live against gitlab_instance.
-    #   offline = skip the network, use vendored snapshots in reference/catalog/.
-    mode: online
+    # Default for profiles that do not set their own auth_token_env below.
     # Env var NAME (never the value) holding a read_api PAT. Required because the
     # lobster-thermidor catalogue is private on gitlab.com — anonymous reads get
     # 404. Preflight fails fast if this names a var that is unset, so a run can
@@ -111,6 +116,11 @@ profiles:
   # image: is what actually RUNS (admin-pinned; edit to your real internal path).
   company:
     gitlab_instance: https://gitlab.internal.example
+    # Internal instance serves the ci-catalogue projects to unauthenticated API
+    # reads, so no PAT is needed here. This empty value overrides the global
+    # settings.catalog.auth_token_env, which exists for the gitlab.com profile.
+    # If your instance starts requiring auth, name an env var here instead.
+    auth_token_env: ""
     categories:
       sast:
         component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast

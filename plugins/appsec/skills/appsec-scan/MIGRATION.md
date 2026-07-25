@@ -135,6 +135,8 @@ Edit `config/scanner-preferences.yaml`, `company:` block:
 ```yaml
 company:
   gitlab_instance: https://gitlab.internal.company.com   # your internal GitLab
+  auth_token_env: ""      # internal instance serves the catalogue anonymously;
+                          # overrides settings.catalog.auth_token_env
   categories:
     sast:
       component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
@@ -174,10 +176,9 @@ In the `settings:` block of `config/scanner-preferences.yaml`:
 settings:
   airgap: true
   catalog:
-    mode: online                   # see "Which catalog mode?" below — online is
-                                   # correct when your instance hosts the components
-    auth_token_env: GITLAB_READ_TOKEN   # GitLab API only; set "" if your instance
-                                        # serves the components anonymously
+    auth_token_env: GITLAB_READ_TOKEN   # default for profiles that do not set their
+                                        # own; the company profile below sets ""
+
   jq:
     prefer: host
     install_url: "https://jfrog.internal/artifactory/tools/jq/{os}/{arch}/jq"
@@ -191,28 +192,19 @@ settings:
 
 Set `default_profile: company` (or `export APPSEC_PROFILE=company` before each run). With `airgap: true`, any profile pointing at gitlab.com is refused at load time.
 
-### Which catalog mode?
+### There is no catalog mode to choose
 
-`airgap: true` and `catalog.mode` are independent. `airgap` only refuses profiles
-pointing at gitlab.com — it does **not** force offline.
+Components are always resolved live against the active profile's
+`gitlab_instance` — which, inside your airgap, is your own internal GitLab. If
+that fetch fails for any reason, `catalog.sh` falls back to the vendored
+snapshots automatically and reports `[offline-fallback]`. That fallback is the
+airgap guarantee; it needs no configuration.
 
-**Use `online` if your internal GitLab hosts the components** (the usual case
-after step 5). The only endpoint contacted is your own `gitlab_instance`, which
-the airgap policy permits, and you keep live version resolution plus image and
-contract drift detection.
-
-**Use `offline` only if the catalogue is not mirrored**, or you deliberately want
-resolution frozen. Know what it costs:
-
-- **Drift detection goes inert.** `check-drift` falls back to the vendored
-  snapshots, and `scanners/*.contract` were generated from those same snapshots,
-  so the comparison always matches. A new component input or a moved image
-  cannot be detected.
-- **`~latest` stops meaning latest** — it resolves to the highest vendored
-  snapshot directory.
-
-Either way the snapshots still serve as an automatic fallback when the instance
-is unreachable; that path does not depend on this setting.
+A forced-offline setting existed until 2026-07-25 and was removed. It gave
+nothing the design did not already provide — exact `version:` pins give
+reproducibility, the fallback gives resilience — while silently disabling image
+and contract drift detection, and risking serving snapshots vendored from
+gitlab.com as though they were your internal components.
 
 ### Do you need `auth_token_env`?
 
@@ -239,7 +231,7 @@ it means naming a var "just in case" blocks every run until a token exists.
 
 ## 5 — Refresh vendored catalog snapshots
 
-The vendored snapshots in `reference/catalog/` are used when `catalog.mode: offline` or catalog resolution fails. Refresh them using the internal GitLab instance (Scenario 6 in UPDATE-GUIDE.md):
+The vendored snapshots in `reference/catalog/` are the automatic fallback when catalog resolution fails. Re-vendor them from your internal instance so the fallback serves the components you actually published, not the gitlab.com originals. Refresh them using the internal GitLab instance (Scenario 6 in UPDATE-GUIDE.md):
 
 ```bash
 for component in \
@@ -268,7 +260,7 @@ bash plugins/appsec/skills/appsec-scan/scripts/load-prefs.sh \
   plugins/appsec/skills/appsec-scan/config/scanner-preferences.yaml
 
 # 2. catalog.sh self-test (offline mode)
-CATALOG_MODE=offline bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
+bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
   resolve https://gitlab.internal.company.com \
   lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast 25.2.0 \
   /tmp/cat-test ""

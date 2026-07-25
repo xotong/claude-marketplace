@@ -77,28 +77,21 @@ settings:
   `scripts/run-scan.sh` exits 1 (gate failed). Values: `critical` | `high` (default) |
   `medium` | `none`. Set `none` to always exit 0 (report-only mode). `likely_false_positive`
   findings still count toward the gate — dismiss them in GitLab's Vulnerability Report.
-- **catalog.mode** — `online` resolves component versions live against
-  `gitlab_instance` each run; `offline` skips the network and uses the vendored
-  snapshots in `../reference/catalog/`.
+- **catalog resolution** — there is no mode switch. Components are always
+  resolved live against the active profile's `gitlab_instance`; if that fetch
+  fails for any reason, `catalog.sh` falls back to the vendored snapshots in
+  `../reference/catalog/` and says `[offline-fallback]`.
 
-  **`offline` is not the airgap setting.** `airgap: true` only refuses profiles
-  pointing at gitlab.com; it does not force offline. If your instance hosts the
-  components — including a self-hosted GitLab inside an airgap — use `online`:
-  the only endpoint contacted is your own `gitlab_instance`, which the airgap
-  policy allows. Choose `offline` only when the catalogue is genuinely not
-  mirrored, or when you want resolution frozen.
+  A forced-offline setting was removed on 2026-07-25 because it provided nothing
+  the rest of the design did not already give — exact `version:` pins provide
+  reproducibility, and the automatic fallback provides airgap resilience — while
+  costing real safety: it silently disabled image and contract drift detection,
+  since `scanners/*.contract` are generated from the very snapshots the check
+  would compare against, so the comparison could never fail. It also risked
+  serving snapshots vendored from a *different* instance as though they were
+  yours. `scripts/catalog.sh resolve --offline` still exists for tests and
+  one-off manual use.
 
-  Be aware what `offline` costs you:
-  - **Drift detection goes inert.** `check-drift` falls back to the vendored
-    snapshots, and `scanners/*.contract` were generated from those same
-    snapshots — so the comparison is a file against its own source and is
-    always clean. It cannot catch a new input or a moved image.
-  - **`~latest` stops meaning latest.** It resolves to the highest vendored
-    snapshot directory, so pinning silently becomes "whatever was last
-    vendored".
-
-  The snapshots remain valuable as an automatic fallback when the instance is
-  unreachable; that path works regardless of this setting.
 - **catalog.auth_token_env** — the env var *name* holding a `read_api` PAT for
   the **GitLab API only**. It authenticates catalog metadata reads (tags,
   `template.yml`, `README.md`, `AGENTS.md`) and nothing else — it is **not**
@@ -119,10 +112,16 @@ settings:
   private on gitlab.com: anonymous reads return `404`. Whenever this names a
   var, preflight requires that var to be non-empty — deliberately, so a
   tokenless run cannot quietly fall back to vendored snapshots and look like a
-  live catalog test. The requirement is skipped when `catalog.mode: offline`,
-  since that path never calls the API. Set it to `""` only if your
-  `gitlab_instance` serves the components anonymously. Token setup:
+  live catalog test. Set it to `""` when the instance serves the components
+  anonymously — that is how the `company` profile ships. Token setup:
   MIGRATION.md step 0.
+
+  **Per profile.** `auth_token_env` may be set inside a profile block, next to
+  `gitlab_instance`, because it is a property of that instance. A profile value
+  (including an explicit `""`) overrides `settings.catalog.auth_token_env`,
+  which remains the default for profiles that do not set one. This is what lets
+  the gitlab.com `catalog` profile require a PAT while the internal `company`
+  profile reads anonymously.
 - **container_registry** — env var *names* (not values) holding the **image
   registry** credentials, used when GTCS pulls a BYO image and when a local
   build must pull a `FROM` base. If your registry (e.g. a JFrog mirror) allows

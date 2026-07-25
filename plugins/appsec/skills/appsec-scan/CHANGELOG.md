@@ -26,7 +26,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `fix-branch.sh --check-progress` silently accepted non-integer arguments, writing invalid JSON into the loop state and exiting 0 as if progress had been made
 - SKILL.md Step 1 derived `SKILL_DIR` from `${BASH_SOURCE[0]}`, which resolves to the agent's shell (`/bin`), and assumed one persistent shell across steps
 
+### Removed
+- `settings.catalog.mode`. Components are always resolved live against the active profile's `gitlab_instance`, with automatic fallback to the vendored snapshots when that fetch fails. The forced-offline setting provided nothing the design did not already give — exact `version:` pins give reproducibility, the fallback gives airgap resilience — while silently disabling image and contract drift detection, since `scanners/*.contract` are generated from the very snapshots the check would compare against. It also risked serving gitlab.com-vendored snapshots as though they were an internal instance's components. `catalog.sh resolve --offline` remains for tests and one-off manual use
+- Consequently, preflight now requires a named `auth_token_env` var whenever one is named; there is no mode in which the requirement is skipped
+
 ### Changed
+- `auth_token_env` is settable **per profile**, next to `gitlab_instance`, because it is a property of the instance. A profile value (including an explicit `""`) overrides `settings.catalog.auth_token_env`. This lets the gitlab.com `catalog` profile require a PAT while the internal `company` profile reads anonymously — previously impossible, since both were global
+- `company` profile ships `auth_token_env: ""` for an internal instance serving the catalogue anonymously
 - `ENABLED_COMPONENTS` is now a `component|version|runner|image` tuple; the image is what `check-drift` compares against
 - TRIAGE.md restructured into four sections — fixed on this branch, must-fix (not dismissible), coverage gaps (not dismissible), then GitLab dismissals. Coverage gaps and unfixed true positives have no GitLab vulnerability to dismiss, so forcing them into one of the five dismissal reasons was misleading
 - Vendored snapshots refreshed: dependency-scanning and container-scanning 1.0.0 → 1.1.0; fortify-sast@25.2.0 re-fetched after the registry move

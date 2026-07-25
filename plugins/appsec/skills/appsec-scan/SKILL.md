@@ -78,7 +78,7 @@ PREFS_ENV="$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-prefer
 }
 eval "$PREFS_ENV"
 # Now set: APPSEC_PROFILE, APPSEC_AIRGAP, CONTAINER_RUNTIME, JQ_INSTALL_URL,
-# CATALOG_MODE, CATALOG_AUTH_ENV, CS_USER_ENV, CS_PASS_ENV, GITLAB_INSTANCE,
+# CATALOG_AUTH_ENV, CS_USER_ENV, CS_PASS_ENV, GITLAB_INSTANCE,
 # FORTIFY_SAST_IMAGE, SECRET_DETECTION_IMAGE, GITLAB_DS_IMAGE, GITLAB_CS_IMAGE,
 # RUN_FORTIFY_SAST, RUN_GITLAB_DS, RUN_SECRET_DETECTION, RUN_GITLAB_CS,
 # PYTHON_INSTALL_URL, and ENABLED_COMPONENTS (space-separated "component|version|runner|image" tuples).
@@ -111,8 +111,7 @@ Runs `scanners/preflight.sh` in its own process — a real shell script that is
 shellchecked and can be run standalone.
 
 ```bash
-CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" CATALOG_MODE="$CATALOG_MODE" \
-  APPSEC_AIRGAP="$APPSEC_AIRGAP" \
+CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" APPSEC_AIRGAP="$APPSEC_AIRGAP" \
   APPSEC_PROFILE="$APPSEC_PROFILE" CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
   bash "$SCANNERS_DIR/preflight.sh" || { return 1 2>/dev/null || exit 1; }
 ```
@@ -139,12 +138,12 @@ e.g. `| lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0
 | online | — |`. Show that table to the user verbatim before scanning, then act
 on any prefix lines printed below it.
 
-Resolution falls back to the vendored snapshots in `reference/catalog/`
-automatically when `CATALOG_MODE=offline` or the fetch fails — no manual skip
-needed. A `[offline-fallback]` source while `CATALOG_MODE=online` means the read
-failed: the PAT in `$CATALOG_AUTH_ENV` is missing, expired, or lacks `read_api`
-(see MIGRATION.md step 0). Say so — the run continues on the snapshot, but never
-present it as live.
+Components are always resolved live; if the fetch fails, resolution falls back
+to the vendored snapshots in `reference/catalog/` automatically. A
+`[offline-fallback]` source therefore always means the read failed: the instance
+is unreachable, or the PAT in `$CATALOG_AUTH_ENV` is missing, expired, or lacks
+`read_api` (see MIGRATION.md step 0). Say so — the run continues on the
+snapshot, but never present it as live.
 
 Scripts signal everything else with four prefixes. Surface the line verbatim,
 then:

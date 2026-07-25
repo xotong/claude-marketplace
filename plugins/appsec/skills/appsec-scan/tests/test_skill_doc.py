@@ -90,7 +90,6 @@ class SkillDocumentationContractTest(unittest.TestCase):
             "resolve-jq.sh",
             "container-target.sh",
             "read_api",
-            "CATALOG_MODE",
             "HAS_MISSING_REPORT",
             "NOT an all-clear",
             "load-prefs.sh",

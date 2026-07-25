@@ -115,8 +115,7 @@ touch. Full schema and switching guide: [`config/PREFERENCES.md`](config/PREFERE
 | `settings.jq.*` | host jq preferred; optional `install_url`; degrades to UNKNOWN severity summary |
 | `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
 | `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — severity threshold for the gate. Incomplete coverage fails the gate at every level except `none`, which is report-only |
-| `settings.catalog.mode` | `online` (resolve live against `gitlab_instance`) or `offline` (vendored snapshots only). **`offline` makes drift detection inert** — the contracts were generated from those same snapshots, so they always match. Use `online` wherever the instance is reachable, including an airgap with a mirrored catalogue |
-| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT for the **GitLab API only** — unrelated to image pulls. Ships `GITLAB_READ_TOKEN` because the lobster-thermidor catalogue is private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Preflight requires the named var unless `catalog.mode: offline`. Setup: [MIGRATION.md step 0](MIGRATION.md) |
+| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT for the **GitLab API only** — unrelated to image pulls. Ships `GITLAB_READ_TOKEN` because the lobster-thermidor catalogue is private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Settable per profile (next to `gitlab_instance`) so gitlab.com can require a PAT while an internal instance reads anonymously. Preflight requires the named var whenever one is named. Setup: [MIGRATION.md step 0](MIGRATION.md) |
 | `settings.container_registry.*` | env var *names* for **image registry** credentials used by GTCS. Leave the vars unset for an anonymous-pull registry |
 
 Two profiles (`APPSEC_PROFILE` overrides `default_profile`):
@@ -165,7 +164,7 @@ For the internet → airgapped platform migration runbook, see [`MIGRATION.md`](
 
 - `scripts/catalog.sh` is the **only** network path in the skill, and it only talks to
   the active profile's `gitlab_instance`. No WebFetch, no other hosts.
-- Fully offline operation: `settings.catalog.mode: offline` (or any network failure)
+- Fully offline operation: automatic fallback to vendored snapshots on any network failure
   falls back to the vendored snapshots under
   `reference/catalog/lobster-thermidor/devops/ci-catalogue/<name>/<name>/<tag>/`.
 - Scanner images are admin-pinned refs; in airgapped environments they point at the
