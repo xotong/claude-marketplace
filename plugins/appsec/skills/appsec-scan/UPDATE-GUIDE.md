@@ -161,6 +161,30 @@ dirs for reference).
 Add or refresh the provenance line at the top of each copied `README.md`:
 `<!-- Vendored snapshot: fetched YYYY-MM-DD from gitlab.com CI/CD Catalog (component tag <tag>) -->`
 
+Regenerate the checked-in contracts so input/report drift keeps being detected:
+
+```bash
+for pair in \
+  "fortify-sast/fortify-sast fortify-sast" \
+  "dependency-scanning/dependency-scanning gitlab-dependency-scanning" \
+  "secret-detection/secret-detection secret-detection" \
+  "container-scanning/container-scanning gitlab-container-scanning"; do
+  comp="${pair%% *}"; runner="${pair##* }"
+  f="plugins/appsec/skills/appsec-scan/scanners/${runner}.contract"
+  { sed -n '/^#/p' "$f"; \
+    bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh contract \
+      "lobster-thermidor/devops/ci-catalogue/${comp}" /tmp/catalog-refresh 2>/dev/null; } > "$f.new"
+  mv "$f.new" "$f"
+done
+```
+
+Review the diff: **every changed line is a real upstream change**. A new
+`input.<name>.option=` means the component gained a capability the runner may
+not implement — check the runner has a matching arm, or make it emit
+`NEEDS-MAPPING:` (see `tests/test_catalog.py::ContractCoverageTest`). Never
+hand-edit a contract to silence drift; that re-creates the false-clean these
+files exist to prevent.
+
 Run `check-drift` for each component against its runner script and update the
 runner's `# Last synced` header.
 

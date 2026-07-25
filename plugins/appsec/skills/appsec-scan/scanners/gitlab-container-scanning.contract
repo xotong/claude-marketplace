@@ -1,0 +1,24 @@
+# Contract for lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
+# Derived from the component's template.yml — the inputs it declares (defaults
+# and permitted options) and the reports it produces. catalog.sh check-drift
+# diffs the live component against this file and emits CONTRACT-DRIFT: on any
+# difference, so a new input or option cannot land unnoticed.
+#
+# report.* records what the COMPONENT produces in CI. The local pipeline may
+# deliberately consume different artifacts (we parse Fortify's .fpr directly
+# rather than running the component's gl-sast-report.json converter) — that
+# divergence is intentional; this file exists to catch upstream RENAMES.
+#
+# Regenerate after a component bump (UPDATE-GUIDE.md Scenario 6):
+#   bash scripts/catalog.sh contract container-scanning/container-scanning <cache> > scanners/gitlab-container-scanning.contract
+input.cs_dockerfile_path.default=Dockerfile
+input.cs_image.default=artifactory.com:$CI_APPLICATION_TAG
+input.dependencies.default=[]
+input.enable_mr_pipelines.default=true
+input.git_strategy.default=fetch
+input.jfrog_registry.default=
+input.job_name.default=container_scanning
+input.stage.default=security-scans
+input.tags.default=
+report.container_scanning=gl-container-scanning-report.json
+report.cyclonedx=**/gl-sbom-*.cdx.json

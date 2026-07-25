@@ -155,13 +155,20 @@ Then present the user a resolution table before scanning:
 |---|---|---|---|---|
 | sast | lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0 | online | — |
 
-- `resolve` prints `<component>@<tag> [online|offline-fallback]`. When an exact
-  pin has a newer stable tag, it prints `ADVISORY: <component> pinned <X>,
-  newer stable <Y> available` — surface verbatim.
-- `check-drift` prints `DRIFT:` lines when runner lags the catalog — surface verbatim.
-- `catalog.sh` caches `AGENTS.md` per component (offer to summarize on request).
-- Resolved `template.yml`/`README.md` are advisory only — never derive Step 4
-  analyzer images from catalog; they were fixed in Step 1.5.
+`resolve` prints `<component>@<tag> [online|offline-fallback]`. Scripts signal
+everything else with four prefixes. Surface the line verbatim, then:
+
+| Prefix | Required action |
+|---|---|
+| `ADVISORY:` | a newer stable tag exists; report it, change nothing now |
+| `DRIFT:` | pinned image lags the component; report, never auto-bump `image:` |
+| `CONTRACT-DRIFT:` | the component's inputs or reports changed vs `scanners/<runner>.contract`; explain what it affects and ask before scanning |
+| `NEEDS-MAPPING:` | the component supports something no runner implements; stop and ask |
+
+`template.yml` is the only machine source of truth. `AGENTS.md` is cached per
+component for guidance (offer to summarize) but its prose lags the template —
+never derive behaviour from it. Never derive Step 4 analyzer images from the
+catalog; they were fixed in Step 1.5.
 
 ---
 

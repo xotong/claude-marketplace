@@ -63,12 +63,19 @@ case "${FORTIFY_LANGUAGE}" in
       -Dcom.fortify.sca.follow.imports=false \
       "${SOURCE_PATH}"
     ;;
+  go)
+    # The component declares `go` (see fortify-sast.contract) but the correct
+    # sourceanalyzer translation for Go is not mirrored here yet. Fail loudly
+    # and specifically rather than pretending the language is unknown.
+    echo "NEEDS-MAPPING: component fortify-sast declares language 'go' but this runner has no scan command for it. Add a go) arm mirroring the component's script block, then regenerate fortify-sast.contract." >&2
+    exit 3
+    ;;
   "")
     echo "ERROR: FORTIFY_LANGUAGE is required (maven|gradle|python|javascript)" >&2
     exit 2
     ;;
   *)
-    echo "ERROR: unsupported FORTIFY_LANGUAGE=${FORTIFY_LANGUAGE} (expected maven|gradle|python|javascript)" >&2
+    echo "ERROR: unsupported FORTIFY_LANGUAGE=${FORTIFY_LANGUAGE} (expected maven|gradle|python|javascript|go)" >&2
     exit 2
     ;;
 esac

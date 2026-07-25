@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import re
 import unittest
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_DIR.parents[3]
 CATALOG_SCRIPT = SKILL_DIR / "scripts" / "catalog.sh"
+SCANNERS_DIR = SKILL_DIR / "scanners"
 REFERENCE_CATALOG = SKILL_DIR / "reference" / "catalog"
 SECRET_COMPONENT = "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection"
 DS_COMPONENT = "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning"
@@ -288,3 +290,58 @@ class VendoredSnapshots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractCoverageTest(unittest.TestCase):
+    """The checked-in contracts are only useful if the runners honour them."""
+
+    CONTRACTS = {
+        "fortify-sast": "fortify-sast",
+        "gitlab-dependency-scanning": "dependency-scanning",
+        "secret-detection": "secret-detection",
+        "gitlab-container-scanning": "container-scanning",
+    }
+
+    def test_every_contract_has_a_runner(self) -> None:
+        for runner in self.CONTRACTS:
+            contract = SCANNERS_DIR / f"{runner}.contract"
+            self.assertTrue(contract.is_file(), f"{contract.name} missing")
+            self.assertTrue((SCANNERS_DIR / f"{runner}.sh").is_file())
+
+    def test_contracts_match_vendored_templates(self) -> None:
+        # Guards against someone hand-editing a contract instead of regenerating
+        # it, which would silently suppress real drift.
+        for runner, component in self.CONTRACTS.items():
+            path = f"lobster-thermidor/devops/ci-catalogue/{component}/{component}"
+            result = run(
+                ["bash", str(CATALOG_SCRIPT), "contract", path, "/nonexistent"],
+                cwd=REPO_ROOT, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # the run() helper folds stderr in; keep only contract lines
+            derived = sorted(
+                l for l in result.stdout.splitlines()
+                if l.startswith(("input.", "report."))
+            )
+            checked_in = sorted(
+                l for l in (SCANNERS_DIR / f"{runner}.contract").read_text().splitlines()
+                if l.strip() and not l.startswith("#")
+            )
+            self.assertEqual(derived, checked_in, f"{runner}.contract is stale — regenerate it")
+
+    def test_fortify_runner_acknowledges_every_declared_language(self) -> None:
+        # A language the component offers but the runner silently ignores is the
+        # exact false-clean this whole mechanism exists to prevent. Each one must
+        # either run or fail with NEEDS-MAPPING.
+        contract = (SCANNERS_DIR / "fortify-sast.contract").read_text().splitlines()
+        languages = [
+            line.split("=", 1)[1] for line in contract
+            if line.startswith("input.language.option=")
+        ]
+        self.assertIn("go", languages, "expected the component to declare go")
+        runner = (SCANNERS_DIR / "fortify-sast.sh").read_text()
+        for language in languages:
+            self.assertTrue(
+                re.search(rf"^\s*{re.escape(language)}\)", runner, re.MULTILINE),
+                f"fortify-sast.sh has no case arm for declared language {language!r}",
+            )

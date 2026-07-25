@@ -1,0 +1,37 @@
+# Contract for lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning
+# Derived from the component's template.yml — the inputs it declares (defaults
+# and permitted options) and the reports it produces. catalog.sh check-drift
+# diffs the live component against this file and emits CONTRACT-DRIFT: on any
+# difference, so a new input or option cannot land unnoticed.
+#
+# report.* records what the COMPONENT produces in CI. The local pipeline may
+# deliberately consume different artifacts (we parse Fortify's .fpr directly
+# rather than running the component's gl-sast-report.json converter) — that
+# divergence is intentional; this file exists to catch upstream RENAMES.
+#
+# Regenerate after a component bump (UPDATE-GUIDE.md Scenario 6):
+#   bash scripts/catalog.sh contract dependency-scanning/dependency-scanning <cache> > scanners/gitlab-dependency-scanning.contract
+input.allow_failure.default=true
+input.analyzer_log_level.default=info
+input.analyzer_log_level.option=debug
+input.analyzer_log_level.option=error
+input.analyzer_log_level.option=fatal
+input.analyzer_log_level.option=info
+input.analyzer_log_level.option=warn
+input.job-name.default=dependency-scanning
+input.language.option=go
+input.language.option=gradle
+input.language.option=javascript
+input.language.option=maven
+input.language.option=python
+input.maven-setting-path.default=settings.xml
+input.pip-index-url.default=https://pypi.org/simple/
+input.python-version.default=3.12
+input.resolution_job_registry.default=registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/gitlab-scanners
+input.resolution_job_tag.default=toolbox:1.0.0
+input.resolution_job_variant.default=openjdk17
+input.resolution_job_variant.option=openjdk17
+input.resolution_job_variant.option=openjdk21
+input.stage.default=test
+report.cyclonedx=**/gl-sbom-*.cdx.json
+report.dependency_scanning=gl-dependency-scanning-report.json
