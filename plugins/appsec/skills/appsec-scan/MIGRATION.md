@@ -46,18 +46,25 @@ bash plugins/appsec/skills/appsec-scan/scripts/load-prefs.sh \
 # 3. LIVE resolution against gitlab.com — the actual PAT test.
 #    Expect: "<component>@<tag> [online]"
 #    "[offline-fallback]" means the token was rejected; fix before continuing.
+#    QUOTE '~latest' — zsh (the macOS default shell) expands a bare ~latest
+#    as a home directory and the command dies with "no such user".
 bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
   resolve https://gitlab.com \
   lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast \
-  ~latest /tmp/cat-live GITLAB_READ_TOKEN
+  '~latest' /tmp/cat-live GITLAB_READ_TOKEN
 
 # 4. Orchestration without containers: every scanner command printed,
-#    credentials shown masked
-APPSEC_PROFILE=catalog \
+#    credentials shown masked.
+#    RUNTIME is required: run-scan.sh self-loads scanner-preferences.yaml, but
+#    load-prefs.sh does not emit RUNTIME — normally the SKILL.md flow exports it
+#    (Step 1). Standalone, pass it yourself or the run exits 2.
+RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
+  APPSEC_PROFILE=catalog \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh --dry-run
 
 # 5. One real scan against a throwaway repo (pulls the public images)
-APPSEC_PROFILE=catalog \
+RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
+  APPSEC_PROFILE=catalog \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh
 
 # 6. Test suite
@@ -66,7 +73,23 @@ python3 -m pytest plugins/appsec/skills/appsec-scan/tests/ -q
 
 Check 3 is the one that matters: `[online]` proves live catalog resolution works with your PAT. `[offline-fallback]` is the skill degrading gracefully, **not** a pass.
 
-Only after all six pass, continue to step 1. Then revoke the PAT — it has no role inside the airgap, where step 4 sets `catalog.mode: offline`.
+### 0.4 — Compare live tags against the vendored snapshots
+
+While you still have live access, resolve all four components and compare what came back with `reference/catalog/`. The vendored snapshots are what the airgap will actually serve, so any gap here becomes a stale component in there.
+
+```bash
+for p in fortify-sast/fortify-sast dependency-scanning/dependency-scanning \
+         secret-detection/secret-detection container-scanning/container-scanning; do
+  bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh resolve https://gitlab.com \
+    "lobster-thermidor/devops/ci-catalogue/$p" '~latest' /tmp/cat-live GITLAB_READ_TOKEN
+done
+diff <(cd /tmp/cat-live/lobster-thermidor/devops/ci-catalogue && find . -mindepth 3 -maxdepth 3 -type d | sort) \
+     <(cd plugins/appsec/skills/appsec-scan/reference/catalog/lobster-thermidor/devops/ci-catalogue && find . -mindepth 3 -maxdepth 3 -type d | sort)
+```
+
+Any difference means a snapshot is behind. Refresh it via UPDATE-GUIDE.md Scenario 6 **before** step 1 — you cannot do it once you are inside the airgap.
+
+Only after all six checks pass, continue to step 1. Then revoke the PAT — it has no role inside the airgap, where step 4 sets `catalog.mode: offline`.
 
 ---
 
@@ -208,11 +231,14 @@ CATALOG_MODE=offline bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
   /tmp/cat-test ""
 
 # 3. Dry-run (no containers, verify orchestration)
-APPSEC_PROFILE=company \
+#    RUNTIME must be passed explicitly — see step 0.3 check 4.
+RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
+  APPSEC_PROFILE=company \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh --dry-run
 
 # 4. One live scan (pulls images from internal registry, runs all enabled scanners)
-APPSEC_PROFILE=company \
+RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
+  APPSEC_PROFILE=company \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh
 
 # 5. pytest
