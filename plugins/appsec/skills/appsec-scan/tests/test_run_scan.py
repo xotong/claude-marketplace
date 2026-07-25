@@ -135,13 +135,20 @@ class RunScanDryRunTest(unittest.TestCase):
                 FORTIFY_SAST_IMAGE="",
             )
             result = self.run_scan(repo, "--dry-run", env=env)
+            # read inside the context — the temp dir is removed on exit
+            skips = (repo / ".appsec-results" / "scan-skips").read_text()
 
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn(
             "WARNING: [Fortify SCA] Enabled but FORTIFY_SAST_IMAGE is empty",
             result.stderr,
         )
-        self.assertIn("WARNING: no scanners ran", result.stderr)
+        # sast is enabled, so it is EXPECTED up front and its absence is a
+        # coverage gap with an actionable reason — not a bare "no scanners ran".
+        # Letting an enabled-but-unrun category vanish is how the false all-clear
+        # happened (gate PASSED with 2 of 4 scanners never executed).
+        self.assertIn("sast\t", skips)
+        self.assertIn("re-run this skill", skips)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_only_disabled_category_exits_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -177,11 +184,13 @@ class RunScanDryRunTest(unittest.TestCase):
             env.pop("APPSEC_PROFILE")
             result = self.run_scan(Path(tmp), "--dry-run", env=env)
 
+        # RUNTIME is now self-detected when absent, so it is no longer reported
+        # missing — only genuinely unrecoverable vars are. Asserting on
+        # APPSEC_PROFILE alone also keeps this test independent of whether a
+        # container runtime happens to be installed on the host.
         self.assertEqual(result.returncode, 2)
-        self.assertIn(
-            "ERROR: required environment variables are unset: RUNTIME APPSEC_PROFILE",
-            result.stderr,
-        )
+        self.assertIn("required environment variables are unset", result.stderr)
+        self.assertIn("APPSEC_PROFILE", result.stderr)
 
     def test_dry_run_redacts_registry_password(self) -> None:
         sentinel = "SUPERSECRET123"

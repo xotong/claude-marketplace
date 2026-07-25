@@ -226,3 +226,35 @@ class GitlabSastSmokeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShellContractTest(unittest.TestCase):
+    """SKILL.md snippets run on hosts whose default shell is zsh."""
+
+    def test_no_unquoted_word_split_loops(self) -> None:
+        # `for x in $VAR` word-splits in bash but NOT in zsh (macOS default).
+        # The old Step 2.5 loop silently resolved 1 of 4 components and fed the
+        # remainder into check-drift as an image arg, producing a bogus DRIFT
+        # line. Iteration over emitted lists belongs in a bash script.
+        offenders = [
+            line.strip() for line in SKILL_TEXT.splitlines()
+            if re.search(r"^\s*for\s+\w+\s+in\s+\$[A-Za-z_]", line)
+        ]
+        self.assertEqual(offenders, [], f"unquoted word-split loop in SKILL.md: {offenders}")
+
+    def test_does_not_derive_skill_dir_from_bash_source(self) -> None:
+        # BASH_SOURCE/$0 resolve to the agent's shell, not to SKILL.md, and
+        # produced SKILL_DIR=/bin. Prose may warn about it; runnable code may not
+        # use it.
+        in_fence, offenders = False, []
+        for line in SKILL_TEXT.splitlines():
+            if line.startswith("```"):
+                in_fence = not in_fence
+                continue
+            if in_fence and "BASH_SOURCE" in line:
+                offenders.append(line.strip())
+        self.assertEqual(offenders, [], f"BASH_SOURCE used in a SKILL.md snippet: {offenders}")
+
+    def test_states_the_shell_contract(self) -> None:
+        self.assertIn("Shell contract", SKILL_TEXT)
+        self.assertIn("zsh", SKILL_TEXT)

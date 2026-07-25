@@ -22,8 +22,11 @@ if [ -n "${CATALOG_AUTH_ENV:-}" ] && [ "${CATALOG_MODE:-online}" != offline ]; t
 fi
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if ! RT="$(CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}" "$SKILL_DIR/scripts/detect-runtime.sh" 2>/dev/null)"; then
-  ERRORS+=("no container runtime: install docker or podman, or set settings.container_runtime")
+# --require-daemon: binary presence is not a usable environment. Without this,
+# a wedged Docker Desktop sailed through preflight and failed later as a hanging
+# pull, contradicting "never start scanners against an incomplete environment".
+if ! RT="$(CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}" "$SKILL_DIR/scripts/detect-runtime.sh" --require-daemon 2>&1)"; then
+  ERRORS+=("container runtime unusable: ${RT#ERROR: }")
 fi
 
 # ponytail: normalize unset to empty before trimming a trailing slash under set -u.
