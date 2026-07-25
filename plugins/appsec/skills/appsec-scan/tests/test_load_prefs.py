@@ -79,7 +79,7 @@ class LoadPrefsTest(unittest.TestCase):
         self.assertEqual(values["RUN_GITLAB_CS"], "true")
         self.assertEqual(
             values["FORTIFY_SAST_IMAGE"],
-            "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review",
+            "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review",
         )
         self.assertEqual(values["GITLAB_INSTANCE"], "https://gitlab.com")
         self.assertEqual(values["PYTHON_INSTALL_URL"], "")

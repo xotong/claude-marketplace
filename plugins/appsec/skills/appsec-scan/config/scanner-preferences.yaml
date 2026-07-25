@@ -83,7 +83,9 @@ profiles:
       sast:
         component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
         version: ~latest
-        image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review
+        # Images live in the catalogue's docker-images project, NOT in the
+        # component project — fortify-sast has no container registry at all.
+        image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
         runner: fortify-sast.sh
         enabled: true
       dependency_scanning:

@@ -14,9 +14,9 @@ The scanners are the four components of the private GitLab CI/CD Catalog at
 | Category | Catalog component | Shipped version | Runner | What runs locally |
 |---|---|---|---|---|
 | SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.0) | `fortify-sast.sh` | `fortify-sca` image; multi-language: maven, gradle, python, javascript |
-| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.0.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output |
+| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.1.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output |
 | Secret Detection | `…/secret-detection/secret-detection` | `~latest` (1.0.0) | `secret-detection.sh` | GitLab-native Gitleaks-based analyzer |
-| Container Scanning | `…/container-scanning/container-scanning` | `~latest` (1.0.0) | `gitlab-container-scanning.sh` | GTCS; registry image or locally built archive |
+| Container Scanning | `…/container-scanning/container-scanning` | `~latest` (1.1.0) | `gitlab-container-scanning.sh` | GTCS; registry image or locally built archive |
 
 (`…` = `lobster-thermidor/devops/ci-catalogue`. Component paths are
 `<project-path>/<template-name>`; every component repo ships `templates/<name>.yml`,
@@ -34,7 +34,7 @@ sequencing, result interpretation, and the fix loop.
 
 ```mermaid
 flowchart TD
-    S1["Step 1 — locate skill directories"] --> S15["Step 1.5 — load-prefs.sh parses scanner-preferences.yaml<br/>emits profile env, 4 RUN_* flags, ENABLED_COMPONENTS triples"]
+    S1["Step 1 — locate skill directories"] --> S15["Step 1.5 — load-prefs.sh parses scanner-preferences.yaml<br/>emits profile env, 4 RUN_* flags, ENABLED_COMPONENTS tuples"]
     S15 --> RT["detect-runtime.sh — docker or podman"]
     RT --> S2["Step 2 — preflight.sh environment checks"]
     S2 --> S25["Step 2.5 — catalog.sh resolve + check-drift per component<br/>(version-aware: ~latest or exact pin)"]
@@ -55,7 +55,7 @@ logic ships with the skill, not baked into images.
 ## Component resolution (Step 2.5)
 
 `load-prefs.sh` emits `ENABLED_COMPONENTS` as space-separated
-**`component|version|runner`** triples. For each triple, `catalog.sh` resolves the
+**`component|version|runner|image`** tuples. For each triple, `catalog.sh` resolves the
 component against the active profile's `gitlab_instance` — live on every run — and
 caches `template.yml`, `README.md`, and `AGENTS.md` per resolved tag. The catalog is
 **advisory**: the image that actually runs is always the admin-pinned `image:` from
@@ -86,7 +86,7 @@ sequenceDiagram
         CS-->>M: component@tag [offline-fallback]
     end
     M->>CS: check-drift component cache runner
-    CS-->>M: DRIFT lines (runner &gt;90 days stale, image tag mismatch)
+    CS-->>M: DRIFT lines (runner &gt;90 days stale, configured image != template image)
 ```
 
 Auth uses the `read_api` PAT in the env var named by `settings.catalog.auth_token_env`
@@ -123,7 +123,7 @@ Each category block is five keys:
 sast:
   component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
   version: "~latest"       # or an exact tag, e.g. "25.2.0"
-  image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review
+  image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
   runner: fortify-sast.sh
   enabled: true
 ```

@@ -10,7 +10,7 @@ spec:
     source-path:
       default: src
       description: "The path of the source code that you want to scan"
-    allow-failure: 
+    allow-failure:
       default: true
       type: boolean
       description: "Allows the job to not fail if set to false"
@@ -29,11 +29,12 @@ spec:
         - gradle
         - python
         - javascript
-        
+        - go
+
     # Registry Inputs
     registry:
       description: "Define image registry"
-      default: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/
+      default: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/
     image:
       default: fortify-sca
       description: "Defines a job image"
@@ -42,7 +43,7 @@ spec:
       description: "Defines a job image tag"
     variant:
       default: jdk17-review
-      description: "Define JDK version used for compilation"    
+      description: "Define JDK version used for compilation"
       options:
         - jdk17-review
         - jdk21-review
@@ -54,7 +55,7 @@ spec:
     git-branch-name:
       default: $CI_COMMIT_REF_NAME
       description: "Name of the git branch. This branch will be used for analysis in SRM, SRM does not support tags as branch names."
-    
+
     # Maven Inputs
     maven-setting-path:
       default: settings.xml
@@ -69,8 +70,6 @@ spec:
       description: "Define the python version"
 
 ---
-# variables:
-#   LANGUAGE: $[[ inputs.language ]]
 
 include:
   - component: $CI_SERVER_FQDN/lobster-thermidor/devops/ci-catalogue/srm-report-upload/srm-report-upload@~latest
@@ -89,48 +88,27 @@ include:
   dependencies: []
   script: |
     echo $[[ inputs.source-path ]]
-
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -scan -f $[[ inputs.downloaded-scan-report-name ]] $(if [ -e "filter_list.txt" ]; then echo "-filter filter_list.txt"; fi)
+    sourceanalyzer -b $CI_JOB_ID -scan -f $[[ inputs.downloaded-scan-report-name ]] $(if [ -e "filter_list.txt" ]; then echo "-filter filter_list.txt"; fi)
     BIRTReportGenerator -format HTML -output fortify.html -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "Developer Workbook"
     BIRTReportGenerator -format PDF -output fortify.pdf -source $[[ inputs.downloaded-scan-report-name ]] -template "Developer Workbook"
     ReportGenerator -format XML -f fortify.xml -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "DeveloperWorkbook.xml"
     result=$(FPRUtility -information -signature -search -query "[fortify priority order]:critical OR [fortify priority order]:high AND [issue age]:!removed AND suppressed:false" -filterSet "Security Auditor View" -project $[[ inputs.downloaded-scan-report-name ]]);
     echo $result
-    
-    if [ "$result" == "No issues matched search query." ]; then
-      echo "No critical or high issues present"
-    else 
-      echo "Critical or high issues present"
-      exit 1
-    fi
-    
- 
+    echo "Running conversion script and uploading to gitlab vulnerability dashboard..."
+    python3 /usr/local/bin/fortify_to_gitlab_sast.py $[[ inputs.downloaded-scan-report-name ]] -o gl-sast-report.json --prepend-path "$[[ inputs.source-path ]]"
+
   allow_failure: $[[ inputs.allow-failure ]]
   artifacts:
     name: fortify-results
+    reports:
+      sast: gl-sast-report.json
     paths:
       - fortify.html
       - fortify.pdf
       - fortify.xml
+      - gl-sast-report.json
       - $[[ inputs.downloaded-scan-report-name ]]
     when: always
-
-## Upload SAST Results to Gitlab Dashboard
-$[[ inputs.job-name ]]-$[[ inputs.language ]]-gitlab-upload:
-  stage: $[[ inputs.stage ]]
-  image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-converter:1.0.0-test
-  needs: 
-    - job: $[[ inputs.job-name ]]-$[[ inputs.language ]]
-      artifacts: true
-  script: 
-    - echo "Running conversion script and uploading to gitlab vulnerability dashboard..."
-    - python3 /usr/local/bin/fortify_to_gitlab_sast.py $[[ inputs.downloaded-scan-report-name ]] -o gl-sast-report.json --strip-prefix /src/
-  artifacts:
-    reports:
-      sast: gl-sast-report.json
-    paths:
-      - gl-sast-report.json
-    expire_in: 1 week 
 
 
 # For Maven
@@ -139,8 +117,8 @@ $[[ inputs.job-name ]]-maven:
   rules:
     - if: '"$[[ inputs.language ]]" == "maven"'
   before_script: |
-    sourceanalyzer -debug -verbose -b $CI_PROJECT_ROOT_NAMESPACE  -clean
-    sourceanalyzer -debug -verbose -b $CI_PROJECT_ROOT_NAMESPACE  mvn clean install -s $[[ inputs.maven-setting-path ]] "-DskipTests"
+    sourceanalyzer -debug -verbose -b $CI_JOB_ID  -clean
+    sourceanalyzer -debug -verbose -b $CI_JOB_ID  mvn clean install -s $[[ inputs.maven-setting-path ]] "-DskipTests"
 
 # For gradle
 $[[ inputs.job-name ]]-gradle:
@@ -148,9 +126,9 @@ $[[ inputs.job-name ]]-gradle:
   rules:
     - if: '"$[[ inputs.language ]]" == "gradle"'
   before_script: |
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -clean
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE $[[ inputs.source-path ]]/gradlew -p $[[ inputs.source-path ]] clean assemble -Partifactory_user=$ARTIFACTORY_USER -Partifactory_password=$ARTIFACTORY_PASSWORD
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE $[[ inputs.source-path ]]
+    sourceanalyzer -b $CI_JOB_ID -clean
+    sourceanalyzer -b $CI_JOB_ID $[[ inputs.source-path ]]/gradlew -p $[[ inputs.source-path ]] clean assemble -Partifactory_user=$ARTIFACTORY_USER -Partifactory_password=$ARTIFACTORY_PASSWORD
+    sourceanalyzer -b $CI_JOB_ID $[[ inputs.source-path ]]
 
 # For Python
 $[[ inputs.job-name ]]-python:
@@ -158,8 +136,8 @@ $[[ inputs.job-name ]]-python:
   rules:
     - if: '"$[[ inputs.language ]]" == "python"'
   before_script: |
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -clean
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -debug-verbose -python-path .venv/lib64/python$[[ inputs.python-version ]]/site-packages/ -python-version 3 $[[ inputs.source-path ]]
+    sourceanalyzer -b $CI_JOB_ID -clean
+    sourceanalyzer -b $CI_JOB_ID -debug-verbose -python-path .venv/lib64/python$[[ inputs.python-version ]]/site-packages/ -python-version 3 $[[ inputs.source-path ]]
 
 # For JS
 $[[ inputs.job-name ]]-javascript:
@@ -167,5 +145,14 @@ $[[ inputs.job-name ]]-javascript:
   rules:
     - if: '"$[[ inputs.language ]]" ==  "javascript"'
   before_script: |
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -clean
-    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -debug-verbose -Dcom.fortify.sca.follow.imports=false $[[ inputs.source-path ]]
+    sourceanalyzer -b $CI_JOB_ID -clean
+    sourceanalyzer -b $CI_JOB_ID -debug-verbose -Dcom.fortify.sca.follow.imports=false $[[ inputs.source-path ]]
+
+$[[ inputs.job-name ]]-go:
+  extends: .fortify-base
+  rules:
+    - if: '"$[[ inputs.language ]]" == "go"'
+  before_script: |
+    sourceanalyzer -b $CI_JOB_ID -clean
+    (cd $[[ inputs.source-path ]] && go mod download)
+    sourceanalyzer -b $CI_JOB_ID -debug-verbose $[[ inputs.source-path ]]

@@ -100,7 +100,7 @@ categories:
   sast:
     component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
     version: ~latest          # ~latest OR an exact tag e.g. "25.2.0"
-    image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review
+    image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
     runner: fortify-sast.sh
     enabled: true
 ```

@@ -217,7 +217,7 @@ Before committing a scanner update, verify it works end-to-end:
 
 ```bash
 # 1. Set required env vars
-export FORTIFY_SAST_IMAGE="registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review"
+export FORTIFY_SAST_IMAGE="registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review"
 export FORTIFY_LANGUAGE="maven"
 
 # 2. Resolve scanner dir

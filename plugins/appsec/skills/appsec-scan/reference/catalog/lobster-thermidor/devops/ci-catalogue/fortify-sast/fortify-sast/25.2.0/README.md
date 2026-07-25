@@ -1,3 +1,4 @@
+<!-- Vendored snapshot: fetched 2026-07-25 from gitlab.com CI/CD Catalog (component tag 25.2.0) -->
 # Fortify SAST Pipeline Component
 
 A GitLab CI/CD pipeline component for integrating Fortify Static Application Security Testing (SAST) into your software development workflow. This component provides automated security scanning for multiple programming languages and integrates with both Gitlab vulnerability dashboard and Software Risk Measurement (SRM) for vulnerability tracking.
