@@ -43,7 +43,11 @@ class CatalogSelfTest(unittest.TestCase):
         self.assertIn("online path ok", result.stdout)
         self.assertIn("pinned path advisory ok", result.stdout)
         self.assertIn("offline-fallback path ok", result.stdout)
-        self.assertIn("check-drift DRIFT line ok", result.stdout)
+        self.assertIn("check-drift runner-staleness DRIFT ok", result.stdout)
+        self.assertIn("image drift literal mismatch ok", result.stdout)
+        self.assertIn("image drift literal match silent ok", result.stdout)
+        self.assertIn("image drift inputs-interpolation ok", result.stdout)
+        self.assertIn("image drift underivable reported ok", result.stdout)
 
 
 class CatalogTagSelection(unittest.TestCase):

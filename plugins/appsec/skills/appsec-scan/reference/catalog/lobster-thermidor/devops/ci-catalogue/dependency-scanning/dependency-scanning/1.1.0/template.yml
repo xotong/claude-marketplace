@@ -1,0 +1,266 @@
+spec:
+  inputs:
+    job-name:
+      type: string
+      default: 'dependency-scanning'
+      description: "The name of the dependency scanning job."
+    stage:
+      type: string
+      default: test
+      description: "The stage of the dependency scanning job."
+    allow_failure:
+      type: boolean
+      default: true
+      description: "When true, a failed dependency scanning job does not fail the pipeline. When false, a failure blocks the pipeline."
+    language:
+      description: "The project language used. Accepted languages: python, javascript, maven, gradle"
+      options:
+        - maven
+        - gradle
+        - python
+        - javascript
+        - go
+
+    # Settings for all dependency resolution job
+    resolution_job_registry:
+      default: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/gitlab-scanners
+      description: "Defines a job image"
+    resolution_job_variant:
+      default: openjdk17
+      description: "Define JDK version used for compilation"    
+      options:
+        - openjdk17
+        - openjdk21
+    resolution_job_tag:
+      default: "toolbox:1.0.0"
+      description: "Defines a job image tag"    
+    analyzer_log_level:
+      type: string
+      default: "info"
+      description: "Logging level used by the analyzer. The options are fatal, error, warn, info, debug."
+      options:
+        - info
+        - debug
+        - warn
+        - error
+        - fatal
+
+    # Settings for maven resolution job.
+    maven-setting-path:
+      default: settings.xml
+      description: "Define the maven settings file"
+
+    # Settings for python resolution job.
+    pip-index-url:
+      default: "https://pypi.org/simple/"
+      description: "Define the pip index url"
+    python-version:
+      default: "3.12"
+      description: "Define the python version" 
+---
+
+variables:
+  ANALYZER_IMAGE_PREFIX: "registry.gitlab.com/security-products"
+  ANALYZER_IMAGE_NAME: "dependency-scanning"
+  ANALYZER_IMAGE_VERSION: "2"
+
+# ----------------------------------------------------------------
+# Main Dependency Scanning job
+# This job is mandatory and responsible for doing the complete dependency analysis
+
+"$[[ inputs.job-name ]]":
+  variables:
+    DS_ANALYZER_IMAGE: $ANALYZER_IMAGE_PREFIX/$ANALYZER_IMAGE_NAME:$ANALYZER_IMAGE_VERSION
+    LANGUAGE: $[[ inputs.language ]]
+  image: "$DS_ANALYZER_IMAGE"
+  stage: $[[ inputs.stage ]]
+  allow_failure: $[[ inputs.allow_failure ]]
+  script:
+    - export DS_MAX_DEPTH=-1
+    - export DS_EXCLUDED_PATHS="**/test,**/tests,**/tmp,**/node_modules,**/.git"
+    - export DS_INCLUDE_DEV_DEPENDENCIES=true
+    - export DS_API_TIMEOUT=15
+    - export DS_API_SCAN_DOWNLOAD_DELAY=3
+    - export DS_ENABLE_MANIFEST_FALLBACK=true
+    - export SECURE_LOG_LEVEL="${SECURE_LOG_LEVEL:-$[[ inputs.analyzer_log_level ]]}"
+    - /analyzer run
+  after_script: |
+    sed -i 's/"version": "15.2.4"/"version": "15.2.3"/' gl-dependency-scanning-report.json
+  artifacts:
+    access: "developer"
+    paths:
+      - "**/gl-sbom-*.cdx.json"
+      - "gl-dependency-scanning-report.json"
+    reports:
+      cyclonedx: "**/gl-sbom-*.cdx.json"
+      dependency_scanning: 'gl-dependency-scanning-report.json'
+  rules:
+    - if: '$LANGUAGE == "maven" || $LANGUAGE == "gradle" || $LANGUAGE == "python" || $LANGUAGE == "javascript" || $LANGUAGE == "go"'
+
+# ----------------------------------------------------------------
+# Dependency Resolution jobs
+# These jobs resolve a dependency graph for projects without a lockfile.
+
+# ----------------------------------------------------------------
+# Dependency Resolution for Maven
+"$[[ inputs.job-name ]]-maven":
+  variables:
+    DS_ANALYZER_IMAGE: $ANALYZER_IMAGE_PREFIX/$ANALYZER_IMAGE_NAME:$ANALYZER_IMAGE_VERSION
+    DS_MAVEN_RESOLUTION_IMAGE: $[[ inputs.resolution_job_registry ]]/$[[ inputs.resolution_job_variant ]]-$[[ inputs.resolution_job_tag ]]
+    LANGUAGE: $[[ inputs.language ]]
+    DS_MAVEN_RESOLUTION_EXPORTED_VARS: ADDITIONAL_CA_CERT_BUNDLE DS_MAX_DEPTH DS_EXCLUDED_PATHS DS_INCLUDE_DEV_DEPENDENCIES SECURE_LOG_LEVEL MAVEN_ARGS
+  image: $DS_MAVEN_RESOLUTION_IMAGE
+  stage: .pre
+  allow_failure: true
+  services:
+    - name: $DS_ANALYZER_IMAGE
+      alias: ds-analyzer
+      command: ["/analyzer", "dependency-resolution-service", "--project-types", "maven"]
+  script:
+    - export SECURE_LOG_LEVEL="${SECURE_LOG_LEVEL:-$[[ inputs.analyzer_log_level ]]}"
+    - export MAVEN_ARGS="-s $[[ inputs.maven-setting-path ]]"
+
+    # Create the shared directory to communicate with service container.
+    # World-write needed as main container and service container may run as different UIDs
+    - mkdir -p .gitlab_ds && chmod 777 .gitlab_ds
+    - touch .gitlab_ds/env && chmod 666 .gitlab_ds/env
+    # Explicitly expose relevant variables to the service container via an env file
+    - for var in $DS_MAVEN_RESOLUTION_EXPORTED_VARS; do printf '%s=%s\n' "$var" "$(printenv "$var")"; done > .gitlab_ds/env
+    # Signal rea API Kdiness for service to start
+    - touch ".gitlab_ds/ready_${CI_JOB_ID}" && chmod 666 ".gitlab_ds/ready_${CI_JOB_ID}"
+
+    # Wait for dependency_resolution.sh to be generated by the service container
+    - |
+      TIMEOUT=60
+      ELAPSED=0
+      while [ ! -f .gitlab_ds/dependency_resolution.sh ] && [ $ELAPSED -lt $TIMEOUT ]; do
+        sleep 1
+        ELAPSED=$((ELAPSED + 1))
+      done
+    
+      # Display service container logs in main job logs
+      cat .gitlab_ds/service.log || echo "WARNING: no service logs found"
+
+      if [ ! -f .gitlab_ds/dependency_resolution.sh ]; then
+        echo "ERROR: .gitlab_ds/dependency_resolution.sh script not found after $TIMEOUT seconds"
+        exit 1
+      fi
+    - sh .gitlab_ds/dependency_resolution.sh
+
+  artifacts:
+    paths:
+      - '**/maven.graph.json'
+    when: always
+  rules:
+    - if: '$LANGUAGE == "maven"'
+
+# ----------------------------------------------------------------
+# Dependency Resolution for Gradle
+"$[[ inputs.job-name ]]-gradle":
+  variables:
+    DS_ANALYZER_IMAGE: $ANALYZER_IMAGE_PREFIX/$ANALYZER_IMAGE_NAME:$ANALYZER_IMAGE_VERSION
+    DS_GRADLE_RESOLUTION_IMAGE: $[[ inputs.resolution_job_registry ]]/$[[ inputs.resolution_job_variant ]]-$[[ inputs.resolution_job_tag ]]
+    DS_GRADLE_RESOLUTION_EXPORTED_VARS: ADDITIONAL_CA_CERT_BUNDLE DS_MAX_DEPTH DS_EXCLUDED_PATHS DS_INCLUDE_DEV_DEPENDENCIES GRADLE_CLI_OPTS SECURE_LOG_LEVEL
+    LANGUAGE: $[[ inputs.language ]]
+  image: $DS_GRADLE_RESOLUTION_IMAGE
+  stage: .pre
+  allow_failure: true
+  services:
+    - name: $DS_ANALYZER_IMAGE
+      alias: ds-analyzer
+      command: ["/analyzer", "dependency-resolution-service", "--project-types", "gradle"]
+  script:
+    - export SECURE_LOG_LEVEL="${SECURE_LOG_LEVEL:-$[[ inputs.analyzer_log_level ]]}"
+    - export GRADLE_CLI_OPTS="-Partifactory_user=$ARTIFACTORY_USERNAME -Partifactory_password=$ARTIFACTORY_PASSWORD"
+    
+    # Create the shared directory to communicate with service container.
+    # World-write needed as main container and service container may run as different UIDs
+    - mkdir -p .gitlab_ds && chmod 777 .gitlab_ds
+    - touch .gitlab_ds/env && chmod 666 .gitlab_ds/env
+    # Explicitly expose relevant variables to the service container via an env file
+    - for var in $DS_GRADLE_RESOLUTION_EXPORTED_VARS; do printf '%s=%s\n' "$var" "$(printenv "$var")"; done > .gitlab_ds/env
+    # Signal readiness for service to start
+    - touch ".gitlab_ds/ready_${CI_JOB_ID}" && chmod 666 ".gitlab_ds/ready_${CI_JOB_ID}"
+
+    # Wait for dependency_resolution.sh to be generated by the service container
+    - |
+      TIMEOUT=60
+      ELAPSED=0
+      while [ ! -f .gitlab_ds/dependency_resolution.sh ] && [ $ELAPSED -lt $TIMEOUT ]; do
+        sleep 1
+        ELAPSED=$((ELAPSED + 1))
+      done
+
+      # Display service container logs in main job logs
+      cat .gitlab_ds/service.log || echo "WARNING: no service logs found"
+
+      if [ ! -f .gitlab_ds/dependency_resolution.sh ]; then
+        echo "ERROR: .gitlab_ds/dependency_resolution.sh script not found after $TIMEOUT seconds"
+        exit 1
+      fi
+    - sh .gitlab_ds/dependency_resolution.sh
+
+  artifacts:
+    paths:
+      - '**/gradle.graph.txt'
+    when: always
+  rules:
+    # Only allow projects with gradle wrapper to run 
+    - if: '$LANGUAGE == "gradle" && $CI_COMMIT_BRANCH'
+      exists:
+        - '**/gradlew'
+
+# ----------------------------------------------------------------
+# Dependency Resolution for Python
+"$[[ inputs.job-name ]]-python":
+  variables:
+    DS_ANALYZER_IMAGE: $ANALYZER_IMAGE_PREFIX/$ANALYZER_IMAGE_NAME:$ANALYZER_IMAGE_VERSION
+    DS_PYTHON_RESOLUTION_IMAGE: $[[ inputs.resolution_job_registry ]]/$[[ inputs.resolution_job_variant ]]-$[[ inputs.resolution_job_tag ]]
+    LANGUAGE: $[[ inputs.language ]]
+  image: $DS_PYTHON_RESOLUTION_IMAGE
+  stage: .pre
+  allow_failure: true
+  script:
+    - export SECURE_LOG_LEVEL="${SECURE_LOG_LEVEL:-$[[ inputs.analyzer_log_level ]]}"
+  
+    - echo "Installing uv"
+    - curl -k -LsSf https://releases.astral.sh/github/uv/releases/download/0.11.28/uv-installer.sh | sh
+    - source $HOME/.local/bin/env
+    - uv --version
+    - UV_PYTHON_INSTALL_MIRROR=https://github.com/astral-sh/python-build-standalone/releases/download uv python install  $[[ inputs.python-version ]]
+    
+    - uv python pin --global $[[ inputs.python-version ]]
+    - uv venv
+    - source .venv/bin/activate
+    - python -V
+
+    - mkdir -p .gitlab_ds && chmod 777 .gitlab_ds
+    # Replace the generated script with a custom one using uv instead of pip-compile
+    - |
+      cat > .gitlab_ds/dependency_resolution.sh << 'EOF'
+      #!/bin/sh
+      set -x
+      # Generated by dependency-scanning analyzer (modified for uv)
+      # This script resolves dependencies using uv instead of pip-compile
+      FAILED=0
+      # Find all requirements.txt files and process them with uv
+      for req_file in $(find . -name "requirements.txt" -type f 2>/dev/null); do
+          req_dir=$(dirname "$req_file")
+          echo "Processing '$req_file'"
+          (cd "$req_dir" && uv pip compile --system-certs --index-url $[[ inputs.pip-index-url]] 'requirements.txt' --no-strip-extras --output-file pipcompile.lock.txt) || FAILED=$((FAILED + 1))
+      done
+      [ $FAILED -eq 0 ]
+      EOF
+      chmod +x .gitlab_ds/dependency_resolution.sh
+
+    - sh .gitlab_ds/dependency_resolution.sh
+  artifacts:
+    paths:
+      - '**/pipcompile.lock.txt'
+    when: always
+  rules:
+    - if: '$LANGUAGE == "python"'
+
+
+# ----------------------------------------------------------------
+# Dependency Resolution for Go (TODO)

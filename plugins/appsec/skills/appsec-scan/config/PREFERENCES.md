@@ -26,7 +26,7 @@ Unset → the `default_profile` at the top of the file applies.
 
 | Profile | Purpose |
 |---|---|
-| `catalog` | Default: resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
+| `catalog` | Default: resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet **and a `read_api` PAT in `$GITLAB_READ_TOKEN`** — that catalogue is private, so anonymous reads 404. Setup: MIGRATION.md step 0. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
 | `company` | Production preferences: internal GitLab mirror + internal JFrog images. Edit the placeholder `gitlab_instance`, `component:` and `image:` values to your paths. Airgap-safe. |
 
 ## Global `settings:` block
@@ -80,9 +80,15 @@ settings:
 - **catalog.mode** — `online` resolves component versions live against
   `gitlab_instance` each run; `offline` skips the network and uses the vendored
   snapshots in `../reference/catalog/`.
-- **catalog.auth_token_env** — the skill tries **anonymous** API reads first. If
-  your instance rejects them, create a `read_api` PAT, put it in an env var, and
-  name that var here (e.g. `GITLAB_READ_TOKEN`). Preflight then requires it.
+- **catalog.auth_token_env** — the env var *name* holding a `read_api` PAT.
+  Ships as `GITLAB_READ_TOKEN` because the `lobster-thermidor` catalogue is
+  private on gitlab.com: anonymous reads return `404`. Whenever this names a
+  var, preflight requires that var to be non-empty — deliberately, so a
+  tokenless run cannot quietly fall back to vendored snapshots and look like a
+  live catalog test. The requirement is skipped when `catalog.mode: offline`,
+  since that path never calls the API. Set it to `""` only if your
+  `gitlab_instance` serves the components anonymously. Token setup:
+  MIGRATION.md step 0.
 - **container_registry** — env var *names* (not values) holding the registry
   credentials used both when GTCS pulls a BYO image and when a local build must
   pull a `FROM` base from the internal registry.
@@ -94,7 +100,7 @@ categories:
   sast:
     component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
     version: ~latest          # ~latest OR an exact tag e.g. "25.2.0"
-    image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review
+    image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
     runner: fortify-sast.sh
     enabled: true
 ```

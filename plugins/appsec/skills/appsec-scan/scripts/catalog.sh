@@ -9,7 +9,7 @@ set -euo pipefail
 
 usage() {
   echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
-  echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none>" >&2
+  echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none> [configured_image]" >&2
   exit 1
 }
 
@@ -234,17 +234,41 @@ resolve_cmd() {
   return 1
 }
 
-extract_image_tag_default() {
+# Effective image ref of the component's first job. Handles a literal
+# "registry/name:tag" and $[[ inputs.X ]] interpolation, substituting each
+# input's declared default. Prints nothing when the ref resolves to a shell
+# variable the template does not declare (e.g. "$DS_ANALYZER_IMAGE") — that is
+# genuinely underivable, and reporting it as "no drift" would be a lie.
+template_image_ref() {
   awk '
-    /^[[:space:]]*spec:[[:space:]]*$/ { in_spec=1; next }
-    in_spec && /^[[:space:]]*inputs:[[:space:]]*$/ { in_inputs=1; next }
-    in_inputs && /^[[:space:]]*image_tag:[[:space:]]*$/ { in_tag=1; next }
-    in_tag && /^[[:space:]]*default:[[:space:]]*/ {
-      value=$0
-      sub(/^[[:space:]]*default:[[:space:]]*/, "", value)
-      gsub(/^["'\''"]|["'\''"]$/, "", value)
-      print value
-      exit
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function unquote(s) {
+      if (s ~ /^".*"$/ || s ~ /^\047.*\047$/) return substr(s, 2, length(s) - 2)
+      return s
+    }
+    /^spec:[ \t]*$/ { in_spec = 1; next }
+    in_spec && /^[^ \t]/ { in_spec = 0 }
+    in_spec {
+      if ($0 ~ /^    [A-Za-z0-9_.-]+:[ \t]*$/) { name = trim($0); sub(/:$/, "", name); next }
+      if (name != "" && $0 ~ /^      default:/) {
+        v = $0; sub(/^      default:[ \t]*/, "", v)
+        def[name] = unquote(trim(v)); name = ""
+      }
+      next
+    }
+    image == "" && $0 ~ /^  image:[ \t]/ {
+      v = $0; sub(/^  image:[ \t]*/, "", v); image = unquote(trim(v))
+    }
+    END {
+      if (image == "") exit 0
+      while (match(image, /\$\[\[[ \t]*inputs\.[A-Za-z0-9_.-]+[ \t]*\]\]/)) {
+        k = substr(image, RSTART, RLENGTH)
+        sub(/^\$\[\[[ \t]*inputs\./, "", k); sub(/[ \t]*\]\]$/, "", k)
+        if (!(k in def)) exit 0
+        image = substr(image, 1, RSTART - 1) def[k] substr(image, RSTART + RLENGTH)
+      }
+      if (image ~ /\$/) exit 0
+      print image
     }
   ' "$1"
 }
@@ -263,17 +287,14 @@ date_to_epoch() {
   fi
 }
 
-runner_image_tag_default() {
-  grep -Eo '[A-Z0-9_]+TAG:-[^}[:space:]"]+' "$1" | head -n 1 | sed 's/.*TAG:-//'
-}
-
 check_drift_cmd() {
-  local component_path cache_dir runner_path base_dir tag template_path template_tag runner_name
-  local synced_line synced_date now_epoch synced_epoch ninety_days runner_tag
+  local component_path cache_dir runner_path configured_image base_dir tag template_path runner_name
+  local synced_line synced_date now_epoch synced_epoch ninety_days template_image
 
   component_path=$1
   cache_dir=$2
   runner_path=$3
+  configured_image=${4:-}
   base_dir="${cache_dir%/}/${component_path}"
 
   if [ ! -d "$base_dir" ]; then
@@ -287,13 +308,18 @@ check_drift_cmd() {
   }
 
   template_path="$base_dir/$tag/template.yml"
-  template_tag=$(extract_image_tag_default "$template_path")
-  if [ -z "$template_tag" ]; then
-    echo "INFO: no image_tag input - skipping image drift check" >&2
-    return 0
-  fi
+  template_image=$(template_image_ref "$template_path")
 
   echo "INFO: checking runner drift against ${component_path}@${tag}" >&2
+
+  if [ -z "$template_image" ]; then
+    echo "INFO: component template declares no resolvable image - skipping image drift check" >&2
+  elif [ -z "$configured_image" ]; then
+    echo "INFO: no configured image passed - skipping image drift check" >&2
+  elif [ "$template_image" != "$configured_image" ]; then
+    printf 'DRIFT: image drift: configured %s vs component template %s\n' "$configured_image" "$template_image"
+  fi
+
   if [ "$runner_path" != "none" ] && [ -f "$runner_path" ]; then
     runner_name=$(basename "$runner_path")
     synced_line=$(grep -E '^# Last synced[[:space:]]*:' "$runner_path" | head -n 1 || true)
@@ -305,11 +331,6 @@ check_drift_cmd() {
       if [ $((now_epoch - synced_epoch)) -gt "$ninety_days" ]; then
         printf 'DRIFT: runner %s last synced %s - review against %s@%s\n' "$runner_name" "$synced_date" "$component_path" "$tag"
       fi
-    fi
-
-    runner_tag=$(runner_image_tag_default "$runner_path" || true)
-    if [ -n "$runner_tag" ] && [ "$runner_tag" != "$template_tag" ]; then
-      printf 'DRIFT: image tag drift: runner default %s vs component default %s\n' "$runner_tag" "$template_tag"
     fi
   fi
 }
@@ -327,7 +348,12 @@ self_test_cmd() {
 
   mkdir -p "$root/scripts" "$root/reference/catalog/$component/1.0.0" "$tmp/bin" "$cache"
   cp "$0" "$script"
-  printf '%s\n' 'spec:' '  inputs:' '    image_tag:' '      default: "1.0.0"' >"$root/reference/catalog/$component/1.0.0/template.yml"
+  # Fixture shape mirrors the real secret-detection template: a literal job
+  # image, NOT a synthetic image_tag input. A fixture that does not look like
+  # the catalogue is how drift detection stayed green while doing nothing.
+  printf '%s\n' 'spec:' '  inputs:' '    stage:' '      default: test' '---' \
+    'scan:' '  image: "registry.example/secrets:7"' \
+    >"$root/reference/catalog/$component/1.0.0/template.yml"
   printf '# README\n' >"$root/reference/catalog/$component/1.0.0/README.md"
   printf '# AGENTS\n' >"$root/reference/catalog/$component/1.0.0/AGENTS.md"
 
@@ -336,10 +362,10 @@ self_test_cmd() {
     'url=${!#}' \
     'case "$url" in' \
     '  */repository/tags?per_page=100) printf "%s\n" "[{\"name\":\"1.1.0\"},{\"name\":\"1.0.0\"},{\"name\":\"0.9.0\"},{\"name\":\"1.2.0-rc1\"}]" ;;' \
-    '  */repository/files/templates%2Fsecret-detection.yml/raw?ref=1.1.0) printf "%s\n" "spec:" "  inputs:" "    image_tag:" "      default: \"1.1.0\"" ;;' \
-    '  */repository/files/templates%2Fsecret-detection.yml/raw?ref=1.0.0) printf "%s\n" "spec:" "  inputs:" "    image_tag:" "      default: \"1.0.0\"" ;;' \
-    '  */repository/files/templates%2Fsecret-detection%2Ftemplate.yml/raw?ref=1.1.0) printf "%s\n" "spec:" "  inputs:" "    image_tag:" "      default: \"1.1.0\"" ;;' \
-    '  */repository/files/templates%2Fsecret-detection%2Ftemplate.yml/raw?ref=1.0.0) printf "%s\n" "spec:" "  inputs:" "    image_tag:" "      default: \"1.0.0\"" ;;' \
+    '  */repository/files/templates%2Fsecret-detection.yml/raw?ref=1.1.0) printf "%s\n" "spec:" "---" "scan:" "  image: \"registry.example/secrets:7.1\"" ;;' \
+    '  */repository/files/templates%2Fsecret-detection.yml/raw?ref=1.0.0) printf "%s\n" "spec:" "---" "scan:" "  image: \"registry.example/secrets:7\"" ;;' \
+    '  */repository/files/templates%2Fsecret-detection%2Ftemplate.yml/raw?ref=1.1.0) printf "%s\n" "spec:" "---" "scan:" "  image: \"registry.example/secrets:7.1\"" ;;' \
+    '  */repository/files/templates%2Fsecret-detection%2Ftemplate.yml/raw?ref=1.0.0) printf "%s\n" "spec:" "---" "scan:" "  image: \"registry.example/secrets:7\"" ;;' \
     '  */repository/files/README.md/raw?ref=1.1.0) printf "%s\n" "# README" ;;' \
     '  */repository/files/README.md/raw?ref=1.0.0) printf "%s\n" "# README" ;;' \
     '  */repository/files/AGENTS.md/raw?ref=1.1.0) printf "%s\n" "# AGENTS" ;;' \
@@ -361,15 +387,48 @@ self_test_cmd() {
   out=$(PATH="$tmp/bin:$PATH" bash "$script" resolve https://gitlab.example.com "$component" ~latest "$cache")
   [ "$out" = "$component@1.0.0 [offline-fallback]" ] || return 1
 
-  printf '%s\n' '# Last synced: 2024-01-01' 'image=${SECDET_TAG:-9.9.9}' >"$tmp/runner.sh"
+  printf '%s\n' '# Last synced: 2024-01-01' >"$tmp/runner.sh"
   drift=$(bash "$script" check-drift "$component" "$cache" "$tmp/runner.sh")
-  printf '%s\n' "$drift" | grep -q '^DRIFT:' || return 1
+  printf '%s\n' "$drift" | grep -q '^DRIFT: runner ' || return 1
+
+  # Image drift, the three shapes the real catalogue actually uses.
+  # $cache resolves to tag 1.1.0, whose template declares secrets:7.1.
+  # 1. literal ref, configured tag behind the template's
+  drift=$(bash "$script" check-drift "$component" "$cache" none "registry.example/secrets:6")
+  printf '%s\n' "$drift" | grep -q '^DRIFT: image drift: .*secrets:6 .*secrets:7\.1' || return 1
+
+  # 2. literal ref, configured image matches - must stay silent
+  drift=$(bash "$script" check-drift "$component" "$cache" none "registry.example/secrets:7.1")
+  if printf '%s\n' "$drift" | grep -q '^DRIFT: image'; then return 1; fi
+
+  # 3. $[[ inputs.X ]] interpolation resolved from declared defaults
+  mkdir -p "$tmp/interp/$component/9.9.9"
+  printf '%s\n' 'spec:' '  inputs:' '    registry:' '      default: reg.example/' \
+    '    image:' '      default: sca' '    image-tag:' '      default: "25.2.0"' \
+    '    variant:' '      default: jdk17' '---' \
+    'scan:' '  image: $[[ inputs.registry ]]$[[ inputs.image ]]:$[[ inputs.image-tag ]]-$[[ inputs.variant ]]' \
+    >"$tmp/interp/$component/9.9.9/template.yml"
+  drift=$(bash "$script" check-drift "$component" "$tmp/interp" none "reg.example/sca:24.1.0-jdk17")
+  printf '%s\n' "$drift" | grep -q '^DRIFT: image drift: .*sca:24.1.0-jdk17 .*sca:25.2.0-jdk17' || return 1
+
+  # 4. image from an undeclared shell variable - underivable, must say so
+  #    rather than silently reporting no drift
+  mkdir -p "$tmp/shellvar/$component/9.9.9"
+  printf '%s\n' 'spec:' '---' 'scan:' '  image: "$DS_ANALYZER_IMAGE"' \
+    >"$tmp/shellvar/$component/9.9.9/template.yml"
+  drift=$(bash "$script" check-drift "$component" "$tmp/shellvar" none "anything:1" 2>&1)
+  printf '%s\n' "$drift" | grep -q 'declares no resolvable image' || return 1
+  if printf '%s\n' "$drift" | grep -q '^DRIFT: image'; then return 1; fi
 
   printf '%s\n' \
     'self-test: online path ok' \
     'self-test: pinned path advisory ok' \
     'self-test: offline-fallback path ok' \
-    'self-test: check-drift DRIFT line ok'
+    'self-test: check-drift runner-staleness DRIFT ok' \
+    'self-test: image drift literal mismatch ok' \
+    'self-test: image drift literal match silent ok' \
+    'self-test: image drift inputs-interpolation ok' \
+    'self-test: image drift underivable reported ok'
 }
 
 main() {
@@ -396,8 +455,8 @@ main() {
       fi
       ;;
     check-drift)
-      [ $# -eq 4 ] || usage
-      check_drift_cmd "$2" "$3" "$4"
+      [ $# -eq 4 ] || [ $# -eq 5 ] || usage
+      check_drift_cmd "$2" "$3" "$4" "${5:-}"
       ;;
     self-test)
       [ $# -eq 1 ] || usage

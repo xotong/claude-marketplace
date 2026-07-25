@@ -14,7 +14,8 @@ esac
 
 ERRORS=()
 
-if [ -n "${CATALOG_AUTH_ENV:-}" ]; then
+# ponytail: offline catalog mode never calls the API, so the token is not required.
+if [ -n "${CATALOG_AUTH_ENV:-}" ] && [ "${CATALOG_MODE:-online}" != offline ]; then
   catalog_auth_value="$(printenv "$CATALOG_AUTH_ENV" 2>/dev/null || true)"
   [ -z "$catalog_auth_value" ] && \
     ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by settings.catalog.auth_token_env) is not set")

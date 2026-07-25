@@ -410,9 +410,9 @@ fi
 
 append_enabled_component() {
   if [ -n "$enabled_components" ]; then
-    enabled_components="$enabled_components $1|$2|$3"
+    enabled_components="$enabled_components $1|$2|$3|$4"
   else
-    enabled_components="$1|$2|$3"
+    enabled_components="$1|$2|$3|$4"
   fi
 }
 
@@ -431,47 +431,9 @@ apply_runner_flag() {
   esac
 }
 
-for category_name in $category_order; do
-  category_component=
-  category_version=
-  category_runner=
-  category_enabled=false
-
-  case "$category_name" in
-    sast)
-      category_component=$sast_component
-      category_version=$sast_version
-      category_runner=$sast_runner
-      category_enabled=$sast_enabled
-      ;;
-    dependency_scanning)
-      category_component=$dependency_scanning_component
-      category_version=$dependency_scanning_version
-      category_runner=$dependency_scanning_runner
-      category_enabled=$dependency_scanning_enabled
-      ;;
-    secret_detection)
-      category_component=$secret_detection_component
-      category_version=$secret_detection_version
-      category_runner=$secret_detection_runner
-      category_enabled=$secret_detection_enabled
-      ;;
-    container_scanning)
-      category_component=$container_scanning_component
-      category_version=$container_scanning_version
-      category_runner=$container_scanning_runner
-      category_enabled=$container_scanning_enabled
-      ;;
-  esac
-
-  if [ "$category_enabled" = "true" ]; then
-    apply_runner_flag "$category_name" "$category_runner"
-    if [ -n "$category_component" ] && [ -n "$category_version" ] && [ -n "$category_runner" ]; then
-      append_enabled_component "$category_component" "$category_version" "$category_runner"
-    fi
-  fi
-done
-
+# Resolved before the loop: ENABLED_COMPONENTS carries the effective image so
+# catalog.sh check-drift can compare the component's declared image against the
+# one that actually runs. Env overrides win — they are what executes.
 if [ -n "${FORTIFY_SAST_IMAGE:-}" ]; then
   fortify_sast_image=$FORTIFY_SAST_IMAGE
 else
@@ -495,6 +457,53 @@ if [ -n "${GITLAB_CS_IMAGE:-}" ]; then
 else
   gitlab_cs_image=$container_scanning_image_yaml
 fi
+
+for category_name in $category_order; do
+  category_component=
+  category_version=
+  category_runner=
+  category_image=
+  category_enabled=false
+
+  case "$category_name" in
+    sast)
+      category_component=$sast_component
+      category_version=$sast_version
+      category_runner=$sast_runner
+      category_image=$fortify_sast_image
+      category_enabled=$sast_enabled
+      ;;
+    dependency_scanning)
+      category_component=$dependency_scanning_component
+      category_version=$dependency_scanning_version
+      category_runner=$dependency_scanning_runner
+      category_image=$gitlab_ds_image
+      category_enabled=$dependency_scanning_enabled
+      ;;
+    secret_detection)
+      category_component=$secret_detection_component
+      category_version=$secret_detection_version
+      category_runner=$secret_detection_runner
+      category_image=$secret_detection_image
+      category_enabled=$secret_detection_enabled
+      ;;
+    container_scanning)
+      category_component=$container_scanning_component
+      category_version=$container_scanning_version
+      category_runner=$container_scanning_runner
+      category_image=$gitlab_cs_image
+      category_enabled=$container_scanning_enabled
+      ;;
+  esac
+
+  if [ "$category_enabled" = "true" ]; then
+    apply_runner_flag "$category_name" "$category_runner"
+    if [ -n "$category_component" ] && [ -n "$category_version" ] && [ -n "$category_runner" ]; then
+      append_enabled_component "$category_component" "$category_version" "$category_runner" "$category_image"
+    fi
+  fi
+done
+
 
 emit APPSEC_PROFILE "$active_profile"
 emit APPSEC_AIRGAP "$appsec_airgap"

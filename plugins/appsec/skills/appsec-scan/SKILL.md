@@ -76,7 +76,7 @@ eval "$PREFS_ENV"
 # CATALOG_MODE, CATALOG_AUTH_ENV, CS_USER_ENV, CS_PASS_ENV, GITLAB_INSTANCE,
 # FORTIFY_SAST_IMAGE, SECRET_DETECTION_IMAGE, GITLAB_DS_IMAGE, GITLAB_CS_IMAGE,
 # RUN_FORTIFY_SAST, RUN_GITLAB_DS, RUN_SECRET_DETECTION, RUN_GITLAB_CS,
-# PYTHON_INSTALL_URL, and ENABLED_COMPONENTS (space-separated "component|version|runner" triples).
+# PYTHON_INSTALL_URL, and ENABLED_COMPONENTS (space-separated "component|version|runner|image" tuples).
 
 # Detect the container runtime (docker or podman) — hard requirement.
 RUNTIME="$(CONTAINER_RUNTIME="$CONTAINER_RUNTIME" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
@@ -106,7 +106,8 @@ Runs `scanners/preflight.sh` in its own process — a real shell script that is
 shellchecked and can be run standalone.
 
 ```bash
-CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" APPSEC_AIRGAP="$APPSEC_AIRGAP" \
+CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" CATALOG_MODE="$CATALOG_MODE" \
+  APPSEC_AIRGAP="$APPSEC_AIRGAP" \
   APPSEC_PROFILE="$APPSEC_PROFILE" CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
   bash "$SCANNERS_DIR/preflight.sh" || { return 1 2>/dev/null || exit 1; }
 ```
@@ -129,22 +130,24 @@ thing that talks to the network, and only to `$GITLAB_INSTANCE`. When
 CATALOG_CACHE=".appsec-results/catalog"
 mkdir -p "$CATALOG_CACHE"
 
-# ENABLED_COMPONENTS comes from Step 1.5: space-separated "component|version|runner" triples.
+# ENABLED_COMPONENTS from Step 1.5: "component|version|runner|image" tuples.
+# image = what actually runs; check-drift compares it to the template's image.
 for pair in $ENABLED_COMPONENTS; do
-  component="${pair%%|*}"; rest="${pair#*|}"; version="${rest%%|*}"; runner="${rest#*|}"
+  component="${pair%%|*}"; rest="${pair#*|}"; version="${rest%%|*}"; rest="${rest#*|}"
+  runner="${rest%%|*}"; image="${rest#*|}"
   bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "$component" "$version" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
   if [ "$runner" != "none" ]; then
-    bash "$SCRIPTS_DIR/catalog.sh" check-drift "$component" "$CATALOG_CACHE" "$SCANNERS_DIR/$runner"
+    bash "$SCRIPTS_DIR/catalog.sh" check-drift "$component" "$CATALOG_CACHE" "$SCANNERS_DIR/$runner" "$image"
   fi
 done
 ```
 
 catalog.sh resolves live when online and uses vendored snapshots in
 `reference/catalog/` automatically when `CATALOG_MODE=offline` or the fetch
-fails — no manual skip needed. If `resolve` reports HTTP 401/403, tell the
-user: anonymous catalog reads are disabled — create a `read_api` PAT, put it
-in an env var, set `settings.catalog.auth_token_env`; the run continues on the
-vendored snapshot meanwhile.
+fails — no manual skip needed. If `resolve` reports `[offline-fallback]` while
+`CATALOG_MODE=online`, the read failed: the PAT in `$CATALOG_AUTH_ENV` is
+missing, expired, or lacks `read_api` (see MIGRATION.md step 0). Say so — the
+run continues on the vendored snapshot; never present it as live.
 
 Then present the user a resolution table before scanning:
 
