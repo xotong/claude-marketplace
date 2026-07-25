@@ -4,6 +4,7 @@ set -euo pipefail
 ONLY_CATEGORY=
 DRY_RUN=false
 RAN_CATEGORIES=
+EXECUTED_CATEGORIES=
 DS_RAN=false
 SKIPPED_IMAGE_SCANNERS=
 
@@ -76,6 +77,20 @@ validate_env() {
 
 selected() {
   [ -z "$ONLY_CATEGORY" ] || [ "$ONLY_CATEGORY" = "$1" ]
+}
+
+# mark_executed: a scanner actually launched. Distinct from mark_attempted,
+# which records what the admin config EXPECTS. Conflating the two killed the
+# "no scanners ran" diagnostic, because the expected set is never empty.
+mark_executed() {
+  case ",$EXECUTED_CATEGORIES," in
+    *",$1,"*) return ;;
+  esac
+  if [ -n "$EXECUTED_CATEGORIES" ]; then
+    EXECUTED_CATEGORIES="$EXECUTED_CATEGORIES,$1"
+  else
+    EXECUTED_CATEGORIES=$1
+  fi
 }
 
 mark_attempted() {
@@ -290,19 +305,36 @@ fi
 # no warning at all: the exact false all-clear SKILL.md promises cannot happen.
 # Expect-first makes the guarantee uniform — anything without a report becomes a
 # coverage finding, whatever the reason it did not run.
-# if-form, not `a && b && c`: under `set -e` a false condition would make the
-# whole list non-zero and abort the run.
-if selected sast && [ "$RUN_FORTIFY_SAST" = true ]; then
-  mark_attempted sast
-fi
-if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ]; then
-  mark_attempted dependency_scanning
-fi
-if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
-  mark_attempted secret_detection
-fi
-if selected container_scanning && [ "$RUN_GITLAB_CS" = true ]; then
-  mark_attempted container_scanning
+# Expectation comes from the ADMIN CONFIG, never from this invocation.
+#
+# Deriving it from the RUN_* environment meant a single leftover
+# `export RUN_SECRET_DETECTION=true` suppressed the self-load block above, the
+# other three flags silently defaulted to false, and the run reported
+# "Gate verdict: PASSED" / exit 0 with three admin-enabled categories absent
+# from scan-coverage.json entirely — no warning anywhere. Deriving it from
+# --only had the same effect on a first scoped scan.
+#
+# --only and the RUN_* env narrow what EXECUTES. They must never narrow what is
+# EXPECTED, or a scan can silently cover less than the admin configured.
+config_flags=$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-preferences.yaml" 2>/dev/null || true)
+for pair in \
+  "RUN_FORTIFY_SAST sast" \
+  "RUN_GITLAB_DS dependency_scanning" \
+  "RUN_SECRET_DETECTION secret_detection" \
+  "RUN_GITLAB_CS container_scanning"; do
+  flag=${pair%% *}
+  category=${pair##* }
+  if printf '%s\n' "$config_flags" | grep -qx "export $flag=true"; then
+    mark_attempted "$category"
+  fi
+done
+# Fall back to the live flags if the config could not be read at all, so a
+# broken config degrades to the old behaviour instead of expecting nothing.
+if [ -z "$RAN_CATEGORIES" ]; then
+  if [ "$RUN_FORTIFY_SAST" = true ]; then mark_attempted sast; fi
+  if [ "$RUN_GITLAB_DS" = true ]; then mark_attempted dependency_scanning; fi
+  if [ "$RUN_SECRET_DETECTION" = true ]; then mark_attempted secret_detection; fi
+  if [ "$RUN_GITLAB_CS" = true ]; then mark_attempted container_scanning; fi
 fi
 
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
@@ -351,6 +383,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
   fi
   if [ "$RUN_FORTIFY_SAST" = true ]; then
     mark_attempted sast
+    mark_executed sast
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
     if run_cmd "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
       if $DRY_RUN; then
@@ -382,6 +415,7 @@ fi
 if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_DS_IMAGE" ]; then
   DS_RAN=true
   mark_attempted dependency_scanning
+  mark_executed dependency_scanning
   info "[GitLab DS] Pulling ${GITLAB_DS_IMAGE}..."
   if run_cmd "$RUNTIME" pull "${GITLAB_DS_IMAGE}"; then
     if $DRY_RUN; then
@@ -408,6 +442,7 @@ fi
 
 if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -n "$SECRET_DETECTION_IMAGE" ]; then
   mark_attempted secret_detection
+  mark_executed secret_detection
   info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
   if run_cmd "$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"; then
     if $DRY_RUN; then
@@ -433,6 +468,7 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
   fi
 elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
   info "[Secret Detection] Skipped — not a Git worktree or image unset"
+  record_skip secret_detection "Secret detection needs a Git worktree (it scans history), and this directory is not one — or its image is unset. Run the scan from inside the repository, then re-run this skill."
 fi
 
 if ! $DRY_RUN; then
@@ -483,6 +519,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
   case "$CS_MODE" in
     registry)
       mark_attempted container_scanning
+      mark_executed container_scanning
       info "[GitLab CS] Scanning registry image $CS_VALUE..."
       if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
         if $DRY_RUN; then
@@ -509,6 +546,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       ;;
     archive)
       mark_attempted container_scanning
+      mark_executed container_scanning
       info "[GitLab CS] Scanning locally-built image (offline, bundled Trivy)..."
       if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
         if $DRY_RUN; then
@@ -542,7 +580,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
   esac
 fi
 
-if [ -z "$RAN_CATEGORIES" ]; then
+if [ -z "$EXECUTED_CATEGORIES" ]; then
   if [ -n "$ONLY_CATEGORY" ]; then
     warning "no scanners ran — enabled scanners were skipped (missing image?) or filtered by --only $ONLY_CATEGORY"
   else

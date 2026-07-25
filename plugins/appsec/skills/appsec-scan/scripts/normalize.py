@@ -787,8 +787,9 @@ def main(argv=None):
     if gate not in GATE_LEVELS:
         parser.error("CI_GATE_FAIL_ON must be critical, high, medium, or none")
     scanners_run = _parse_ran(args.ran, parser)
-    if args.only:
-        scanners_run = [category for category in scanners_run if category == args.only]
+    # NOT filtered by --only: coverage is about every category the admin
+    # enabled, not just the one this invocation executed. Reports from earlier
+    # runs persist in results_dir, so a genuine rescan still sees them present.
 
     results_dir = Path(args.results_dir)
     try:
@@ -855,6 +856,10 @@ def main(argv=None):
                 "missing_report": missing,
                 "gate_threshold": gate,
                 "gate_passed": not failed,
+                # Separate fact from the gate verdict. `gate: none` is
+                # report-only and always passes, so gate_passed alone could read
+                # as "fully scanned and clean" while categories never ran.
+                "coverage_complete": not missing,
             },
         )
         print_summary(triaged, gate, failed)

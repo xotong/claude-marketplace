@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -548,3 +550,40 @@ class FixBranchInputValidationTest(FixBranchTest):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("integer finding COUNTS", result.stderr)
         self.assertFalse(state_written, "garbage input corrupted the loop state")
+
+
+class CoverageExpectationTest(RunScanDryRunTest):
+    """What the admin enabled is expected, whatever this invocation does."""
+
+    def _expected(self, result):
+        # --dry-run prints the normalize.py command; its --ran value IS the
+        # expected-coverage set.
+        match = re.search(r"--ran (\S+)", result.stdout + result.stderr)
+        self.assertIsNotNone(match, result.stdout + result.stderr)
+        return set(match.group(1).replace("\\", "").split(","))
+
+    def test_partial_run_env_cannot_shrink_expected_coverage(self) -> None:
+        # One leftover `export RUN_SECRET_DETECTION=true` suppressed run-scan's
+        # self-load; the other three flags defaulted to false and vanished from
+        # scan-coverage.json entirely — PASSED, exit 0, no warning at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = {k: v for k, v in self.base_env().items() if not k.startswith("RUN_")}
+            env["RUN_SECRET_DETECTION"] = "true"
+            result = self.run_scan(repo, "--dry-run", env=env)
+
+        expected = self._expected(result)
+        self.assertIn("sast", expected)
+        self.assertGreater(len(expected), 1, "expected coverage shrank to the exported flag")
+
+    def test_only_as_first_scan_does_not_shrink_expected_coverage(self) -> None:
+        # --only narrows what EXECUTES, never what is EXPECTED. As a first scan
+        # it used to yield gate_passed true with three enabled categories absent
+        # from both scanners_run and missing_report.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            result = self.run_scan(repo, "--only", "secret_detection", "--dry-run")
+
+        expected = self._expected(result)
+        for category in ("sast", "dependency_scanning", "container_scanning"):
+            self.assertIn(category, expected, f"{category} vanished from expected coverage")

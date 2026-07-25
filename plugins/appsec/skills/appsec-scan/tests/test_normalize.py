@@ -394,6 +394,13 @@ class NormalizeTests(unittest.TestCase):
         fvdl = """<FVDL><Vulnerability><ClassInfo><ClassID>NEW</ClassID><Type>New SAST</Type><DefaultSeverity>1.0</DefaultSeverity></ClassInfo><InstanceInfo><FileName>src/new.py</FileName><LineStart>3</LineStart></InstanceInfo></Vulnerability></FVDL>"""
         with zipfile.ZipFile(self.results / "fortify-sast.fpr", "w") as archive:
             archive.writestr("audit.fvdl", fvdl)
+        # A real rescan runs against a results dir where the earlier full scan's
+        # report artifacts still exist. Without this, secret_detection looks like
+        # a coverage gap — which coverage checking now correctly reports, since
+        # it is no longer narrowed to the --only category.
+        (self.results / "gl-secret-detection-report.json").write_text(
+            json.dumps({"vulnerabilities": []}), encoding="utf-8"
+        )
 
         exit_code = normalize.main(
             [
