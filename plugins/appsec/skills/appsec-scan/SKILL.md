@@ -106,7 +106,8 @@ Runs `scanners/preflight.sh` in its own process — a real shell script that is
 shellchecked and can be run standalone.
 
 ```bash
-CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" APPSEC_AIRGAP="$APPSEC_AIRGAP" \
+CATALOG_AUTH_ENV="$CATALOG_AUTH_ENV" CATALOG_MODE="$CATALOG_MODE" \
+  APPSEC_AIRGAP="$APPSEC_AIRGAP" \
   APPSEC_PROFILE="$APPSEC_PROFILE" CONTAINER_RUNTIME="$CONTAINER_RUNTIME" \
   bash "$SCANNERS_DIR/preflight.sh" || { return 1 2>/dev/null || exit 1; }
 ```
@@ -141,10 +142,12 @@ done
 
 catalog.sh resolves live when online and uses vendored snapshots in
 `reference/catalog/` automatically when `CATALOG_MODE=offline` or the fetch
-fails — no manual skip needed. If `resolve` reports HTTP 401/403, tell the
-user: anonymous catalog reads are disabled — create a `read_api` PAT, put it
-in an env var, set `settings.catalog.auth_token_env`; the run continues on the
-vendored snapshot meanwhile.
+fails — no manual skip needed. If `resolve` reports `[offline-fallback]` while
+`CATALOG_MODE` is `online`, the catalog read failed: tell the user the PAT in
+`$CATALOG_AUTH_ENV` is missing, expired, or lacks `read_api` on that project
+(the shipped catalogue is private, so anonymous reads 404 — see MIGRATION.md
+step 0). The run continues on the vendored snapshot meanwhile; say so, and do
+not present the resolution as live.
 
 Then present the user a resolution table before scanning:
 

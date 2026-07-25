@@ -46,10 +46,13 @@ settings:
     #   online  = resolve component versions live against gitlab_instance.
     #   offline = skip the network, use vendored snapshots in reference/catalog/.
     mode: online
-    # Anonymous API reads are attempted first. If gitlab_instance rejects them,
-    # the skill asks you to create a read_api PAT and name the env var holding it
-    # here (e.g. GITLAB_READ_TOKEN). Leave empty for anonymous-only.
-    auth_token_env: ""
+    # Env var NAME (never the value) holding a read_api PAT. Required because the
+    # lobster-thermidor catalogue is private on gitlab.com — anonymous reads get
+    # 404. Preflight fails fast if this names a var that is unset, so a run can
+    # never silently degrade to vendored snapshots and look like a live test.
+    # Leave empty ONLY if your gitlab_instance serves the components anonymously.
+    # Setup: MIGRATION.md step 0.
+    auth_token_env: GITLAB_READ_TOKEN
 
   # Container scanning: names of env vars holding registry credentials, used both
   # when GTCS pulls a BYO image and when a local build must pull a FROM base from

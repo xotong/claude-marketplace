@@ -89,9 +89,10 @@ sequenceDiagram
     CS-->>M: DRIFT lines (runner &gt;90 days stale, image tag mismatch)
 ```
 
-Auth is anonymous first; if the instance rejects reads, the skill asks for a `read_api`
-PAT and the env var named in `settings.catalog.auth_token_env` (the token is passed via
-`curl --config`, never argv).
+Auth uses the `read_api` PAT in the env var named by `settings.catalog.auth_token_env`
+(the token is passed via `curl --config`, never argv). Reads are anonymous when that
+setting is empty. The shipped `catalog` profile needs the PAT: its components live in a
+private gitlab.com catalogue where anonymous reads return `404`.
 
 ## Configuration — `config/scanner-preferences.yaml`
 
@@ -106,7 +107,7 @@ touch. Full schema and switching guide: [`config/PREFERENCES.md`](config/PREFERE
 | `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
 | `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — controls run-scan.sh exit code |
 | `settings.catalog.mode` | `online` (resolve live) or `offline` (snapshots only) |
-| `settings.catalog.auth_token_env` | env var holding a `read_api` PAT; empty = anonymous |
+| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT; ships `GITLAB_READ_TOKEN` (the lobster-thermidor catalogue is private — anonymous reads 404). Preflight requires the named var unless `catalog.mode: offline`. Setup: [MIGRATION.md step 0](MIGRATION.md) |
 | `settings.container_registry.*` | env var *names* for registry credentials used by GTCS |
 
 Two profiles (`APPSEC_PROFILE` overrides `default_profile`):

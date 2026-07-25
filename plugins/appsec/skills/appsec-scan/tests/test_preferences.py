@@ -221,6 +221,34 @@ class HelperScriptsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("unbound variable", result.stderr)
 
+    def test_preflight_catalog_auth_required_online_but_not_offline(self) -> None:
+        # A missing PAT must block an ONLINE run (else it silently degrades to the
+        # vendored snapshot and looks like a live catalog test), but must not block
+        # an OFFLINE run, which never calls the API.
+        results = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(tmp, {"docker": "#!/bin/sh\nexit 0\n"})
+            for mode in ("online", "offline"):
+                env = dict(
+                    os.environ,
+                    CATALOG_AUTH_ENV="APPSEC_TEST_PAT",
+                    CATALOG_MODE=mode,
+                    CONTAINER_RUNTIME="auto",
+                    PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                )
+                env.pop("APPSEC_TEST_PAT", None)
+                results[mode] = subprocess.run(
+                    ["bash", str(SCANNERS_DIR / "preflight.sh")],
+                    env=env, capture_output=True, text=True,
+                )
+
+        self.assertEqual(results["online"].returncode, 1)
+        self.assertIn("APPSEC_TEST_PAT", results["online"].stdout)
+        self.assertEqual(
+            results["offline"].returncode, 0,
+            results["offline"].stdout + results["offline"].stderr,
+        )
+
     def test_resolve_jq_returns_existing_jq_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = self.make_stub_dir(
