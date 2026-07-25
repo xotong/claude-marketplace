@@ -5,7 +5,7 @@ Central plugin marketplace. One URL to configure; all team and platform skills f
 | Plugin | What it gives you |
 |---|---|
 | **essentials** | Start here — TDD, debugging, planning, feature dev, PR review in one install. |
-| **appsec** | Catalog-driven security scanning: admin preference profiles (Fortify or GitLab SAST, GitLab dependency/secret/container scanning), CI/CD Catalog versions resolved every run, fix loop + triage plan — plus OWASP WSTG DAST sim. |
+| **appsec** | Catalog-driven security scanning: 4 components from the private GitLab CI/CD Catalog (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning) with per-component version pinning, fix loop + triage plan — plus OWASP WSTG DAST sim. |
 | **code-quality** | Lint gate, API design enforcement, OpenAPI spec generation, doc co-authoring. |
 | **superpowers** | 14 core developer skills (already in essentials — install for the full library). |
 | **compound-engineering** | 38 skills + 50 specialised review agents for compound AI workflows. |
@@ -119,7 +119,7 @@ If a plugin is missing after install, re-run the install command.
 | Plugin | Type | What's inside | Not-malicious confidence¹ |
 |---|---|---|---|
 | `essentials` | Platform Team | TDD, debugging, planning, git worktrees (14 skills) + feature-dev (3 agents) + PR review (6 agents) — best starting point | 96% |
-| `appsec` | Platform Team | Catalog-driven security scanning: admin preference profiles (Fortify or GitLab SAST, GitLab dependency/secret/container scanning), CI/CD Catalog versions resolved every run, fix loop + triage plan — plus OWASP WSTG DAST sim. | 96% |
+| `appsec` | Platform Team | Catalog-driven security scanning: 4 components from the private GitLab CI/CD Catalog (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning) with per-component version pinning (~latest or exact tag), fix loop + triage plan — plus OWASP WSTG DAST sim. | 96% |
 | `code-quality` | Platform Team | lint-and-validate + api-design-principles + openapi-spec-generation + doc-coauthoring | 97% |
 | `superpowers` | Vendored (obra) | 14 skills: TDD, debugging, planning, worktrees, code review, brainstorming. **Already in essentials.** | 92% |
 | `compound-engineering` | Vendored (EveryInc) | 38 skills + 50 specialised review agents: architecture, performance, security, data integrity… | 95% |
@@ -161,7 +161,7 @@ runtime first and stops with a clear message if none is found.
 
 **Everything else degrades gracefully — never a hard failure:** `jq` (severity
 summary; see below), `curl` (only for live catalog; falls back to vendored
-snapshots), `unzip`/`xmllint` (only for Fortify/Parasoft summaries), `glab`
+snapshots), `unzip` (only for Fortify FPR summaries), `glab`
 (only for the optional end-of-run MR offer). `python3` is **not** required at
 runtime.
 
@@ -171,10 +171,10 @@ Mirror these four images into your internal JFrog (their scan rules and
 vulnerability DBs are baked in — **no network happens inside the containers**):
 
 ```
-registry.gitlab.com/security-products/semgrep:6                 → <your-registry>/security/semgrep:6
-registry.gitlab.com/security-products/secrets:7                 → <your-registry>/security/secrets:7
-registry.gitlab.com/security-products/dependency-scanning:2     → <your-registry>/security/dependency-scanning:2
-registry.gitlab.com/security-products/container-scanning:8      → <your-registry>/security/container-scanning:8
+registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review  → <your-registry>/security/fortify-sca:25.2.0-jdk17-review
+registry.gitlab.com/security-products/secrets:7                                                          → <your-registry>/security/secrets:7
+registry.gitlab.com/security-products/dependency-scanning:2                                              → <your-registry>/security/dependency-scanning:2
+registry.gitlab.com/security-products/container-scanning:8                                               → <your-registry>/security/container-scanning:8
 ```
 
 Then set each category's `image:` in the `company` profile to the mirrored path.
@@ -186,7 +186,7 @@ bump the pin.
 
 ```yaml
 settings:
-  airgap: true                 # internal endpoints only; refuses the public-test profile
+  airgap: true                 # internal endpoints only; refuses the catalog profile (gitlab.com)
   container_runtime: auto      # auto-detect docker or podman
   catalog:
     mode: online               # resolve customized components live against your GitLab
@@ -196,15 +196,16 @@ profiles:
     gitlab_instance: https://gitlab.your-company.internal
     categories:
       sast:
-        component: components/sast/sast     # or your customized fork's path
-        image: <your-registry>/security/semgrep:6
-        runner: gitlab-sast.sh
+        component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
+        version: "25.2.0"
+        image: <your-registry>/security/fortify-sca:25.2.0-jdk17-review
+        runner: fortify-sast.sh
         enabled: true
       # …dependency_scanning, secret_detection, container_scanning…
 ```
 
 `airgap: true` also works alongside internet-connected sites — flip it to
-`false` (or use the shipped `public-test` profile) when you *do* have internet,
+`false` (or use the shipped `catalog` profile) when you *do* have internet,
 e.g. for validation against gitlab.com. Same skill, both worlds.
 
 ### Step 3 — jq (optional, for the severity summary)

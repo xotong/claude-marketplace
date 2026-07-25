@@ -2,12 +2,13 @@
 # =============================================================================
 # Scanner      : GitLab Dependency Scanning
 # Target       : Source tree in analyzer workspace
-# CI component : gitlab.com/components/dependency-scanning/main@~latest
-# Last synced  : 2026-07-04
+# CI component : lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning@~latest
+# Last synced  : 2026-07-15
 # Image env var: GITLAB_DS_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Image note   : The pinned profile image: is what runs; the catalog-resolved
-#                template is advisory only (README + drift). Public defaults
-#                (registry.gitlab.com/security-products, tag 2) suit public-test.
+#                template is advisory only (README + drift). The template builds
+#                DS_ANALYZER_IMAGE from ANALYZER_IMAGE_* variables; the closest
+#                literal shipped default is registry.gitlab.com/security-products/dependency-scanning:2.
 # Requires     : GITLAB_FEATURES=dependency_scanning (set by SKILL.md docker run — mirrors the licensed CI environment)
 # Output       : gl-sbom-*.cdx.json (SBOM; findings matched server-side after push)
 #

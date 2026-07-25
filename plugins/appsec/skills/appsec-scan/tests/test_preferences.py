@@ -25,8 +25,6 @@ EXPECTED_CATEGORIES = {
     "dependency_scanning",
     "secret_detection",
     "container_scanning",
-    "dast_web",
-    "dast_api",
 }
 
 with PREFERENCES_PATH.open("r", encoding="utf-8") as fh:
@@ -50,16 +48,22 @@ class SettingsBlockTest(unittest.TestCase):
     def test_catalog_mode_valid(self) -> None:
         self.assertIn(self.settings.get("catalog", {}).get("mode"), {"online", "offline"})
 
-    def test_jq_and_container_registry_keys(self) -> None:
+    def test_tooling_gate_and_container_registry_keys(self) -> None:
         self.assertIn("install_url", self.settings.get("jq", {}))
+        self.assertIn("install_url", self.settings.get("python", {}))
+        self.assertIn(
+            self.settings.get("ci_gate", {}).get("fail_on"),
+            {"critical", "high", "medium", "none"},
+        )
         cr = self.settings.get("container_registry", {})
         self.assertIn("user_env", cr)
         self.assertIn("password_env", cr)
 
 
 class ScannerPreferencesTest(unittest.TestCase):
-    def test_default_profile_exists_and_names_profile(self) -> None:
-        self.assertIn(PREFERENCES.get("default_profile"), PREFERENCES.get("profiles", {}))
+    def test_default_profile_is_catalog(self) -> None:
+        self.assertEqual(PREFERENCES.get("default_profile"), "catalog")
+        self.assertIn("catalog", PREFERENCES.get("profiles", {}))
 
     def test_every_profile_has_expected_categories(self) -> None:
         for profile_name, profile in PREFERENCES["profiles"].items():
@@ -70,10 +74,12 @@ class ScannerPreferencesTest(unittest.TestCase):
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
                 with self.subTest(profile=profile_name, category=category_name):
-                    self.assertEqual(set(category), {"component", "image", "runner", "enabled"})
+                    self.assertEqual(set(category), {"component", "version", "image", "runner", "enabled"})
                     self.assertIsInstance(category["component"], str)
                     self.assertGreaterEqual(category["component"].count("/"), 2)
-                    self.assertIsInstance(category["image"], str)  # may be "" for CI-only
+                    self.assertIsInstance(category["version"], str)
+                    self.assertTrue(category["version"])
+                    self.assertIsInstance(category["image"], str)
                     self.assertIsInstance(category["runner"], str)
                     self.assertIsInstance(category["enabled"], bool)
 
@@ -81,31 +87,23 @@ class ScannerPreferencesTest(unittest.TestCase):
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
                 runner = category["runner"]
-                if runner == "none":
-                    continue
                 with self.subTest(profile=profile_name, category=category_name, runner=runner):
                     self.assertTrue((SCANNERS_DIR / runner).is_file())
 
-    def test_enabled_non_dast_category_has_image(self) -> None:
-        # Any enabled category that runs a real runner must name an image to run.
+    def test_enabled_runner_category_has_image(self) -> None:
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
-                if category["enabled"] and category["runner"] != "none":
+                if category["enabled"]:
                     with self.subTest(profile=profile_name, category=category_name):
                         self.assertTrue(category["image"], "enabled runner needs an image")
 
-    def test_additional_scanner_runners_exist(self) -> None:
-        for profile_name, profile in PREFERENCES["profiles"].items():
-            for scanner_name, cfg in profile.get("additional_scanners", {}).items():
-                with self.subTest(profile=profile_name, scanner=scanner_name):
-                    self.assertTrue((SCANNERS_DIR / cfg["runner"]).is_file())
-
-    def test_public_test_targets_gitlab_com(self) -> None:
+    def test_catalog_profile_targets_gitlab_com(self) -> None:
         self.assertEqual(
-            PREFERENCES["profiles"]["public-test"]["gitlab_instance"], "https://gitlab.com"
+            PREFERENCES["profiles"]["catalog"]["gitlab_instance"], "https://gitlab.com"
         )
 
-    def test_company_profile_exists(self) -> None:
+    def test_catalog_and_company_profiles_exist(self) -> None:
+        self.assertIn("catalog", PREFERENCES["profiles"])
         self.assertIn("company", PREFERENCES["profiles"])
 
 
@@ -148,7 +146,15 @@ class HelperScriptsTest(unittest.TestCase):
         )
 
     def test_helper_scripts_present_and_executable(self) -> None:
-        for name in ("detect-runtime.sh", "resolve-jq.sh", "container-target.sh", "catalog.sh"):
+        for name in (
+            "detect-runtime.sh",
+            "resolve-jq.sh",
+            "container-target.sh",
+            "catalog.sh",
+            "run-scan.sh",
+            "resolve-python.sh",
+            "fix-branch.sh",
+        ):
             path = SCRIPTS_DIR / name
             with self.subTest(script=name):
                 self.assertTrue(path.is_file(), f"{name} missing")
@@ -191,6 +197,29 @@ class HelperScriptsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout.strip(), "")
         self.assertIn("unsupported CONTAINER_RUNTIME 'bogus'", result.stderr)
+
+    def test_preflight_allows_unset_gitlab_instance_under_set_u(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {"docker": "#!/bin/sh\nexit 0\n"},
+            )
+            env = dict(
+                os.environ,
+                APPSEC_AIRGAP="true",
+                CONTAINER_RUNTIME="auto",
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            )
+            env.pop("GITLAB_INSTANCE", None)
+            result = subprocess.run(
+                ["bash", str(SCANNERS_DIR / "preflight.sh")],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("unbound variable", result.stderr)
 
     def test_resolve_jq_returns_existing_jq_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

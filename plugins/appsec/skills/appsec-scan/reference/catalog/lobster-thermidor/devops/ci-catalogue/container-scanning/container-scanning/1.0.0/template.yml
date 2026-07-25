@@ -1,0 +1,96 @@
+spec:
+  inputs:
+    stage:
+      default: security-scans
+      
+    tags:
+      default: ""
+      description: custom tags given to spawned jobs. Pick your runner!
+
+    cs_image:
+      default: "artifactory.com:$CI_APPLICATION_TAG"
+      description: 'Image to analyze'
+    cs_dockerfile_path:
+      default: "Dockerfile"
+      description: 'The path to the Dockerfile to use for generating remediations'
+    dependencies:
+      type: array
+      default: []
+      description: 'List of CI jobs that container scanning depends on. Normally not necessary, but useful if your pipeline creates artifacts that are used to customize container scanning.'
+    git_strategy:
+      default: 'fetch'
+      description: 'Defines the Git strategy for the `container_scanning` job. Use `none` to disable. Use `fetch` to enable auto-remedation or vulnerability allowlisting.'
+    job_name:
+      default: 'container_scanning'
+      description: 'The name to give the container scanning job'
+    enable_mr_pipelines:
+      type: boolean
+      default: true
+      description: "Whether the container scanning job should run in merge request pipelines."
+    jfrog_registry:
+      type: string
+      default: ''
+      description: 'JFrog Artifactory registry URL (e.g., dock.artifactory.com). If not provided, will be extracted from cs_image.'
+
+---
+
+"$[[ inputs.job_name ]]":
+  image: "registry.gitlab.com/security-products/container-scanning:8"
+
+  tags: 
+    - $[[ inputs.tags ]]
+
+  stage: $[[ inputs.stage ]]
+  variables:
+    GIT_STRATEGY: $[[ inputs.git_strategy ]]
+    CS_IMAGE: $[[ inputs.cs_image ]]
+    CS_DOCKERFILE_PATH: $[[ inputs.cs_dockerfile_path ]]
+    CS_SCHEMA_MODEL: 15
+    JFROG_REGISTRY: $[[ inputs.jfrog_registry ]]
+  before_script:
+    - |
+      if [[ -n "$JFROG_TOKEN" ]]; then
+        echo "Configuring JFrog Artifactory authentication from token..."
+        # Use provided jfrog_registry or extract from CS_IMAGE
+        if [[ -z "$JFROG_REGISTRY" ]]; then
+          JFROG_REGISTRY=$(echo "$CS_IMAGE" | sed 's|/.*||' | sed 's|https://||' | sed 's|http://||')
+        fi
+        # Create Docker config with the token (token is used as username, password is empty)
+        mkdir -p /home/user/.docker
+        echo "{\"auths\":{\"https://$JFROG_REGISTRY\":{\"auth\":\"$(echo -n \"$JFROG_TOKEN:\" | base64)\"}}}" > /home/user/.docker/config.json
+        echo "JFrog authentication configured successfully for $JFROG_REGISTRY"
+      else
+        echo "No credentials provided, using default credentials"
+      fi
+  allow_failure: true
+  artifacts:
+    access: 'developer'
+    reports:
+      container_scanning: gl-container-scanning-report.json
+      cyclonedx: "**/gl-sbom-*.cdx.json"
+    paths: [gl-container-scanning-report.json, "**/gl-sbom-*.cdx.json"]
+  dependencies: $[[ inputs.dependencies ]]
+  script:
+    - gtcs scan
+  rules:
+    # Add the job to merge request pipelines if there's an open merge request.
+    - if: '"$[[ inputs.enable_mr_pipelines ]]" == "true" &&
+          $CI_PIPELINE_SOURCE == "merge_request_event" &&
+          $CI_GITLAB_FIPS_MODE == "true" '
+      variables:
+        CS_IMAGE_SUFFIX: -fips
+    
+    - if: '"$[[ inputs.enable_mr_pipelines ]]" == "true" &&
+          $CI_PIPELINE_SOURCE == "merge_request_event"'
+
+    # Don't add it to a *branch* pipeline if it's already in a merge request pipeline.
+    - if: '"$[[ inputs.enable_mr_pipelines ]]" == "true" &&
+          $CI_OPEN_MERGE_REQUESTS'
+      when: never
+
+    # Add the job to branch pipelines.
+    - if: '$CI_COMMIT_BRANCH &&
+          $CI_GITLAB_FIPS_MODE == "true"'
+      variables:
+        CS_IMAGE_SUFFIX: -fips
+    - if: $CI_COMMIT_BRANCH

@@ -1,0 +1,171 @@
+spec:
+  inputs:
+    # Job specific Inputs
+    job-name:
+      default: fortify-scan
+      description: "Defines a job name"
+    stage:
+      default: sast
+      description: "Defines a job stage"
+    source-path:
+      default: src
+      description: "The path of the source code that you want to scan"
+    allow-failure: 
+      default: true
+      type: boolean
+      description: "Allows the job to not fail if set to false"
+    downloaded-scan-report-name:
+      default: scan.fpr
+      description: "Name of scan report downloaded from SSC"
+    upload-srm-option:
+      type: string
+      default: "false"
+      description: "To include option to allow SRM component uploading"
+    language:
+      default: "javascript"
+      description: "The project language used. Accepted languages: python, javascript, maven, gradle"
+      options:
+        - maven
+        - gradle
+        - python
+        - javascript
+        
+    # Registry Inputs
+    registry:
+      description: "Define image registry"
+      default: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/
+    image:
+      default: fortify-sca
+      description: "Defines a job image"
+    image-tag:
+      default: "25.2.0"
+      description: "Defines a job image tag"
+    variant:
+      default: jdk17-review
+      description: "Define JDK version used for compilation"    
+      options:
+        - jdk17-review
+        - jdk21-review
+
+    # Git Inputs
+    srm-branch:
+      default: $CI_COMMIT_REF_NAME
+      description: "Name of the branch to be created in SRM."
+    git-branch-name:
+      default: $CI_COMMIT_REF_NAME
+      description: "Name of the git branch. This branch will be used for analysis in SRM, SRM does not support tags as branch names."
+    
+    # Maven Inputs
+    maven-setting-path:
+      default: settings.xml
+      description: "Define the maven settings file"
+
+    # Python Inputs
+    pip-index-url:
+      default: "jfrog.com/artifactory/api/pypi/pypi/simple"
+      description: "Define the pip index url"
+    python-version:
+      default: "3.12"
+      description: "Define the python version"
+
+---
+# variables:
+#   LANGUAGE: $[[ inputs.language ]]
+
+include:
+  - component: $CI_SERVER_FQDN/lobster-thermidor/devops/ci-catalogue/srm-report-upload/srm-report-upload@~latest
+    inputs:
+      job-name: "$[[ inputs.job-name ]]-scan-upload"
+      needs-job: "$[[ inputs.job-name ]]-$[[ inputs.language ]]"
+      stage: "$[[ inputs.stage ]]"
+      scan-report-name: "$[[ inputs.downloaded-scan-report-name ]]"
+      srm-branch: "$[[ inputs.srm-branch ]]"
+      git-branch-name: "$[[ inputs.git-branch-name ]]"
+      upload-srm: "$[[ inputs.upload-srm-option ]]"
+
+.fortify-base:
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.registry ]]$[[ inputs.image ]]:$[[ inputs.image-tag ]]-$[[ inputs.variant ]]
+  dependencies: []
+  script: |
+    echo $[[ inputs.source-path ]]
+
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -scan -f $[[ inputs.downloaded-scan-report-name ]] $(if [ -e "filter_list.txt" ]; then echo "-filter filter_list.txt"; fi)
+    BIRTReportGenerator -format HTML -output fortify.html -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "Developer Workbook"
+    BIRTReportGenerator -format PDF -output fortify.pdf -source $[[ inputs.downloaded-scan-report-name ]] -template "Developer Workbook"
+    ReportGenerator -format XML -f fortify.xml -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "DeveloperWorkbook.xml"
+    result=$(FPRUtility -information -signature -search -query "[fortify priority order]:critical OR [fortify priority order]:high AND [issue age]:!removed AND suppressed:false" -filterSet "Security Auditor View" -project $[[ inputs.downloaded-scan-report-name ]]);
+    echo $result
+    
+    if [ "$result" == "No issues matched search query." ]; then
+      echo "No critical or high issues present"
+    else 
+      echo "Critical or high issues present"
+      exit 1
+    fi
+    
+ 
+  allow_failure: $[[ inputs.allow-failure ]]
+  artifacts:
+    name: fortify-results
+    paths:
+      - fortify.html
+      - fortify.pdf
+      - fortify.xml
+      - $[[ inputs.downloaded-scan-report-name ]]
+    when: always
+
+## Upload SAST Results to Gitlab Dashboard
+$[[ inputs.job-name ]]-$[[ inputs.language ]]-gitlab-upload:
+  stage: $[[ inputs.stage ]]
+  image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-converter:1.0.0-test
+  needs: 
+    - job: $[[ inputs.job-name ]]-$[[ inputs.language ]]
+      artifacts: true
+  script: 
+    - echo "Running conversion script and uploading to gitlab vulnerability dashboard..."
+    - python3 /usr/local/bin/fortify_to_gitlab_sast.py $[[ inputs.downloaded-scan-report-name ]] -o gl-sast-report.json --strip-prefix /src/
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+    paths:
+      - gl-sast-report.json
+    expire_in: 1 week 
+
+
+# For Maven
+$[[ inputs.job-name ]]-maven:
+  extends: .fortify-base
+  rules:
+    - if: '"$[[ inputs.language ]]" == "maven"'
+  before_script: |
+    sourceanalyzer -debug -verbose -b $CI_PROJECT_ROOT_NAMESPACE  -clean
+    sourceanalyzer -debug -verbose -b $CI_PROJECT_ROOT_NAMESPACE  mvn clean install -s $[[ inputs.maven-setting-path ]] "-DskipTests"
+
+# For gradle
+$[[ inputs.job-name ]]-gradle:
+  extends: .fortify-base
+  rules:
+    - if: '"$[[ inputs.language ]]" == "gradle"'
+  before_script: |
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -clean
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE $[[ inputs.source-path ]]/gradlew -p $[[ inputs.source-path ]] clean assemble -Partifactory_user=$ARTIFACTORY_USER -Partifactory_password=$ARTIFACTORY_PASSWORD
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE $[[ inputs.source-path ]]
+
+# For Python
+$[[ inputs.job-name ]]-python:
+  extends: .fortify-base
+  rules:
+    - if: '"$[[ inputs.language ]]" == "python"'
+  before_script: |
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -clean
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -debug-verbose -python-path .venv/lib64/python$[[ inputs.python-version ]]/site-packages/ -python-version 3 $[[ inputs.source-path ]]
+
+# For JS
+$[[ inputs.job-name ]]-javascript:
+  extends: .fortify-base
+  rules:
+    - if: '"$[[ inputs.language ]]" ==  "javascript"'
+  before_script: |
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -clean
+    sourceanalyzer -b $CI_PROJECT_ROOT_NAMESPACE -debug-verbose -Dcom.fortify.sca.follow.imports=false $[[ inputs.source-path ]]

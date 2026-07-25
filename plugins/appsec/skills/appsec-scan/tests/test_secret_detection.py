@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the appsec-scan GitLab Secret Detection integration.
 
-The Docker smoke test is opt-in because it pulls GitLab's public analyzer image.
+The Docker smoke test is opt-in because it pulls the public analyzer image.
 Run it with:
 
     RUN_SECRET_DETECTION_SMOKE=1 python3 plugins/appsec/skills/appsec-scan/tests/test_secret_detection.py
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,7 +23,24 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_DIR.parents[3]
 RUNNER = SKILL_DIR / "scanners" / "secret-detection.sh"
 SKILL_MD = SKILL_DIR / "SKILL.md"
-PUBLIC_IMAGE = "registry.gitlab.com/security-products/secrets:7"
+RUN_SCAN = SKILL_DIR / "scripts" / "run-scan.sh"
+SECRET_TEMPLATE = (
+    SKILL_DIR
+    / "reference"
+    / "catalog"
+    / "lobster-thermidor"
+    / "devops"
+    / "ci-catalogue"
+    / "secret-detection"
+    / "secret-detection"
+    / "1.0.0"
+    / "template.yml"
+)
+TEMPLATE_TEXT = SECRET_TEMPLATE.read_text(encoding="utf-8")
+PUBLIC_IMAGE_MATCH = re.search(r'image:\s*"([^"]+)"', TEMPLATE_TEXT)
+if PUBLIC_IMAGE_MATCH is None:  # pragma: no cover - static shipped fixture
+    raise AssertionError(f"could not derive public secret-detection image from {SECRET_TEMPLATE}")
+PUBLIC_IMAGE = PUBLIC_IMAGE_MATCH.group(1)
 
 
 def run(cmd: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -37,8 +55,6 @@ def run(cmd: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedPr
 
 
 def fake_gitlab_token() -> str:
-    # Keep the detector fixture out of this repository's static text while still
-    # writing a realistic-looking value into the temporary smoke-test repo.
     return "glpat-" + "1234567890" + "abcdef" + "1234"
 
 
@@ -47,26 +63,27 @@ class SecretDetectionDocumentationTest(unittest.TestCase):
         skill = SKILL_MD.read_text(encoding="utf-8")
 
         self.assertIn("GitLab Secret Detection", skill)
-        # The container pull is runtime-abstracted (docker or podman) in v2.
-        self.assertIn('"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"', skill)
         self.assertIn("gl-secret-detection-report.json", skill)
         self.assertIn("Secret Detection findings (redacted)", skill)
         self.assertIn("Ask for approval once before making changes", skill)
         self.assertIn("create a new branch", skill)
-        self.assertIn("Rerun only GitLab Secret Detection first", skill)
+        self.assertIn("rerun only GitLab Secret Detection first", skill)
         self.assertIn("run the app's relevant tests", skill)
+
+        run_scan = RUN_SCAN.read_text(encoding="utf-8")
+        self.assertIn('"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"', run_scan)
 
     def test_runner_mirrors_catalog_script(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")
 
-        self.assertIn("gitlab.com/components/secret-detection", runner)
+        self.assertIn("lobster-thermidor/devops/ci-catalogue/secret-detection", runner)
         self.assertIn("/analyzer run", runner)
         self.assertIn("gl-secret-detection-report.json", runner)
 
 
 @unittest.skipUnless(
     os.environ.get("RUN_SECRET_DETECTION_SMOKE") == "1",
-    "set RUN_SECRET_DETECTION_SMOKE=1 to pull and run the public GitLab analyzer image",
+    "set RUN_SECRET_DETECTION_SMOKE=1 to pull and run the public analyzer image",
 )
 class SecretDetectionDockerSmokeTest(unittest.TestCase):
     image = os.environ.get("SECRET_DETECTION_SMOKE_IMAGE", PUBLIC_IMAGE)
@@ -83,8 +100,8 @@ class SecretDetectionDockerSmokeTest(unittest.TestCase):
         run(["git", "init", "-b", "main"], cwd=self.repo)
         run(["git", "config", "user.email", "appsec-test@example.invalid"], cwd=self.repo)
         run(["git", "config", "user.name", "AppSec Smoke Test"], cwd=self.repo)
-        (self.repo / "README.md").write_text("# smoke\n", encoding="utf-8")
-        run(["git", "add", "README.md"], cwd=self.repo)
+        (self.repo / "fixture.txt").write_text("baseline\n", encoding="utf-8")
+        run(["git", "add", "fixture.txt"], cwd=self.repo)
         run(["git", "commit", "-m", "initial clean commit"], cwd=self.repo)
 
     def tearDown(self) -> None:

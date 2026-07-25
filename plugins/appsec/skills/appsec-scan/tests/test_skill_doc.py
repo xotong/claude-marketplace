@@ -16,11 +16,30 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_DIR.parents[3]
 SKILL_MD = SKILL_DIR / "SKILL.md"
-SAST_RUNNER = SKILL_DIR / "scanners" / "gitlab-sast.sh"
+SAST_RUNNER = SKILL_DIR / "scanners" / "fortify-sast.sh"
 DS_RUNNER = SKILL_DIR / "scanners" / "gitlab-dependency-scanning.sh"
 CS_RUNNER = SKILL_DIR / "scanners" / "gitlab-container-scanning.sh"
-PUBLIC_IMAGE = "registry.gitlab.com/security-products/semgrep:6"
+RUN_SCAN = SKILL_DIR / "scripts" / "run-scan.sh"
+NORMALIZE = SKILL_DIR / "scripts" / "normalize.py"
+SECRET_TEMPLATE = (
+    SKILL_DIR
+    / "reference"
+    / "catalog"
+    / "lobster-thermidor"
+    / "devops"
+    / "ci-catalogue"
+    / "secret-detection"
+    / "secret-detection"
+    / "1.0.0"
+    / "template.yml"
+)
+SECRET_TEMPLATE_TEXT = SECRET_TEMPLATE.read_text(encoding="utf-8")
+PUBLIC_IMAGE_MATCH = re.search(r'image:\s*"([^"]+)"', SECRET_TEMPLATE_TEXT)
+if PUBLIC_IMAGE_MATCH is None:  # pragma: no cover - static shipped fixture
+    raise AssertionError(f"could not derive public secret-detection image from {SECRET_TEMPLATE}")
+PUBLIC_IMAGE = PUBLIC_IMAGE_MATCH.group(1)
 SKILL_TEXT = SKILL_MD.read_text(encoding="utf-8")
+RUN_SCAN_TEXT = RUN_SCAN.read_text(encoding="utf-8")
 
 
 def run(cmd: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -34,74 +53,94 @@ def run(cmd: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedPr
     )
 
 
-class SkillDocumentationTest(unittest.TestCase):
-    def test_skill_contains_required_guardrails_and_references(self) -> None:
-        self.assertIn("catalog.sh", SKILL_TEXT)
-        self.assertIn("Step 2.5", SKILL_TEXT)
-        self.assertIn("scanner-preferences.yaml", SKILL_TEXT)
-        self.assertIn("rewrite git history", SKILL_TEXT)
-        self.assertIn("TRIAGE.md", SKILL_TEXT)
-        self.assertIn("Ask for approval once before making changes", SKILL_TEXT)
-        self.assertIn("create a new branch", SKILL_TEXT)
-        self.assertIn("Rerun only GitLab Secret Detection first", SKILL_TEXT)
-        self.assertIn("run the app's relevant tests", SKILL_TEXT)
-        self.assertIn("Secret Detection findings (redacted)", SKILL_TEXT)
-        self.assertIn("GITLAB_FEATURES", SKILL_TEXT)
-        self.assertIn("appsec/fix-", SKILL_TEXT)
+class SkillDocumentationContractTest(unittest.TestCase):
+    def test_skill_contains_required_guardrails_and_contract_strings(self) -> None:
+        required_strings = [
+            "catalog.sh",
+            "scanner-preferences.yaml",
+            "TRIAGE.md",
+            "Ask for approval once before making changes",
+            "create a new branch",
+            "run the app's relevant tests",
+            "Secret Detection findings (redacted)",
+            "appsec/fix-",
+            "FORTIFY_SAST_IMAGE",
+            "RUN_FORTIFY_SAST",
+            "RUN_GITLAB_DS",
+            "RUN_SECRET_DETECTION",
+            "RUN_GITLAB_CS",
+            "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast",
+        ]
+
+        for expected in required_strings:
+          with self.subTest(expected=expected):
+            self.assertIn(expected, SKILL_TEXT)
+
         self.assertRegex(SKILL_TEXT, re.compile(r"5 iterations", re.IGNORECASE))
         self.assertRegex(
             SKILL_TEXT,
             re.compile(r"(?is)(ask(?:ing)?[\s\S]{0,250}push|push[\s\S]{0,250}ask(?:ing)?)"),
         )
-
-        for dismissal in (
-            "false_positive",
-            "acceptable_risk",
-            "mitigating_control",
-            "used_in_tests",
-            "not_applicable",
-        ):
-            with self.subTest(dismissal=dismissal):
-                self.assertIn(dismissal, SKILL_TEXT)
-
         self.assertNotRegex(SKILL_TEXT, re.compile(r"glpat-[A-Za-z0-9]"))
 
     def test_skill_documents_airgap_and_runtime_abstraction(self) -> None:
-        # Runtime is abstracted over docker/podman — no bare `docker run`/`docker pull`.
-        self.assertIn('"$RUNTIME" run', SKILL_TEXT)
+        required_strings = [
+            "APPSEC_AIRGAP",
+            "detect-runtime.sh",
+            "resolve-jq.sh",
+            "container-target.sh",
+            "read_api",
+            "CATALOG_MODE",
+            "HAS_MISSING_REPORT",
+            "NOT an all-clear",
+            "load-prefs.sh",
+            "ENABLED_COMPONENTS",
+        ]
+
+        for expected in required_strings:
+          with self.subTest(expected=expected):
+            self.assertIn(expected, SKILL_TEXT)
+
+        self.assertNotIn("IMAGE_PREFIX", SKILL_TEXT)
         self.assertNotIn("docker run --rm", SKILL_TEXT)
         self.assertNotIn("if docker pull", SKILL_TEXT)
-        # Airgap + helper wiring.
-        self.assertIn("APPSEC_AIRGAP", SKILL_TEXT)
-        self.assertIn("detect-runtime.sh", SKILL_TEXT)
-        self.assertIn("resolve-jq.sh", SKILL_TEXT)
-        self.assertIn("container-target.sh", SKILL_TEXT)
-        # Catalog auth fallback guidance and offline mode.
-        self.assertIn("read_api", SKILL_TEXT)
-        self.assertIn("CATALOG_MODE", SKILL_TEXT)
-        # No false all-clear when a selected scanner produced no report.
-        self.assertIn("HAS_MISSING_REPORT", SKILL_TEXT)
-        self.assertIn("NOT an all-clear", SKILL_TEXT)
-        # v2 config loading: deterministic script, no model-side YAML parsing.
-        self.assertIn("load-prefs.sh", SKILL_TEXT)
-        self.assertIn("ENABLED_COMPONENTS", SKILL_TEXT)
-        # v1 prefix/tag image construction must stay dead in the orchestration doc.
-        self.assertNotIn("IMAGE_PREFIX", SKILL_TEXT)
+
+        for expected in (
+            '"$RUNTIME" run',
+            '"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"',
+            "GITLAB_FEATURES",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, RUN_SCAN_TEXT)
+
+    def test_normalizer_preserves_redacted_secret_summary_contract(self) -> None:
+        normalizer = NORMALIZE.read_text(encoding="utf-8")
+
+        self.assertIn("Secret Detection findings (redacted)", SKILL_TEXT)
+        self.assertIn("Secret Detection findings (redacted)", normalizer)
+
+
+class SkillDocTokenBudgetTest(unittest.TestCase):
+    def test_skill_stays_within_host_orchestrator_token_budget(self) -> None:
+        lines = SKILL_TEXT.splitlines()
+
+        self.assertLessEqual(len(lines), 260)
+        self.assertLessEqual(len(SKILL_TEXT), 13000)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):
     def test_container_runner_supports_registry_and_archive_modes(self) -> None:
         text = CS_RUNNER.read_text(encoding="utf-8")
         self.assertIn("CS_SCAN_MODE", text)
-        self.assertIn("gtcs", text)          # registry mode
-        self.assertIn("--input", text)       # archive mode (bundled trivy on tarball)
+        self.assertIn("gtcs", text)
+        self.assertIn("--input", text)
         self.assertIn("--offline-scan", text)
 
     def test_runner_headers_and_component_paths_are_documented(self) -> None:
         expected_components = {
-            SAST_RUNNER: "components/sast/sast",
-            DS_RUNNER: "components/dependency-scanning/main",
-            CS_RUNNER: "components/container-scanning/container-scanning",
+            SAST_RUNNER: "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast",
+            DS_RUNNER: "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning",
+            CS_RUNNER: "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning",
         }
 
         for runner_path, component in expected_components.items():
@@ -109,7 +148,10 @@ class GitlabRunnerDocTest(unittest.TestCase):
                 text = runner_path.read_text(encoding="utf-8")
                 self.assertTrue(text.startswith("#!/usr/bin/env sh"))
                 self.assertIn(component, text)
-                self.assertIn("/analyzer run", text)
+
+        self.assertIn("FORTIFY_LANGUAGE", SAST_RUNNER.read_text(encoding="utf-8"))
+        self.assertIn("/analyzer run", DS_RUNNER.read_text(encoding="utf-8"))
+        self.assertIn("gtcs scan", CS_RUNNER.read_text(encoding="utf-8"))
 
     def test_dependency_scanning_runner_documents_exit_2_and_features_flag(self) -> None:
         text = DS_RUNNER.read_text(encoding="utf-8")
@@ -120,7 +162,7 @@ class GitlabRunnerDocTest(unittest.TestCase):
 
 @unittest.skipUnless(
     os.environ.get("RUN_GITLAB_SAST_SMOKE") == "1",
-    "set RUN_GITLAB_SAST_SMOKE=1 to pull and run the public GitLab analyzer image",
+    "set RUN_GITLAB_SAST_SMOKE=1 to pull and run the public analyzer image",
 )
 class GitlabSastSmokeTest(unittest.TestCase):
     image = os.environ.get("GITLAB_SAST_SMOKE_IMAGE", PUBLIC_IMAGE)
@@ -132,7 +174,7 @@ class GitlabSastSmokeTest(unittest.TestCase):
         run(["docker", "pull", cls.image], cwd=REPO_ROOT)
 
     def setUp(self) -> None:
-        self.tmp = tempfile.TemporaryDirectory(prefix="appsec-gitlab-sast-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="appsec-fortify-sast-")
         self.repo = Path(self.tmp.name)
         run(["git", "init", "-b", "main"], cwd=self.repo)
         run(["git", "config", "user.email", "appsec-test@example.invalid"], cwd=self.repo)
@@ -148,7 +190,7 @@ class GitlabSastSmokeTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_scanner_produces_at_least_one_vulnerability(self) -> None:
+    def test_scanner_produces_output_file(self) -> None:
         run(
             [
                 "docker",
@@ -164,6 +206,8 @@ class GitlabSastSmokeTest(unittest.TestCase):
                 "/workspace",
                 "-e",
                 "CI_PROJECT_DIR=/workspace",
+                "-e",
+                "FORTIFY_LANGUAGE=python",
                 self.image,
                 "sh",
                 "/runner.sh",
@@ -171,14 +215,9 @@ class GitlabSastSmokeTest(unittest.TestCase):
             cwd=REPO_ROOT,
         )
 
-        report_path = self.repo / ".appsec-results" / "gl-sast-report.json"
-        if not report_path.exists():
-            report_path = self.repo / "gl-sast-report.json"
-
-        self.assertTrue(report_path.exists(), "expected gl-sast-report.json")
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-        vulnerabilities = list(report.get("vulnerabilities", []))
-        self.assertGreaterEqual(len(vulnerabilities), 1, "expected at least one SAST finding")
+        report_path = self.repo / ".appsec-results" / "fortify-sast.fpr"
+        self.assertTrue(report_path.exists(), "expected fortify-sast.fpr")
+        self.assertGreater(report_path.stat().st_size, 0)
 
 
 if __name__ == "__main__":

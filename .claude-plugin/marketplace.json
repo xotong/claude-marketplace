@@ -18,11 +18,11 @@
     {
       "name": "appsec",
       "source": "./plugins/appsec",
-      "version": "2.0.0",
-      "description": "[Platform Team] 2 security scanning skills: appsec-scan (catalog-driven CI mirror — admin-managed scanner preference profiles, GitLab CI/CD Catalog component versions resolved every run, local runs of Fortify SAST, GitLab SAST/Dependency-Scanning-SBOM/Secret-Detection/Container-Scanning plus Parasoft, Pylint, ESLint, Scantist, Trivy; approval-gated fix loop and a guided Vulnerability Report triage plan) and appsec-dast-sim (LLM-based DAST following OWASP WSTG v4.2 — no running app required).",
+      "version": "3.1.0",
+      "description": "[Platform Team] 2 security scanning skills: appsec-scan (catalog-driven CI mirror — single-command scan (run-scan.sh) + normalized findings/triage statuses for small-model execution; admin-managed scanner preference profiles, 4 components from the private GitLab CI/CD Catalog (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning) with per-component version pinning (~latest or exact tag); approval-gated fix loop and a guided Vulnerability Report triage plan) and appsec-dast-sim (LLM-based DAST following OWASP WSTG v4.2 — no running app required).",
       "author": { "name": "Platform Team" },
       "category": "internal",
-      "keywords": ["security", "appsec", "sast", "dast", "fortify", "scantist", "secret-detection", "wstg", "catalog", "profiles", "triage", "gitlab-sast", "dependency-scanning", "container-scanning"]
+      "keywords": ["security", "appsec", "sast", "sca", "fortify", "secret-detection", "wstg", "catalog", "profiles", "triage", "dependency-scanning", "container-scanning", "catalog-version-pinning", "dast"]
     },
     {
       "name": "code-quality",

@@ -9,30 +9,28 @@
 #   - settings.airgap
 #   - settings.container_runtime
 #   - settings.jq.install_url
+#   - settings.python.install_url
 #   - settings.catalog.mode
 #   - settings.catalog.auth_token_env
 #   - settings.container_registry.user_env
 #   - settings.container_registry.password_env
+#   - settings.ci_gate.fail_on
 #   - default_profile
 #   - profiles.<name>.gitlab_instance
-#   - profiles.<name>.categories.<category>.{component,image,runner,enabled}
-#   - profiles.<name>.additional_scanners with one flow-map per line
-#   - profiles.<name>.additional_scanners: {}
+#   - profiles.<name>.categories.<category>.{component,version,image,runner,enabled}
 #
 # Runner -> RUN_* mapping. Keep this table aligned with the case statement below;
 # it is the single source of truth referenced from SKILL.md.
-#   gitlab-sast.sh               -> RUN_GITLAB_SAST
+#   fortify-sast.sh              -> RUN_FORTIFY_SAST
 #   gitlab-dependency-scanning.sh -> RUN_GITLAB_DS
 #   secret-detection.sh          -> RUN_SECRET_DETECTION
 #   gitlab-container-scanning.sh -> RUN_GITLAB_CS
-#   fortify-python.sh            -> RUN_FORTIFY
-#   fortify-js.sh                -> RUN_FORTIFY
 #   none                         -> no flag
 
 set -u
 
 emit() {
-  printf '%s=%q\n' "$1" "$2"
+  printf 'export %s=%q\n' "$1" "$2"
 }
 
 warn() {
@@ -162,6 +160,10 @@ function split_key_value(s,    idx) {
       settings_block = "jq"
       next
     }
+    if (indent == 2 && key == "python" && strip_comment(value) == "") {
+      settings_block = "python"
+      next
+    }
     if (indent == 2 && key == "catalog" && strip_comment(value) == "") {
       settings_block = "catalog"
       next
@@ -170,8 +172,16 @@ function split_key_value(s,    idx) {
       settings_block = "container_registry"
       next
     }
+    if (indent == 2 && key == "ci_gate" && strip_comment(value) == "") {
+      settings_block = "ci_gate"
+      next
+    }
     if (indent == 4 && settings_block == "jq" && key == "install_url") {
       settings["jq.install_url"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "python" && key == "install_url") {
+      settings["python.install_url"] = parse_scalar(value)
       next
     }
     if (indent == 4 && settings_block == "catalog" && key == "mode") {
@@ -188,6 +198,10 @@ function split_key_value(s,    idx) {
     }
     if (indent == 4 && settings_block == "container_registry" && key == "password_env") {
       settings["container_registry.password_env"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "ci_gate" && key == "fail_on") {
+      settings["ci_gate.fail_on"] = parse_scalar(value)
       next
     }
   }
@@ -221,16 +235,6 @@ function split_key_value(s,    idx) {
     next
   }
 
-  if (indent == 4 && key == "additional_scanners") {
-    current_category = ""
-    if (strip_comment(value) == "{}") {
-      current_block = ""
-    } else {
-      current_block = "additional_scanners"
-    }
-    next
-  }
-
   if (current_block == "categories" && indent == 6 && value == "") {
     current_category = key
     cat_count[current_profile]++
@@ -240,12 +244,6 @@ function split_key_value(s,    idx) {
 
   if (current_block == "categories" && current_category != "" && indent == 8) {
     category_value[current_profile, current_category, key] = parse_scalar(value)
-    next
-  }
-
-  if (current_block == "additional_scanners" && indent == 6) {
-    add_count[current_profile]++
-    add_order[current_profile, add_count[current_profile]] = key
     next
   }
 }
@@ -263,22 +261,22 @@ END {
   print "SETTING\tairgap\t" settings["airgap"]
   print "SETTING\tcontainer_runtime\t" settings["container_runtime"]
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
+  print "SETTING\tpython.install_url\t" settings["python.install_url"]
   print "SETTING\tcatalog.mode\t" settings["catalog.mode"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
   print "SETTING\tcontainer_registry.user_env\t" settings["container_registry.user_env"]
   print "SETTING\tcontainer_registry.password_env\t" settings["container_registry.password_env"]
+  print "SETTING\tci_gate.fail_on\t" settings["ci_gate.fail_on"]
 
   if (profile_seen[active_profile]) {
     print "GITLAB_INSTANCE\t" profile_gitlab[active_profile]
     for (i = 1; i <= cat_count[active_profile]; i++) {
       category = cat_order[active_profile, i]
       print "CATEGORY\t" category "\tcomponent\t" category_value[active_profile, category, "component"]
+      print "CATEGORY\t" category "\tversion\t" category_value[active_profile, category, "version"]
       print "CATEGORY\t" category "\timage\t" category_value[active_profile, category, "image"]
       print "CATEGORY\t" category "\trunner\t" category_value[active_profile, category, "runner"]
       print "CATEGORY\t" category "\tenabled\t" category_value[active_profile, category, "enabled"]
-    }
-    for (i = 1; i <= add_count[active_profile]; i++) {
-      print "ADDITIONAL_SCANNER\t" add_order[active_profile, i]
     }
   }
 }
@@ -293,51 +291,43 @@ profile_found=false
 appsec_airgap=
 container_runtime=
 jq_install_url=
+python_install_url=
 catalog_mode=
 catalog_auth_env=
 cs_user_env=
 cs_pass_env=
+ci_gate_fail_on=high
 gitlab_instance=
 
 sast_component=
+sast_version=
 sast_image_yaml=
 sast_runner=
 sast_enabled=false
 
 dependency_scanning_component=
+dependency_scanning_version=
 dependency_scanning_image_yaml=
 dependency_scanning_runner=
 dependency_scanning_enabled=false
 
 secret_detection_component=
+secret_detection_version=
 secret_detection_image_yaml=
 secret_detection_runner=
 secret_detection_enabled=false
 
 container_scanning_component=
+container_scanning_version=
 container_scanning_image_yaml=
 container_scanning_runner=
 container_scanning_enabled=false
 
-dast_web_component=
-dast_web_runner=
-dast_web_enabled=false
-
-dast_api_component=
-dast_api_runner=
-dast_api_enabled=false
-
 category_order=
-run_gitlab_sast=false
+run_fortify_sast=false
 run_gitlab_ds=false
 run_secret_detection=false
 run_gitlab_cs=false
-run_fortify=false
-run_parasoft=false
-run_pylint=false
-run_eslint=false
-run_scantist=false
-run_trivy=false
 enabled_components=
 
 tab=$(printf '\t')
@@ -361,10 +351,12 @@ while IFS="$tab" read -r record field1 field2 field3; do
         airgap) appsec_airgap=$field2 ;;
         container_runtime) container_runtime=$field2 ;;
         jq.install_url) jq_install_url=$field2 ;;
+        python.install_url) python_install_url=$field2 ;;
         catalog.mode) catalog_mode=$field2 ;;
         catalog.auth_token_env) catalog_auth_env=$field2 ;;
         container_registry.user_env) cs_user_env=$field2 ;;
         container_registry.password_env) cs_pass_env=$field2 ;;
+        ci_gate.fail_on) [ -z "$field2" ] || ci_gate_fail_on=$field2 ;;
       esac
       ;;
     GITLAB_INSTANCE)
@@ -381,40 +373,25 @@ while IFS="$tab" read -r record field1 field2 field3; do
       fi
       case "$field1:$field2" in
         sast:component) sast_component=$field3 ;;
+        sast:version) sast_version=$field3 ;;
         sast:image) sast_image_yaml=$field3 ;;
         sast:runner) sast_runner=$field3 ;;
         sast:enabled) sast_enabled=$field3 ;;
         dependency_scanning:component) dependency_scanning_component=$field3 ;;
+        dependency_scanning:version) dependency_scanning_version=$field3 ;;
         dependency_scanning:image) dependency_scanning_image_yaml=$field3 ;;
         dependency_scanning:runner) dependency_scanning_runner=$field3 ;;
         dependency_scanning:enabled) dependency_scanning_enabled=$field3 ;;
         secret_detection:component) secret_detection_component=$field3 ;;
+        secret_detection:version) secret_detection_version=$field3 ;;
         secret_detection:image) secret_detection_image_yaml=$field3 ;;
         secret_detection:runner) secret_detection_runner=$field3 ;;
         secret_detection:enabled) secret_detection_enabled=$field3 ;;
         container_scanning:component) container_scanning_component=$field3 ;;
+        container_scanning:version) container_scanning_version=$field3 ;;
         container_scanning:image) container_scanning_image_yaml=$field3 ;;
         container_scanning:runner) container_scanning_runner=$field3 ;;
         container_scanning:enabled) container_scanning_enabled=$field3 ;;
-        dast_web:component) dast_web_component=$field3 ;;
-        dast_web:runner) dast_web_runner=$field3 ;;
-        dast_web:enabled) dast_web_enabled=$field3 ;;
-        dast_api:component) dast_api_component=$field3 ;;
-        dast_api:runner) dast_api_runner=$field3 ;;
-        dast_api:enabled) dast_api_enabled=$field3 ;;
-      esac
-      ;;
-    ADDITIONAL_SCANNER)
-      case "$field1" in
-        fortify_*) run_fortify=true ;;
-        parasoft_*) run_parasoft=true ;;
-        scantist_*) run_scantist=true ;;
-        pylint) run_pylint=true ;;
-        eslint) run_eslint=true ;;
-        trivy) run_trivy=true ;;
-        *)
-          warn "WARNING: unknown additional_scanner $field1 — no RUN_ flag set"
-          ;;
       esac
       ;;
   esac
@@ -425,16 +402,17 @@ if [ "$profile_found" != "true" ]; then
   exit 1
 fi
 
-if [ "$appsec_airgap" = "true" ] && [ "$active_profile" = "public-test" ]; then
-  warn "ERROR: settings.airgap is true and profile public-test targets gitlab.com; refusing under airgap."
+normalized_instance=${gitlab_instance%/}
+if [ "$appsec_airgap" = "true" ] && [ "$normalized_instance" = "https://gitlab.com" ]; then
+  warn "ERROR: settings.airgap=true and APPSEC_PROFILE='$active_profile' targets gitlab.com; use APPSEC_PROFILE=company for an airgap-safe profile."
   exit 1
 fi
 
 append_enabled_component() {
   if [ -n "$enabled_components" ]; then
-    enabled_components="$enabled_components $1|$2"
+    enabled_components="$enabled_components $1|$2|$3"
   else
-    enabled_components="$1|$2"
+    enabled_components="$1|$2|$3"
   fi
 }
 
@@ -442,11 +420,10 @@ apply_runner_flag() {
   category_name=$1
   runner_name=$2
   case "$runner_name" in
-    gitlab-sast.sh) run_gitlab_sast=true ;;
+    fortify-sast.sh) run_fortify_sast=true ;;
     gitlab-dependency-scanning.sh) run_gitlab_ds=true ;;
     secret-detection.sh) run_secret_detection=true ;;
     gitlab-container-scanning.sh) run_gitlab_cs=true ;;
-    fortify-python.sh|fortify-js.sh) run_fortify=true ;;
     none) ;;
     *)
       warn "WARNING: unknown runner $runner_name for category $category_name — no RUN_ flag set"
@@ -456,60 +433,55 @@ apply_runner_flag() {
 
 for category_name in $category_order; do
   category_component=
+  category_version=
   category_runner=
   category_enabled=false
 
   case "$category_name" in
     sast)
       category_component=$sast_component
+      category_version=$sast_version
       category_runner=$sast_runner
       category_enabled=$sast_enabled
       ;;
     dependency_scanning)
       category_component=$dependency_scanning_component
+      category_version=$dependency_scanning_version
       category_runner=$dependency_scanning_runner
       category_enabled=$dependency_scanning_enabled
       ;;
     secret_detection)
       category_component=$secret_detection_component
+      category_version=$secret_detection_version
       category_runner=$secret_detection_runner
       category_enabled=$secret_detection_enabled
       ;;
     container_scanning)
       category_component=$container_scanning_component
+      category_version=$container_scanning_version
       category_runner=$container_scanning_runner
       category_enabled=$container_scanning_enabled
-      ;;
-    dast_web)
-      category_component=$dast_web_component
-      category_runner=$dast_web_runner
-      category_enabled=$dast_web_enabled
-      ;;
-    dast_api)
-      category_component=$dast_api_component
-      category_runner=$dast_api_runner
-      category_enabled=$dast_api_enabled
       ;;
   esac
 
   if [ "$category_enabled" = "true" ]; then
     apply_runner_flag "$category_name" "$category_runner"
-    if [ -n "$category_component" ]; then
-      append_enabled_component "$category_component" "$category_runner"
+    if [ -n "$category_component" ] && [ -n "$category_version" ] && [ -n "$category_runner" ]; then
+      append_enabled_component "$category_component" "$category_version" "$category_runner"
     fi
   fi
 done
+
+if [ -n "${FORTIFY_SAST_IMAGE:-}" ]; then
+  fortify_sast_image=$FORTIFY_SAST_IMAGE
+else
+  fortify_sast_image=$sast_image_yaml
+fi
 
 if [ -n "${SECRET_DETECTION_IMAGE:-}" ]; then
   secret_detection_image=$SECRET_DETECTION_IMAGE
 else
   secret_detection_image=$secret_detection_image_yaml
-fi
-
-if [ -n "${GITLAB_SAST_IMAGE:-}" ]; then
-  gitlab_sast_image=$GITLAB_SAST_IMAGE
-else
-  gitlab_sast_image=$sast_image_yaml
 fi
 
 if [ -n "${GITLAB_DS_IMAGE:-}" ]; then
@@ -528,23 +500,19 @@ emit APPSEC_PROFILE "$active_profile"
 emit APPSEC_AIRGAP "$appsec_airgap"
 emit CONTAINER_RUNTIME "$container_runtime"
 emit JQ_INSTALL_URL "$jq_install_url"
+emit PYTHON_INSTALL_URL "$python_install_url"
 emit CATALOG_MODE "$catalog_mode"
 emit CATALOG_AUTH_ENV "$catalog_auth_env"
 emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"
+emit CI_GATE_FAIL_ON "$ci_gate_fail_on"
 emit GITLAB_INSTANCE "$gitlab_instance"
+emit FORTIFY_SAST_IMAGE "$fortify_sast_image"
 emit SECRET_DETECTION_IMAGE "$secret_detection_image"
-emit GITLAB_SAST_IMAGE "$gitlab_sast_image"
 emit GITLAB_DS_IMAGE "$gitlab_ds_image"
 emit GITLAB_CS_IMAGE "$gitlab_cs_image"
-emit RUN_GITLAB_SAST "$run_gitlab_sast"
+emit RUN_FORTIFY_SAST "$run_fortify_sast"
 emit RUN_GITLAB_DS "$run_gitlab_ds"
 emit RUN_SECRET_DETECTION "$run_secret_detection"
 emit RUN_GITLAB_CS "$run_gitlab_cs"
-emit RUN_FORTIFY "$run_fortify"
-emit RUN_PARASOFT "$run_parasoft"
-emit RUN_PYLINT "$run_pylint"
-emit RUN_ESLINT "$run_eslint"
-emit RUN_SCANTIST "$run_scantist"
-emit RUN_TRIVY "$run_trivy"
 emit ENABLED_COMPONENTS "$enabled_components"

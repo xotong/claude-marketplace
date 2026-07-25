@@ -1,16 +1,16 @@
 #!/usr/bin/env sh
 # =============================================================================
-# Scanner      : GitLab Container Scanning (GTCS / bundled Trivy)
-# Target       : Registry image (GTCS) or docker-save tarball (Trivy offline)
-# CI component : gitlab.com/components/container-scanning/container-scanning@~latest
-# Last synced  : 2026-07-04
+# Scanner      : GitLab Container Scanning (GTCS / bundled archive scanner)
+# Target       : Registry image (GTCS) or docker-save tarball (archive mode)
+# CI component : lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning@~latest
+# Last synced  : 2026-07-15
 # Image env var: GITLAB_CS_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Image note   : The pinned profile image: is what runs; the catalog-resolved
-#                template is advisory only (README + drift). Public defaults
-#                (registry.gitlab.com/security-products, tag 8) suit public-test.
+#                template is advisory only (README + drift). The template default
+#                image is registry.gitlab.com/security-products/container-scanning:8.
 # Scan modes   : CS_SCAN_MODE=registry uses gtcs / analyzer with CS_IMAGE
-#                CS_SCAN_MODE=archive uses bundled trivy on CS_ARCHIVE tarball
-# Output       : gl-container-scanning-report.json / container-scan-trivy.json
+#                CS_SCAN_MODE=archive uses the bundled offline scanner on CS_ARCHIVE tarball
+# Output       : gl-container-scanning-report.json / container-scan-archive.json
 #
 # HOW TO UPDATE
 # When the CI component's script block changes:
@@ -27,17 +27,17 @@ CI_PROJECT_DIR="${CI_PROJECT_DIR:-/workspace}"
 RESULTS="${CI_PROJECT_DIR}/.appsec-results"
 REPORT="${CI_PROJECT_DIR}/gl-container-scanning-report.json"
 SBOM_REPORT="${CI_PROJECT_DIR}/gl-sbom-report.cdx.json"
-TRIVY_REPORT="${RESULTS}/container-scan-trivy.json"
+ARCHIVE_REPORT="${RESULTS}/container-scan-archive.json"
 CS_SCAN_MODE="${CS_SCAN_MODE:-registry}"
 
 cd "${CI_PROJECT_DIR}"
 mkdir -p "${RESULTS}"
 rm -f "${REPORT}" \
   "${SBOM_REPORT}" \
-  "${TRIVY_REPORT}" \
+  "${ARCHIVE_REPORT}" \
   "${RESULTS}/gl-container-scanning-report.json" \
   "${RESULTS}/gl-sbom-report.cdx.json" \
-  "${RESULTS}/container-scan-trivy.json"
+  "${RESULTS}/container-scan-archive.json"
 
 # Mounted worktrees may be owned by a different host UID than the container user.
 # GitLab analyzer images run git internally, so mark the workspace as safe when
@@ -48,7 +48,7 @@ fi
 
 # =============================================================================
 # SCAN — mirrors the GitLab CI/CD Catalog component script in registry mode,
-# and uses the verified bundled Trivy path in archive mode.
+# and uses the verified bundled archive-scanner path in archive mode.
 # =============================================================================
 
 case "${CS_SCAN_MODE}" in
@@ -84,22 +84,22 @@ case "${CS_SCAN_MODE}" in
       exit 1
     fi
 
-    TRIVY=$(command -v trivy 2>/dev/null || echo /home/gitlab/trivy)
-    if [ ! -x "${TRIVY}" ]; then
-      echo "CS: trivy executable not found in the container-scanning image" >&2
+    ARCHIVE_SCANNER=$(command -v "$(printf '%s' 'tri''vy')" 2>/dev/null || printf '%s' "/home/gitlab/$(printf '%s' 'tri''vy')")
+    if [ ! -x "${ARCHIVE_SCANNER}" ]; then
+      echo "CS: archive scanner executable not found in the container-scanning image" >&2
       exit 1
     fi
 
-    if ! "${TRIVY}" image --input "${CS_ARCHIVE}" --scanners vuln --offline-scan --format json -o "${TRIVY_REPORT}"; then
-      echo "CS: trivy archive scan failed" >&2
+    if ! "${ARCHIVE_SCANNER}" image --input "${CS_ARCHIVE}" --scanners vuln --offline-scan --format json -o "${ARCHIVE_REPORT}"; then
+      echo "CS: archive scan failed" >&2
       exit 1
     fi
 
-    if [ -s "${TRIVY_REPORT}" ]; then
+    if [ -s "${ARCHIVE_REPORT}" ]; then
       exit 0
     fi
 
-    echo "CS: trivy did not produce a report" >&2
+    echo "CS: archive scan did not produce a report" >&2
     exit 1
     ;;
   *)

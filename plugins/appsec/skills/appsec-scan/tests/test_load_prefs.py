@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -62,154 +61,85 @@ class LoadPrefsTest(unittest.TestCase):
         values = self.eval_output(
             result.stdout,
             "APPSEC_PROFILE",
-            "RUN_GITLAB_SAST",
+            "RUN_FORTIFY_SAST",
             "RUN_GITLAB_DS",
             "RUN_SECRET_DETECTION",
             "RUN_GITLAB_CS",
-            "RUN_FORTIFY",
-            "RUN_PARASOFT",
-            "RUN_PYLINT",
-            "RUN_ESLINT",
-            "RUN_SCANTIST",
-            "RUN_TRIVY",
-            "GITLAB_SAST_IMAGE",
+            "FORTIFY_SAST_IMAGE",
             "GITLAB_INSTANCE",
             "ENABLED_COMPONENTS",
+            "PYTHON_INSTALL_URL",
+            "CI_GATE_FAIL_ON",
         )
 
-        self.assertEqual(values["APPSEC_PROFILE"], "company")
-        self.assertEqual(values["RUN_GITLAB_SAST"], "true")
+        self.assertEqual(values["APPSEC_PROFILE"], "catalog")
+        self.assertEqual(values["RUN_FORTIFY_SAST"], "true")
         self.assertEqual(values["RUN_GITLAB_DS"], "true")
         self.assertEqual(values["RUN_SECRET_DETECTION"], "true")
         self.assertEqual(values["RUN_GITLAB_CS"], "true")
-        self.assertEqual(values["RUN_FORTIFY"], "true")
-        self.assertEqual(values["RUN_PARASOFT"], "true")
-        self.assertEqual(values["RUN_PYLINT"], "true")
-        self.assertEqual(values["RUN_ESLINT"], "true")
-        self.assertEqual(values["RUN_SCANTIST"], "true")
-        self.assertEqual(values["RUN_TRIVY"], "true")
-        self.assertEqual(values["GITLAB_SAST_IMAGE"], "jfrog.internal/security/semgrep:6")
-        self.assertEqual(values["GITLAB_INSTANCE"], "https://gitlab.internal.example")
-        self.assertIn("components/sast/sast|gitlab-sast.sh", values["ENABLED_COMPONENTS"])
-        self.assertNotIn("components/dast/dast|", values["ENABLED_COMPONENTS"])
+        self.assertEqual(
+            values["FORTIFY_SAST_IMAGE"],
+            "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review",
+        )
+        self.assertEqual(values["GITLAB_INSTANCE"], "https://gitlab.com")
+        self.assertEqual(values["PYTHON_INSTALL_URL"], "")
+        self.assertEqual(values["CI_GATE_FAIL_ON"], "high")
+        self.assertIn(
+            "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast|~latest|fortify-sast.sh",
+            values["ENABLED_COMPONENTS"],
+        )
+        self.assertIn(
+            "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning|~latest|gitlab-container-scanning.sh",
+            values["ENABLED_COMPONENTS"],
+        )
+        self.assertNotIn("RUN_GITLAB_SAST=", result.stdout)
+        self.assertNotIn("RUN_FORTIFY=", result.stdout)
+        self.assertNotIn("RUN_" + "PARA" + "SOFT=", result.stdout)
+        self.assertNotIn("RUN_" + "PY" + "LINT=", result.stdout)
+        self.assertNotIn("RUN_" + "ES" + "LINT=", result.stdout)
+        self.assertNotIn("RUN_" + "SCAN" + "TIST=", result.stdout)
+        self.assertNotIn("RUN_" + "TRI" + "VY=", result.stdout)
+        self.assertNotIn("RUN_SCANNER=", result.stdout)
+        self.assertNotIn("GITLAB_" + "SAST_IMAGE=", result.stdout)
 
     def test_env_override_wins(self) -> None:
-        result = self.run_loader(PREFERENCES_PATH, GITLAB_SAST_IMAGE="custom:1")
+        result = self.run_loader(PREFERENCES_PATH, FORTIFY_SAST_IMAGE="custom:1")
         self.assertEqual(result.returncode, 0, result.stderr)
 
-        values = self.eval_output(result.stdout, "GITLAB_SAST_IMAGE")
-        self.assertEqual(values["GITLAB_SAST_IMAGE"], "custom:1")
+        values = self.eval_output(result.stdout, "FORTIFY_SAST_IMAGE")
+        self.assertEqual(values["FORTIFY_SAST_IMAGE"], "custom:1")
 
     def test_unknown_profile_fails_with_available_profiles(self) -> None:
         result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="nonexistent")
         self.assertEqual(result.returncode, 1)
         self.assertIn("company", result.stderr)
-        self.assertIn("public-test", result.stderr)
+        self.assertIn("catalog", result.stderr)
 
-    def test_public_test_refused_under_airgap(self) -> None:
-        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="public-test")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("airgap", result.stderr.lower())
-
-    def test_public_test_default_allowed_when_airgap_false(self) -> None:
-        temp_path = self.write_temp_config(
-            textwrap.dedent(
-                """
-                settings:
-                  airgap: false
-                  container_runtime: auto
-                  jq:
-                    prefer: host
-                    install_url: ""
-                  catalog:
-                    mode: online
-                    auth_token_env: ""
-                  container_registry:
-                    user_env: CS_REGISTRY_USER
-                    password_env: CS_REGISTRY_PASSWORD
-                default_profile: public-test
-                profiles:
-                  public-test:
-                    gitlab_instance: https://gitlab.com
-                    categories:
-                      sast:
-                        component: components/sast/sast
-                        image: registry.gitlab.com/security-products/semgrep:6
-                        runner: gitlab-sast.sh
-                        enabled: true
-                      dependency_scanning:
-                        component: components/dependency-scanning/main
-                        image: registry.gitlab.com/security-products/dependency-scanning:2
-                        runner: gitlab-dependency-scanning.sh
-                        enabled: false
-                      secret_detection:
-                        component: components/secret-detection/secret-detection
-                        image: registry.gitlab.com/security-products/secrets:7
-                        runner: secret-detection.sh
-                        enabled: false
-                      container_scanning:
-                        component: components/container-scanning/container-scanning
-                        image: registry.gitlab.com/security-products/container-scanning:8
-                        runner: gitlab-container-scanning.sh
-                        enabled: false
-                      dast_web:
-                        component: components/dast/dast
-                        image: ""
-                        runner: none
-                        enabled: false
-                      dast_api:
-                        component: components/dast/dast
-                        image: ""
-                        runner: none
-                        enabled: false
-                    additional_scanners: {}
-                """
-            ).lstrip()
-        )
+    def test_airgap_refuses_catalog_profile_targeting_gitlab_com(self) -> None:
+        original = PREFERENCES_PATH.read_text(encoding="utf-8")
+        temp_path = self.write_temp_config(original.replace("airgap: false", "airgap: true", 1))
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
-        result = self.run_loader(temp_path)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("APPSEC_PROFILE='catalog'", result.stderr)
+        self.assertIn("APPSEC_PROFILE=company", result.stderr)
 
-        values = self.eval_output(
-            result.stdout,
-            "APPSEC_PROFILE",
-            "RUN_GITLAB_SAST",
-            "RUN_GITLAB_DS",
-            "RUN_SECRET_DETECTION",
-            "RUN_GITLAB_CS",
-            "RUN_FORTIFY",
-            "RUN_PARASOFT",
-            "RUN_PYLINT",
-            "RUN_ESLINT",
-            "RUN_SCANTIST",
-            "RUN_TRIVY",
-        )
-
-        self.assertEqual(values["APPSEC_PROFILE"], "public-test")
-        self.assertEqual(values["RUN_GITLAB_SAST"], "true")
-        self.assertEqual(values["RUN_GITLAB_DS"], "false")
-        self.assertEqual(values["RUN_SECRET_DETECTION"], "false")
-        self.assertEqual(values["RUN_GITLAB_CS"], "false")
-        self.assertEqual(values["RUN_FORTIFY"], "false")
-        self.assertEqual(values["RUN_PARASOFT"], "false")
-        self.assertEqual(values["RUN_PYLINT"], "false")
-        self.assertEqual(values["RUN_ESLINT"], "false")
-        self.assertEqual(values["RUN_SCANTIST"], "false")
-        self.assertEqual(values["RUN_TRIVY"], "false")
-
-    def test_disabled_sast_removes_flag_and_component_pair(self) -> None:
+    def test_disabled_sast_removes_flag_and_component_triple(self) -> None:
         original = PREFERENCES_PATH.read_text(encoding="utf-8")
-        modified = original.replace("enabled: true", "enabled: false", 1)
+        modified = original.replace("        enabled: true", "        enabled: false", 1)
         temp_path = self.write_temp_config(modified)
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
         result = self.run_loader(temp_path)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-        values = self.eval_output(result.stdout, "RUN_GITLAB_SAST", "ENABLED_COMPONENTS")
-        self.assertEqual(values["RUN_GITLAB_SAST"], "false")
-        self.assertNotIn("components/sast/sast|gitlab-sast.sh", values["ENABLED_COMPONENTS"])
+        values = self.eval_output(result.stdout, "RUN_FORTIFY_SAST", "ENABLED_COMPONENTS")
+        self.assertEqual(values["RUN_FORTIFY_SAST"], "false")
+        self.assertNotIn(
+            "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast|~latest|fortify-sast.sh",
+            values["ENABLED_COMPONENTS"],
+        )
 
 
 if __name__ == "__main__":

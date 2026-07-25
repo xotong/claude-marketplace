@@ -14,6 +14,8 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_DIR.parents[3]
 CATALOG_SCRIPT = SKILL_DIR / "scripts" / "catalog.sh"
 REFERENCE_CATALOG = SKILL_DIR / "reference" / "catalog"
+SECRET_COMPONENT = "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection"
+DS_COMPONENT = "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning"
 
 
 def run(
@@ -39,6 +41,7 @@ class CatalogSelfTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("online path ok", result.stdout)
+        self.assertIn("pinned path advisory ok", result.stdout)
         self.assertIn("offline-fallback path ok", result.stdout)
         self.assertIn("check-drift DRIFT line ok", result.stdout)
 
@@ -63,16 +66,16 @@ for last do :; done
 url=$last
 case "$url" in
   */repository/tags?per_page=100)
-    printf '%s\\n' '[{"name":"1.0.0"},{"name":"2.3.0"},{"name":"2.2.9"},{"name":"v0.9.0"},{"name":"2.4.0-rc1"},{"name":"3.0"}]'
+    printf '%s\\n' '[{"name":"1.0.0"},{"name":"1.1.0"},{"name":"v0.9.0"},{"name":"1.2.0-rc1"}]'
     ;;
-  */repository/files/templates%2Fsecret-detection.yml/raw?ref=3.0)
-    exit 22
+  */repository/files/templates%2Fsecret-detection.yml/raw?ref=1.1.0)
+    printf '%s\\n' 'spec:' '  inputs:' '    image_tag:' '      default: "1.1.0"'
     ;;
-  */repository/files/templates%2Fsecret-detection%2Ftemplate.yml/raw?ref=3.0)
-    printf '%s\\n' 'spec:' '  inputs:' '    image_tag:' '      default: "3.0"'
-    ;;
-  */repository/files/README.md/raw?ref=3.0)
+  */repository/files/README.md/raw?ref=1.1.0)
     printf '%s\\n' '# README'
+    ;;
+  */repository/files/AGENTS.md/raw?ref=1.1.0)
+    printf '%s\\n' '# AGENTS'
     ;;
   *)
     exit 22
@@ -83,19 +86,59 @@ esac
         self.addCleanup(tmp.cleanup)
 
         cache_dir = Path(tmp.name) / "cache"
-        component = "components/secret-detection/secret-detection"
         result = run(
-            ["bash", str(CATALOG_SCRIPT), "resolve", "https://example.invalid", component, str(cache_dir)],
+            ["bash", str(CATALOG_SCRIPT), "resolve", "https://example.invalid", SECRET_COMPONENT, "~latest", str(cache_dir)],
             cwd=REPO_ROOT,
             env=env,
         )
 
         self.assertEqual(
             result.stdout.strip().splitlines()[-1],
-            f"{component}@3.0 [online]",
+            f"{SECRET_COMPONENT}@1.1.0 [online]",
         )
-        self.assertTrue((cache_dir / component / "3.0" / "template.yml").is_file())
-        self.assertTrue((cache_dir / component / "3.0" / "README.md").is_file())
+        self.assertTrue((cache_dir / SECRET_COMPONENT / "1.1.0" / "template.yml").is_file())
+        self.assertTrue((cache_dir / SECRET_COMPONENT / "1.1.0" / "README.md").is_file())
+        self.assertTrue((cache_dir / SECRET_COMPONENT / "1.1.0" / "AGENTS.md").is_file())
+
+    def test_resolve_emits_advisory_for_exact_pin_when_newer_stable_exists(self) -> None:
+        script = """#!/bin/sh
+set -eu
+for last do :; done
+url=$last
+case "$url" in
+  */repository/tags?per_page=100)
+    printf '%s\\n' '[{"name":"25.2.0"},{"name":"25.1.0"}]'
+    ;;
+  */repository/files/templates%2Ffortify-sast.yml/raw?ref=25.1.0)
+    printf '%s\\n' 'spec:' '  inputs:' '    image-tag:' '      default: "25.1.0"'
+    ;;
+  */repository/files/README.md/raw?ref=25.1.0)
+    printf '%s\\n' '# README'
+    ;;
+  */repository/files/AGENTS.md/raw?ref=25.1.0)
+    printf '%s\\n' '# AGENTS'
+    ;;
+  *)
+    exit 22
+    ;;
+esac
+"""
+        tmp, env = self.make_env_with_fake_curl(script)
+        self.addCleanup(tmp.cleanup)
+
+        cache_dir = Path(tmp.name) / "cache"
+        component = "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast"
+        result = run(
+            ["bash", str(CATALOG_SCRIPT), "resolve", "https://example.invalid", component, "25.1.0", str(cache_dir)],
+            cwd=REPO_ROOT,
+            env=env,
+        )
+
+        self.assertIn(f"{component}@25.1.0 [online]", result.stdout)
+        self.assertIn(
+            f"ADVISORY: {component} pinned 25.1.0, newer stable 25.2.0 available",
+            result.stdout,
+        )
 
     def test_resolve_falls_back_to_vendored_snapshot_when_offline(self) -> None:
         script = """#!/bin/sh
@@ -111,7 +154,8 @@ exit 7
                 str(CATALOG_SCRIPT),
                 "resolve",
                 "https://example.invalid",
-                "components/secret-detection/secret-detection",
+                SECRET_COMPONENT,
+                "~latest",
                 str(cache_dir),
             ],
             cwd=REPO_ROOT,
@@ -119,17 +163,58 @@ exit 7
         )
 
         self.assertIn("[offline-fallback]", result.stdout)
-        component_dir = REFERENCE_CATALOG / "components" / "secret-detection" / "secret-detection"
+        component_dir = REFERENCE_CATALOG / SECRET_COMPONENT
         tag_dirs = sorted(
             (path for path in component_dir.iterdir() if path.is_dir()),
             key=lambda path: tuple(int(part) for part in path.name.split(".")),
         )
         self.assertTrue(tag_dirs, f"missing vendored snapshot tags under {component_dir}")
-        template_path = tag_dirs[-1] / "template.yml"
-        template_text = template_path.read_text(encoding="utf-8")
-        self.assertTrue(template_text.strip(), f"{template_path} is empty")
-        self.assertIn("spec:", template_text)
-        self.assertIn("inputs:", template_text)
+        self.assertTrue((tag_dirs[-1] / "template.yml").is_file())
+        self.assertTrue((tag_dirs[-1] / "README.md").is_file())
+        self.assertTrue((tag_dirs[-1] / "AGENTS.md").is_file())
+
+    def test_resolve_offline_mode_never_calls_curl(self) -> None:
+        script = """#!/bin/sh
+set -eu
+: > "$CURL_CALLED_FILE"
+exit 99
+"""
+        tmp, env = self.make_env_with_fake_curl(script)
+        self.addCleanup(tmp.cleanup)
+        called_file = Path(tmp.name) / "curl-called"
+        env["CATALOG_MODE"] = "offline"
+        env["CURL_CALLED_FILE"] = str(called_file)
+
+        result = run(
+            [
+                "bash",
+                str(CATALOG_SCRIPT),
+                "resolve",
+                "https://example.invalid",
+                SECRET_COMPONENT,
+                "~latest",
+                str(Path(tmp.name) / "cache"),
+            ],
+            cwd=REPO_ROOT,
+            env=env,
+        )
+
+        self.assertFalse(called_file.exists(), result.stdout)
+        self.assertTrue(
+            result.stdout.strip().endswith("[offline-fallback]"),
+            result.stdout,
+        )
+
+    def test_date_to_epoch_accepts_today_on_this_host(self) -> None:
+        source = CATALOG_SCRIPT.read_text(encoding="utf-8")
+        start = source.index("date_to_epoch() {")
+        end = source.index("\n}\n", start) + 3
+        result = run(
+            ["bash", "-c", source[start:end] + '\ndate_to_epoch "$(date +%F)"'],
+            cwd=REPO_ROOT,
+        )
+
+        self.assertGreater(int(result.stdout.strip()), 1_700_000_000)
 
     def test_resolve_supports_nested_template_path_when_flat_path_404s(self) -> None:
         script = """#!/bin/sh
@@ -138,15 +223,15 @@ for last do :; done
 url=$last
 case "$url" in
   */repository/tags?per_page=100)
-    printf '%s\\n' '[{"name":"2.1.0"}]'
+    printf '%s\\n' '[{"name":"1.0.0"}]'
     ;;
-  */repository/files/templates%2Fmain.yml/raw?ref=2.1.0)
+  */repository/files/templates%2Fdependency-scanning.yml/raw?ref=1.0.0)
     exit 22
     ;;
-  */repository/files/templates%2Fmain%2Ftemplate.yml/raw?ref=2.1.0)
-    printf '%s\\n' 'spec:' '  inputs:' '    image_tag:' '      default: "2.1.0"'
+  */repository/files/templates%2Fdependency-scanning%2Ftemplate.yml/raw?ref=1.0.0)
+    printf '%s\\n' 'spec:' '  inputs:' '    image_tag:' '      default: "1.0.0"'
     ;;
-  */repository/files/README.md/raw?ref=2.1.0)
+  */repository/files/README.md/raw?ref=1.0.0)
     printf '%s\\n' '# README'
     ;;
   *)
@@ -158,27 +243,26 @@ esac
         self.addCleanup(tmp.cleanup)
 
         cache_dir = Path(tmp.name) / "cache"
-        component = "components/dependency-scanning/main"
         result = run(
-            ["bash", str(CATALOG_SCRIPT), "resolve", "https://example.invalid", component, str(cache_dir)],
+            ["bash", str(CATALOG_SCRIPT), "resolve", "https://example.invalid", DS_COMPONENT, "~latest", str(cache_dir)],
             cwd=REPO_ROOT,
             env=env,
         )
 
         self.assertEqual(
             result.stdout.strip().splitlines()[-1],
-            f"{component}@2.1.0 [online]",
+            f"{DS_COMPONENT}@1.0.0 [online]",
         )
-        self.assertTrue((cache_dir / component / "2.1.0" / "template.yml").is_file())
+        self.assertTrue((cache_dir / DS_COMPONENT / "1.0.0" / "template.yml").is_file())
 
 
 class VendoredSnapshots(unittest.TestCase):
-    def test_expected_components_have_snapshot_with_template_and_readme(self) -> None:
+    def test_expected_components_have_snapshot_with_template_readme_and_agents(self) -> None:
         components = [
-            "components/sast/sast",
-            "components/secret-detection/secret-detection",
-            "components/dependency-scanning/main",
-            "components/container-scanning/container-scanning",
+            "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast",
+            "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning",
+            "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection",
+            "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning",
         ]
 
         for component in components:
@@ -189,10 +273,12 @@ class VendoredSnapshots(unittest.TestCase):
                 self.assertTrue(tag_dirs, f"missing tag directories for {component}")
                 self.assertTrue(
                     any(
-                        (tag_dir / "template.yml").is_file() and (tag_dir / "README.md").is_file()
+                        (tag_dir / "template.yml").is_file()
+                        and (tag_dir / "README.md").is_file()
+                        and (tag_dir / "AGENTS.md").is_file()
                         for tag_dir in tag_dirs
                     ),
-                    f"expected template.yml and README.md under at least one tag for {component}",
+                    f"expected template.yml, README.md, and AGENTS.md under at least one tag for {component}",
                 )
 
 
