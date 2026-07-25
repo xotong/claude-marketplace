@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -387,3 +388,46 @@ class HelperScriptsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeDaemonProbeTest(HelperScriptsTest):
+    """Binary presence is not a usable environment."""
+
+    def test_require_daemon_fails_fast_on_wedged_runtime(self) -> None:
+        # A wedged Docker Desktop makes `docker info` hang forever, and macOS
+        # has no timeout(1) — the probe must bound itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(tmp, {"docker": "#!/bin/sh\nsleep 300\n"})
+            env = dict(
+                os.environ,
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                CONTAINER_RUNTIME="docker",
+                APPSEC_RUNTIME_PROBE_TIMEOUT="2",
+            )
+            start = time.monotonic()
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "detect-runtime.sh"), "--require-daemon"],
+                env=env, capture_output=True, text=True,
+            )
+            elapsed = time.monotonic() - start
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("daemon is not responding", result.stderr)
+        self.assertLess(elapsed, 30, "probe did not bound itself")
+
+    def test_without_flag_binary_presence_is_enough(self) -> None:
+        # --dry-run must keep working with no daemon.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(tmp, {"docker": "#!/bin/sh\nsleep 300\n"})
+            env = dict(
+                os.environ,
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                CONTAINER_RUNTIME="docker",
+            )
+            result = subprocess.run(
+                ["bash", str(SCRIPTS_DIR / "detect-runtime.sh")],
+                env=env, capture_output=True, text=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "docker")

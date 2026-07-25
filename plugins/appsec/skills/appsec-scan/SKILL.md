@@ -22,7 +22,7 @@ description: >
 
 Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-scan.sh` orchestrates all four scanners; `scripts/normalize.py` emits `.appsec-results/findings.triaged.json` with per-finding `verification_status` and drives the severity gate. `scripts/fix-branch.sh` guards the fix loop. Scan mechanics live in `scripts/`, scanner commands in `scanners/` — never edit SKILL.md for those. New in v3.1: `run-scan.sh`, `normalize.py`, `fix-branch.sh`, `resolve-python.sh`, `CHANGELOG.md`, `MIGRATION.md`. **Config:** `config/scanner-preferences.yaml`. **Scanners:** `scanners/*.sh`. **Versions/pins:** `version:` in category block → UPDATE-GUIDE.md.
 
-**Shell session:** Steps 1–3 assume one persistent shell so exports carry forward.
+**Shell session:** see the shell contract in Step 1 — bash, one invocation per step.
 `run-scan.sh` self-locates its directories and self-loads preferences if run standalone (RUN_* flags absent), so Step 3 is also safe to re-run independently.
 **Exit-code contract:** `run-scan.sh` exits 0 (gate passed), 1 (gate failed / findings present), 2 (usage/config error — e.g. unrecognised `ci_gate` value).
 
@@ -44,17 +44,25 @@ Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-
 The scanner scripts are relative to the skill's own directory, not the project
 being scanned. Resolve this path first — subsequent steps depend on it.
 
+You read this file from disk, so you already know its directory — that is
+`SKILL_DIR`. Substitute the real absolute path below. Do **not** try to derive it
+from `$0` or `${BASH_SOURCE[0]}`: those resolve to your shell, not to this file,
+and yield `/bin`.
+
 ```bash
-export SKILL_DIR="${SKILL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)}"
+export SKILL_DIR=/absolute/path/to/plugins/appsec/skills/appsec-scan
 export SCANNERS_DIR="$SKILL_DIR/scanners"
 export SCRIPTS_DIR="$SKILL_DIR/scripts"
-if [ ! -d "$SCANNERS_DIR" ] || [ ! -d "$SCRIPTS_DIR" ]; then
-  echo "ERROR: skill directory not found (SKILL_DIR='$SKILL_DIR')." >&2
-  echo "Set it explicitly and re-run, e.g.:" >&2
-  echo "  export SKILL_DIR=/abs/path/to/plugins/appsec/skills/appsec-scan" >&2
-  return 1 2>/dev/null || exit 1
-fi
+[ -d "$SCANNERS_DIR" ] && [ -d "$SCRIPTS_DIR" ] || {
+  echo "ERROR: wrong SKILL_DIR='$SKILL_DIR'" >&2; exit 1; }
 ```
+
+**Shell contract — applies to every snippet in this file.** Run them with
+`bash`, not your login shell, and send each step's commands as ONE invocation.
+Two reasons, both of which fail silently rather than loudly: exports do not
+survive between separate tool calls, and zsh (the macOS default) does not
+word-split unquoted variables the way these snippets expect. Every script here
+self-loads what it needs, so a step that only invokes a script is safe alone.
 
 ---
 
@@ -127,36 +135,24 @@ thing that talks to the network, and only to `$GITLAB_INSTANCE`. When
 `reference/catalog/` and says so — the scan still runs.
 
 ```bash
-CATALOG_CACHE=".appsec-results/catalog"
-mkdir -p "$CATALOG_CACHE"
-
-# ENABLED_COMPONENTS from Step 1.5: "component|version|runner|image" tuples.
-# image = what actually runs; check-drift compares it to the template's image.
-for pair in $ENABLED_COMPONENTS; do
-  component="${pair%%|*}"; rest="${pair#*|}"; version="${rest%%|*}"; rest="${rest#*|}"
-  runner="${rest%%|*}"; image="${rest#*|}"
-  bash "$SCRIPTS_DIR/catalog.sh" resolve "$GITLAB_INSTANCE" "$component" "$version" "$CATALOG_CACHE" "$CATALOG_AUTH_ENV"
-  if [ "$runner" != "none" ]; then
-    bash "$SCRIPTS_DIR/catalog.sh" check-drift "$component" "$CATALOG_CACHE" "$SCANNERS_DIR/$runner" "$image"
-  fi
-done
+bash "$SCRIPTS_DIR/resolve-components.sh"
 ```
 
-catalog.sh resolves live when online and uses vendored snapshots in
-`reference/catalog/` automatically when `CATALOG_MODE=offline` or the fetch
-fails — no manual skip needed. If `resolve` reports `[offline-fallback]` while
-`CATALOG_MODE=online`, the read failed: the PAT in `$CATALOG_AUTH_ENV` is
-missing, expired, or lacks `read_api` (see MIGRATION.md step 0). Say so — the
-run continues on the vendored snapshot; never present it as live.
+It resolves every enabled component, checks each for drift, self-loads
+preferences, and prints a ready-made resolution table — one row per component,
+e.g. `| lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0
+| online | — |`. Show that table to the user verbatim before scanning, then act
+on any prefix lines printed below it.
 
-Then present the user a resolution table before scanning:
+Resolution falls back to the vendored snapshots in `reference/catalog/`
+automatically when `CATALOG_MODE=offline` or the fetch fails — no manual skip
+needed. A `[offline-fallback]` source while `CATALOG_MODE=online` means the read
+failed: the PAT in `$CATALOG_AUTH_ENV` is missing, expired, or lacks `read_api`
+(see MIGRATION.md step 0). Say so — the run continues on the snapshot, but never
+present it as live.
 
-| Category | Component | Version | Source | Drift |
-|---|---|---|---|---|
-| sast | lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0 | online | — |
-
-`resolve` prints `<component>@<tag> [online|offline-fallback]`. Scripts signal
-everything else with four prefixes. Surface the line verbatim, then:
+Scripts signal everything else with four prefixes. Surface the line verbatim,
+then:
 
 | Prefix | Required action |
 |---|---|
