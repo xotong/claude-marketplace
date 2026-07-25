@@ -15,6 +15,7 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = SKILL_DIR.parents[3]
 CATALOG_SCRIPT = SKILL_DIR / "scripts" / "catalog.sh"
 SCANNERS_DIR = SKILL_DIR / "scanners"
+SCRIPTS_DIR = SKILL_DIR / "scripts"
 REFERENCE_CATALOG = SKILL_DIR / "reference" / "catalog"
 SECRET_COMPONENT = "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection"
 DS_COMPONENT = "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning"
@@ -345,3 +346,32 @@ class ContractCoverageTest(unittest.TestCase):
                 re.search(rf"^\s*{re.escape(language)}\)", runner, re.MULTILINE),
                 f"fortify-sast.sh has no case arm for declared language {language!r}",
             )
+
+
+class RevendorSafetyTest(unittest.TestCase):
+    """Re-vendoring must never confirm a stale snapshot against itself."""
+
+    def test_refuses_to_vendor_from_offline_fallback(self) -> None:
+        # An unreachable instance makes every component resolve
+        # [offline-fallback]. Copying that back over reference/catalog/ would
+        # restamp the existing snapshot as freshly fetched — a stale component
+        # would then look verified. Nothing may be written.
+        before = {
+            path: path.read_bytes()
+            for path in (SKILL_DIR / "reference" / "catalog").rglob("*")
+            if path.is_file()
+        }
+        result = run(
+            ["bash", str(SCRIPTS_DIR / "revendor.sh"), "https://gitlab.invalid.example"],
+            cwd=REPO_ROOT, check=False,
+        )
+        after = {
+            path: path.read_bytes()
+            for path in (SKILL_DIR / "reference" / "catalog").rglob("*")
+            if path.is_file()
+        }
+
+        # run() folds stderr into stdout
+        self.assertIn("REFUSED", result.stdout)
+        self.assertIn("0 vendored", result.stdout)
+        self.assertEqual(before, after, "refused run still modified vendored snapshots")

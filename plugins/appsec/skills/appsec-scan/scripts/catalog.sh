@@ -23,10 +23,19 @@ skill_dir() {
 
 urlencode_path() { printf '%s' "$1" | sed 's/\//%2F/g'; }
 
+# A transient blip (cold TLS handshake, a slow first request, a 5xx) used to
+# degrade a component straight to [offline-fallback] — which reads as "the token
+# is wrong" when it was only a hiccup. --retry covers transient failures and
+# timeouts; it deliberately does NOT retry 401/404, so a genuine auth or path
+# problem still fails fast. Timeout is tunable for slow internal instances.
 curl_get() {
-  local url token_env token_value _tmpf curl_status
+  local url token_env token_value _tmpf curl_status timeout retries
   url=$1
   token_env=${2:-}
+  timeout=${APPSEC_CATALOG_TIMEOUT:-15}
+  case "$timeout" in ''|*[!0-9]*) timeout=15 ;; esac
+  retries=${APPSEC_CATALOG_RETRIES:-2}
+  case "$retries" in ''|*[!0-9]*) retries=2 ;; esac
   if [ -n "$token_env" ]; then
     token_value=$(printenv "$token_env" 2>/dev/null || true)
   else
@@ -38,7 +47,7 @@ curl_get() {
       rm -f "$_tmpf"
       return 1
     }
-    if curl -sf --max-time 10 --config "$_tmpf" "$url"; then
+    if curl -sf --max-time "$timeout" --retry "$retries" --config "$_tmpf" "$url"; then
       curl_status=0
     else
       curl_status=$?
@@ -46,7 +55,7 @@ curl_get() {
     rm -f "$_tmpf"
     return "$curl_status"
   else
-    curl -sf --max-time 10 "$url"
+    curl -sf --max-time "$timeout" --retry "$retries" "$url"
   fi
 }
 

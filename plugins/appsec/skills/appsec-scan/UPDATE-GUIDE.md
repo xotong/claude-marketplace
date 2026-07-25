@@ -152,45 +152,33 @@ The CI team retires a scanner category entirely.
 
 ## Scenario 6 — Refreshing vendored catalog snapshots
 
-Quarterly or after a component release, run `catalog.sh resolve` with the new
-`version` argument for each of the 4 components:
+Quarterly, or after a component release. One command does the whole thing —
+resolve every enabled component at `~latest`, copy `template.yml`, `README.md`
+and `AGENTS.md` into `reference/catalog/<component>/<tag>/`, stamp the
+provenance header, and regenerate `scanners/*.contract`:
 
 ```bash
-# Example: refresh all 4 components (adjust version as needed)
-for component in \
-  "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast 25.2.0" \
-  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.1.0" \
-  "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection 1.0.0" \
-  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.1.0"; do
-  path="${component% *}"; ver="${component##* }"
-  bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
-    resolve https://gitlab.com "$path" "$ver" /tmp/catalog-refresh ""
-done
+cd plugins/appsec/skills/appsec-scan
+
+# public catalogue (private projects, so a read_api PAT is required)
+bash scripts/revendor.sh https://gitlab.com GITLAB_READ_TOKEN
+
+# an internal instance that serves the catalogue anonymously
+bash scripts/revendor.sh https://gitlab.internal.company.com
 ```
 
-Copy the new `<tag>/template.yml`, `README.md`, and `AGENTS.md` from the
-refresh dir into `reference/catalog/<component-path>/<tag>/` (keep prior tag
-dirs for reference).
+Prior tag directories are left in place; the resolver picks the highest.
 
-Add or refresh the provenance line at the top of each copied `README.md`:
-`<!-- Vendored snapshot: fetched YYYY-MM-DD from gitlab.com CI/CD Catalog (component tag <tag>) -->`
+**It refuses to vendor a component that resolved `[offline-fallback]`.** That
+would copy the existing snapshot onto itself and make a stale component look
+freshly confirmed. If you see `REFUSED`, the instance was unreachable or the
+token was rejected — fix that and re-run. Nothing is written for a refused
+component.
 
-Regenerate the checked-in contracts so input/report drift keeps being detected:
-
-```bash
-for pair in \
-  "fortify-sast/fortify-sast fortify-sast" \
-  "dependency-scanning/dependency-scanning gitlab-dependency-scanning" \
-  "secret-detection/secret-detection secret-detection" \
-  "container-scanning/container-scanning gitlab-container-scanning"; do
-  comp="${pair%% *}"; runner="${pair##* }"
-  f="plugins/appsec/skills/appsec-scan/scanners/${runner}.contract"
-  { sed -n '/^#/p' "$f"; \
-    bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh contract \
-      "lobster-thermidor/devops/ci-catalogue/${comp}" /tmp/catalog-refresh 2>/dev/null; } > "$f.new"
-  mv "$f.new" "$f"
-done
-```
+**Airgap note:** run this against your *internal* instance after publishing the
+components there. Snapshots vendored from gitlab.com describe gitlab.com's
+components; serving those as the offline fallback inside your airgap would
+report a component shape you never published.
 
 Review the diff: **every changed line is a real upstream change**. A new
 `input.<name>.option=` means the component gained a capability the runner may

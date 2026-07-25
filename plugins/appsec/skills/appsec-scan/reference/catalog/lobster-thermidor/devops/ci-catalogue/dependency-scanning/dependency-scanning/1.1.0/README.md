@@ -1,4 +1,4 @@
-<!-- Vendored snapshot: fetched 2026-07-25 from gitlab.com CI/CD Catalog (component tag 1.1.0) -->
+<!-- Vendored snapshot: fetched 2026-07-25 from https://gitlab.com CI/CD Catalog (component tag 1.1.0) -->
 
 
 The following exmaple is a common way to use this component

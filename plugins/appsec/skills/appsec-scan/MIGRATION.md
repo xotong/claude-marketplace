@@ -231,22 +231,16 @@ it means naming a var "just in case" blocks every run until a token exists.
 
 ## 5 — Refresh vendored catalog snapshots
 
-The vendored snapshots in `reference/catalog/` are the automatic fallback when catalog resolution fails. Re-vendor them from your internal instance so the fallback serves the components you actually published, not the gitlab.com originals. Refresh them using the internal GitLab instance (Scenario 6 in UPDATE-GUIDE.md):
+The vendored snapshots in `reference/catalog/` are the automatic fallback when catalog resolution fails. Re-vendor them **from your internal instance** so the fallback serves the components you actually published, not the gitlab.com originals:
 
 ```bash
-for component in \
-  "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast 25.2.0" \
-  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.1.0" \
-  "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection 1.0.0" \
-  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.1.0"; do
-  path="${component% *}"; ver="${component##* }"
-  GITLAB_READ_TOKEN="$GITLAB_READ_TOKEN" \
-    bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
-    resolve "https://gitlab.internal.company.com" "$path" "$ver" /tmp/catalog-refresh "GITLAB_READ_TOKEN"
-done
+cd plugins/appsec/skills/appsec-scan
+bash scripts/revendor.sh https://gitlab.internal.company.com
 ```
 
-Copy `template.yml`, `README.md`, `AGENTS.md` from the refresh output into `reference/catalog/<path>/<ver>/`.
+Add a token env var name as a second argument if your instance requires auth. The script refuses to vendor any component that resolved `[offline-fallback]`, so it cannot quietly confirm a stale snapshot against itself.
+
+
 
 ---
 

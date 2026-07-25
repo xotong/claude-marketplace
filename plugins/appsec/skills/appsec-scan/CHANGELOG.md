@@ -26,6 +26,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `fix-branch.sh --check-progress` silently accepted non-integer arguments, writing invalid JSON into the loop state and exiting 0 as if progress had been made
 - SKILL.md Step 1 derived `SKILL_DIR` from `${BASH_SOURCE[0]}`, which resolves to the agent's shell (`/bin`), and assumed one persistent shell across steps
 
+- `scripts/revendor.sh`: one command to refresh the vendored snapshots and regenerate the contracts from a live instance. It **refuses** to vendor any component that resolved `[offline-fallback]`, which would copy a snapshot onto itself and make a stale component look freshly confirmed
+- `APPSEC_CATALOG_TIMEOUT` / `APPSEC_CATALOG_RETRIES`: catalog reads now retry transient failures (default 2) and use a 15s timeout. A cold TLS handshake or a brief 5xx previously degraded one component straight to `[offline-fallback]`, which reads as an auth problem when it was a hiccup. 401/404 still fail fast
+
 ### Removed
 - `settings.catalog.mode`. Components are always resolved live against the active profile's `gitlab_instance`, with automatic fallback to the vendored snapshots when that fetch fails. The forced-offline setting provided nothing the design did not already give — exact `version:` pins give reproducibility, the fallback gives airgap resilience — while silently disabling image and contract drift detection, since `scanners/*.contract` are generated from the very snapshots the check would compare against. It also risked serving gitlab.com-vendored snapshots as though they were an internal instance's components. `catalog.sh resolve --offline` remains for tests and one-off manual use
 - Consequently, preflight now requires a named `auth_token_env` var whenever one is named; there is no mode in which the requirement is skipped

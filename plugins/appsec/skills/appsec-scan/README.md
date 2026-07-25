@@ -220,6 +220,7 @@ appsec-scan/
 │   ├── resolve-python.sh  python3 from PATH or configured URL, else degrade
 │   ├── container-target.sh  what GTCS scans: registry | archive | none
 │   ├── resolve-components.sh  Step 2.5: resolve every enabled component + drift table
+│   ├── revendor.sh        refresh reference/catalog/ + contracts from a live instance
 │   ├── run-scan.sh        scan orchestrator: invokes all scanners, calls normalize.py
 │   ├── fix-branch.sh      fix-loop guard: --init and --check-progress
 │   └── normalize.py       raw reports → findings.triaged.json (verification statuses)

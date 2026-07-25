@@ -1,3 +1,4 @@
+<!-- Vendored snapshot: fetched 2026-07-25 from https://gitlab.com CI/CD Catalog (component tag 1.0.0) -->
 # Secret Detection
 
 This is a version of Gitlab Secret Detection v2.3.0  prepared for our platform
