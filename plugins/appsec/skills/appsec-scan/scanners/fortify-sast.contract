@@ -1,0 +1,37 @@
+# Contract for lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
+# Derived from the component's template.yml — the inputs it declares (defaults
+# and permitted options) and the reports it produces. catalog.sh check-drift
+# diffs the live component against this file and emits CONTRACT-DRIFT: on any
+# difference, so a new input or option cannot land unnoticed.
+#
+# report.* records what the COMPONENT produces in CI. The local pipeline may
+# deliberately consume different artifacts (we parse Fortify's .fpr directly
+# rather than running the component's gl-sast-report.json converter) — that
+# divergence is intentional; this file exists to catch upstream RENAMES.
+#
+# Regenerate after a component bump (UPDATE-GUIDE.md Scenario 6):
+#   bash scripts/catalog.sh contract fortify-sast/fortify-sast <cache> > scanners/fortify-sast.contract
+input.allow-failure.default=true
+input.downloaded-scan-report-name.default=scan.fpr
+input.git-branch-name.default=$CI_COMMIT_REF_NAME
+input.image-tag.default=25.2.0
+input.image.default=fortify-sca
+input.job-name.default=fortify-scan
+input.language.default=javascript
+input.language.option=go
+input.language.option=gradle
+input.language.option=javascript
+input.language.option=maven
+input.language.option=python
+input.maven-setting-path.default=settings.xml
+input.pip-index-url.default=jfrog.com/artifactory/api/pypi/pypi/simple
+input.python-version.default=3.12
+input.registry.default=registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/
+input.source-path.default=src
+input.srm-branch.default=$CI_COMMIT_REF_NAME
+input.stage.default=sast
+input.upload-srm-option.default=false
+input.variant.default=jdk17-review
+input.variant.option=jdk17-review
+input.variant.option=jdk21-review
+report.sast=gl-sast-report.json

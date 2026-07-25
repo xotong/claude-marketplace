@@ -10,6 +10,7 @@ set -euo pipefail
 usage() {
   echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
   echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none> [configured_image]" >&2
+  echo "ERROR:    or: catalog.sh contract <component_path> <cache_dir>" >&2
   exit 1
 }
 
@@ -273,6 +274,87 @@ template_image_ref() {
   ' "$1"
 }
 
+# Machine-readable contract of a component template: the inputs it declares
+# (defaults and permitted options) and the report artifacts it produces.
+# Sorted flat text on purpose — no jq/python dependency, and it diffs cleanly in
+# review. The image ref is deliberately NOT included: check-drift compares that
+# separately, and folding it in here would churn the checked-in contract on
+# every image bump.
+#
+# template.yml is the only source of truth. AGENTS.md is narrative and is known
+# to lag it (as of 25.2.0 it still omits the `go` language and names the
+# pre-move registry), so it must never drive behaviour.
+template_contract() {
+  awk '
+    function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+    function unquote(s) {
+      if (s ~ /^".*"$/ || s ~ /^\047.*\047$/) return substr(s, 2, length(s) - 2)
+      return s
+    }
+    /^spec:[ \t]*$/ { in_spec = 1; next }
+    in_spec && /^[^ \t]/ { in_spec = 0 }
+    in_spec {
+      if ($0 ~ /^    [A-Za-z0-9_.-]+:[ \t]*$/) {
+        name = trim($0); sub(/:$/, "", name); in_opts = 0; next
+      }
+      if (name == "") next
+      if ($0 ~ /^      default:/) {
+        v = $0; sub(/^      default:[ \t]*/, "", v)
+        print "input." name ".default=" unquote(trim(v)); in_opts = 0; next
+      }
+      if ($0 ~ /^      options:[ \t]*$/) { in_opts = 1; next }
+      if (in_opts && $0 ~ /^        -[ \t]*/) {
+        v = $0; sub(/^        -[ \t]*/, "", v)
+        print "input." name ".option=" unquote(trim(v)); next
+      }
+      if ($0 ~ /^      [A-Za-z0-9_.-]+:/) { in_opts = 0 }
+      next
+    }
+    /^    reports:[ \t]*$/ { in_reports = 1; next }
+    in_reports {
+      if ($0 ~ /^      [A-Za-z0-9_]+:[ \t]*[^ \t]/) {
+        line = trim($0); idx = index(line, ":")
+        print "report." substr(line, 1, idx - 1) "=" unquote(trim(substr(line, idx + 1)))
+        next
+      }
+      in_reports = 0
+    }
+  ' "$1" | LC_ALL=C sort -u
+}
+
+# Compare a component's derived contract against the runner's checked-in
+# expectation (scanners/<runner>.contract). Emits one CONTRACT-DRIFT line per
+# differing key. This is the check that would have caught the `go` language
+# option being added to fortify-sast without any runner support.
+contract_drift() {
+  local template_path expected_path label actual_file expected_file only_upstream only_local
+  template_path=$1
+  expected_path=$2
+  label=$3
+
+  actual_file=$(mktemp) || return 0
+  expected_file=$(mktemp) || { rm -f "$actual_file"; return 0; }
+  template_contract "$template_path" >"$actual_file"
+  # Contract files carry a #-comment header explaining what they are; strip it
+  # so the header never registers as drift.
+  grep -v '^#' "$expected_path" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u >"$expected_file"
+
+  only_upstream=$(LC_ALL=C comm -23 "$actual_file" "$expected_file")
+  only_local=$(LC_ALL=C comm -13 "$actual_file" "$expected_file")
+  rm -f "$actual_file" "$expected_file"
+
+  if [ -n "$only_upstream" ]; then
+    printf '%s\n' "$only_upstream" | while IFS= read -r line; do
+      [ -n "$line" ] && printf 'CONTRACT-DRIFT: %s: component now declares %s\n' "$label" "$line"
+    done
+  fi
+  if [ -n "$only_local" ]; then
+    printf '%s\n' "$only_local" | while IFS= read -r line; do
+      [ -n "$line" ] && printf 'CONTRACT-DRIFT: %s: contract expects %s but the component no longer declares it\n' "$label" "$line"
+    done
+  fi
+}
+
 date_to_epoch() {
   local epoch
   # ponytail: probes by success not uname; add awk fallback if date portability widens.
@@ -289,7 +371,7 @@ date_to_epoch() {
 
 check_drift_cmd() {
   local component_path cache_dir runner_path configured_image base_dir tag template_path runner_name
-  local synced_line synced_date now_epoch synced_epoch ninety_days template_image
+  local synced_line synced_date now_epoch synced_epoch ninety_days template_image contract_expected
 
   component_path=$1
   cache_dir=$2
@@ -322,6 +404,14 @@ check_drift_cmd() {
 
   if [ "$runner_path" != "none" ] && [ -f "$runner_path" ]; then
     runner_name=$(basename "$runner_path")
+
+    contract_expected="${runner_path%.sh}.contract"
+    if [ -f "$contract_expected" ]; then
+      contract_drift "$template_path" "$contract_expected" "$runner_name"
+    else
+      echo "INFO: no checked-in contract at $(basename "$contract_expected") - skipping contract drift check" >&2
+    fi
+
     synced_line=$(grep -E '^# Last synced[[:space:]]*:' "$runner_path" | head -n 1 || true)
     synced_date=$(printf '%s' "$synced_line" | sed -E 's/^# Last synced[[:space:]]*:[[:space:]]*//')
     if printf '%s' "$synced_date" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then
@@ -333,6 +423,24 @@ check_drift_cmd() {
       fi
     fi
   fi
+}
+
+# Print the derived contract for a component, for regenerating the checked-in
+# scanners/<runner>.contract files. See UPDATE-GUIDE.md Scenario 6.
+contract_cmd() {
+  local component_path cache_dir base_dir tag
+  component_path=$1
+  cache_dir=$2
+  base_dir="${cache_dir%/}/${component_path}"
+  [ -d "$base_dir" ] || base_dir="$(skill_dir)/reference/catalog/${component_path}"
+
+  tag=$(fallback_tag_dir "$base_dir" || true)
+  if [ -z "$tag" ]; then
+    echo "ERROR: no cached or vendored catalog snapshot found for ${component_path}" >&2
+    return 1
+  fi
+  echo "INFO: contract derived from ${component_path}@${tag}" >&2
+  template_contract "$base_dir/$tag/template.yml"
 }
 
 self_test_cmd() {
@@ -420,6 +528,32 @@ self_test_cmd() {
   printf '%s\n' "$drift" | grep -q 'declares no resolvable image' || return 1
   if printf '%s\n' "$drift" | grep -q '^DRIFT: image'; then return 1; fi
 
+  # Contract extraction + drift, the check that catches a new input or option.
+  mkdir -p "$tmp/contract/$component/9.9.9"
+  printf '%s\n' 'spec:' '  inputs:' '    language:' '      default: "javascript"' \
+    '      options:' '        - javascript' '        - go' '    stage:' '      default: test' '---' \
+    'scan:' '  image: "registry.example/secrets:7"' '  artifacts:' '    reports:' \
+    '      sast: gl-sast-report.json' \
+    >"$tmp/contract/$component/9.9.9/template.yml"
+
+  out=$(bash "$script" contract "$component" "$tmp/contract" 2>/dev/null)
+  printf '%s\n' "$out" | grep -qx 'input.language.option=go' || return 1
+  printf '%s\n' "$out" | grep -qx 'input.language.default=javascript' || return 1
+  printf '%s\n' "$out" | grep -qx 'report.sast=gl-sast-report.json' || return 1
+
+  # A contract missing the new option must drift; a matching one must not.
+  printf '%s\n' '# header comment must not register as drift' \
+    'input.language.default=javascript' 'input.language.option=javascript' \
+    'input.stage.default=test' 'report.sast=gl-sast-report.json' >"$tmp/stale.contract"
+  cp "$tmp/runner.sh" "$tmp/c-runner.sh"
+  cp "$tmp/stale.contract" "$tmp/c-runner.contract"
+  drift=$(bash "$script" check-drift "$component" "$tmp/contract" "$tmp/c-runner.sh" 2>/dev/null)
+  printf '%s\n' "$drift" | grep -q 'CONTRACT-DRIFT: .*component now declares input.language.option=go' || return 1
+
+  bash "$script" contract "$component" "$tmp/contract" 2>/dev/null >"$tmp/c-runner.contract"
+  drift=$(bash "$script" check-drift "$component" "$tmp/contract" "$tmp/c-runner.sh" 2>/dev/null)
+  if printf '%s\n' "$drift" | grep -q 'CONTRACT-DRIFT'; then return 1; fi
+
   printf '%s\n' \
     'self-test: online path ok' \
     'self-test: pinned path advisory ok' \
@@ -428,7 +562,10 @@ self_test_cmd() {
     'self-test: image drift literal mismatch ok' \
     'self-test: image drift literal match silent ok' \
     'self-test: image drift inputs-interpolation ok' \
-    'self-test: image drift underivable reported ok'
+    'self-test: image drift underivable reported ok' \
+    'self-test: contract extraction ok' \
+    'self-test: contract drift on new option ok' \
+    'self-test: contract match silent ok'
 }
 
 main() {
@@ -457,6 +594,10 @@ main() {
     check-drift)
       [ $# -eq 4 ] || [ $# -eq 5 ] || usage
       check_drift_cmd "$2" "$3" "$4" "${5:-}"
+      ;;
+    contract)
+      [ $# -eq 3 ] || usage
+      contract_cmd "$2" "$3"
       ;;
     self-test)
       [ $# -eq 1 ] || usage
