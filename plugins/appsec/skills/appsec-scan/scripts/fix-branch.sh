@@ -49,6 +49,21 @@ case "${1:-}" in
     ;;
   --check-progress)
     [ "$#" -eq 3 ] || { error "usage: fix-branch.sh --check-progress <prev_total> <curr_total>"; exit 2; }
+    # Both args are FINDING COUNTS (integers), not file paths. Validate before
+    # touching state: `[ "$3" -ge "$2" ]` on a non-integer errors, but because
+    # that is an `if` condition set -e does not fire, so a misread argument used
+    # to fall straight through — persisting invalid JSON into loop-state,
+    # advancing the iteration counter, and exiting 0 as if progress were made.
+    # A loop guard that silently accepts garbage is worse than no guard.
+    for _total in "$2" "$3"; do
+      case "$_total" in
+        ''|*[!0-9]*)
+          error "--check-progress takes two integer finding COUNTS, not paths: got '$2' and '$3'"
+          error "usage: fix-branch.sh --check-progress <prev_total> <curr_total>"
+          exit 2
+          ;;
+      esac
+    done
     iteration="$(read_iteration)"
     [ -n "$iteration" ] || iteration=0
     iteration=$((iteration + 1))

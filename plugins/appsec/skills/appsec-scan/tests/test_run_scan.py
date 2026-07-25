@@ -524,3 +524,27 @@ class FixBranchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FixBranchInputValidationTest(FixBranchTest):
+    """The loop guard must reject garbage rather than silently pass it."""
+
+    def test_non_integer_totals_are_rejected_without_touching_state(self) -> None:
+        # <prev> <curr> are finding COUNTS. Passing the findings FILES is the
+        # natural misreading right after "rescan", and it used to fall through:
+        # `[ "$3" -ge "$2" ]` errors on a non-integer, but as an `if` condition
+        # set -e does not fire, so the script persisted invalid JSON into
+        # loop-state, advanced the iteration, and exited 0 as if progress
+        # had been made.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_committed_repo(tmp)
+            result = self.run_fix(
+                repo, "--check-progress",
+                "findings.normalized.json", "findings.triaged.json",
+            )
+            state = repo / ".appsec-results" / "loop-state"
+            state_written = state.exists()
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("integer finding COUNTS", result.stderr)
+        self.assertFalse(state_written, "garbage input corrupted the loop state")

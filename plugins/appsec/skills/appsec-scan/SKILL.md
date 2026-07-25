@@ -40,9 +40,7 @@ Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-
 
 ## Step 1 — Locate the skill's directories
 
-The scanner scripts are relative to the skill's own directory, not the project
-being scanned. Resolve this path first — subsequent steps depend on it.
-
+The scanner scripts live beside this file, not in the project being scanned.
 You read this file from disk, so you already know its directory — that is
 `SKILL_DIR`. Substitute the real absolute path below. Do **not** try to derive it
 from `$0` or `${BASH_SOURCE[0]}`: those resolve to your shell, not to this file,
@@ -187,7 +185,7 @@ Read `.appsec-results/findings.triaged.json`. Present each finding: severity, na
 bash "$SCRIPTS_DIR/fix-branch.sh" --init
 ```
 
-Names the branch `appsec/fix-<YYYYMMDD>-<shortsha>`. Ask for approval once before making changes — it will create a new branch. Loop maximum **5 iterations**: apply fixes → rescan ONLY the affected category (`bash "$SCRIPTS_DIR/run-scan.sh" --only <category>`; for secret findings, rerun only GitLab Secret Detection first) → `bash "$SCRIPTS_DIR/fix-branch.sh" --check-progress <prev> <curr>` (exits 1 on cap/no-progress → stop). When the loop ends, run the app's relevant tests. Never push or open an MR without the user explicitly asking. Never rewrite git history.
+Names the branch `appsec/fix-<YYYYMMDD>-<shortsha>`. Ask for approval once before making changes — it will create a new branch. Loop maximum **5 iterations**: apply fixes → rescan ONLY the affected category (`bash "$SCRIPTS_DIR/run-scan.sh" --only <category>`; for secret findings, rerun only GitLab Secret Detection first) → `bash "$SCRIPTS_DIR/fix-branch.sh" --check-progress <prev_count> <curr_count>` — the two `TOTAL C+H` **counts**, not file paths (exits 1 on cap/no-progress → stop). When the loop ends, run the app's relevant tests. Never push or open an MR without the user explicitly asking. Never rewrite git history.
 
 ---
 
