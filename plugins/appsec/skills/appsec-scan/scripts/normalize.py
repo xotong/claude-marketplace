@@ -577,6 +577,10 @@ def _redact_structure(value, matched_only=False):
 
 def redact_secret_findings(findings, matched_only=False):
     for finding in findings:
+        # Capture before the blanket pass below, which would otherwise redact
+        # this tool's own remediation text out from under us.
+        _evidence = finding.get("evidence")
+        _why = _evidence.get("why") if isinstance(_evidence, dict) else None
         for key, value in list(finding.items()):
             finding[key] = _redact_structure(value, True)
         finding_matched_only = (
@@ -585,9 +589,14 @@ def redact_secret_findings(findings, matched_only=False):
         for key in ("name", "title", "description"):
             if key in finding:
                 finding[key] = redact_value(finding.get(key), finding_matched_only)
+        # `why` is remediation text this tool wrote itself, never scanner data.
+        # Redacting it mangled the very image path the user needs to act on
+        # ("Could not pull registry.gitlab.***"), defeating the guidance.
         finding["evidence"] = _redact_structure(
             finding.get("evidence") or {}, finding_matched_only
         )
+        if _why is not None and isinstance(finding.get("evidence"), dict):
+            finding["evidence"]["why"] = _why
         finding["location"] = _redact_structure(
             finding.get("location") or {}, True
         )
@@ -759,6 +768,18 @@ def build_parser():
     parser.add_argument("--skips", default=None)
     return parser
 
+def _previous_scanners_run(results_dir):
+    """What an earlier run already recorded, so a scoped rescan cannot forget it."""
+    try:
+        value = read_json_loose(Path(results_dir) / "scan-coverage.json")
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    if isinstance(value, dict):
+        previous = value.get("scanners_run")
+        if isinstance(previous, list):
+            return [item for item in previous if item in CATEGORIES]
+    return []
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -798,8 +819,35 @@ def main(argv=None):
         redact_secret_findings(normalized, matched_only=True)
         redact_secret_findings(triaged, matched_only=True)
         failed = gate_failed(gate_scope, gate)
+
+        # A scoped (--only) rescan must never launder the coverage record clean.
+        # It used to overwrite scan-coverage.json with just its own category, so
+        # the fix loop that SKILL.md tells you to run every iteration turned
+        # {"missing_report": ["sast","container_scanning"]} into
+        # {"missing_report": [], "gate_passed": true} while those two scanners
+        # still had never run. Coverage is therefore derived from the MERGED
+        # findings and unioned with what the previous run recorded.
+        if args.only:
+            scanners_run = sorted(
+                set(scanners_run) | set(_previous_scanners_run(results_dir))
+            )
+            missing = sorted(
+                {
+                    item.get("category")
+                    for item in triaged
+                    if str(item.get("rule_id") or "").startswith("APPSEC-REPORT-")
+                    and item.get("category")
+                }
+            )
         write_json(normalized_path, normalized)
         write_json(triaged_path, triaged)
+        # Incomplete coverage is not a pass. A HIGH coverage finding already
+        # fails a `high` gate, but not a `critical`-only one — so state the rule
+        # explicitly instead of relying on severity arithmetic. `none` is
+        # report-only by definition and is respected.
+        if missing and gate != "none":
+            failed = True
+
         write_json(
             results_dir / "scan-coverage.json",
             {
@@ -810,6 +858,21 @@ def main(argv=None):
             },
         )
         print_summary(triaged, gate, failed)
+        if args.only:
+            print("NOTE: this was a scoped rescan of " + args.only + " only.")
+            outstanding = [
+                item
+                for item in triaged
+                if item.get("category") != args.only
+                and str(item.get("severity") or "").upper() in ("CRITICAL", "HIGH")
+            ]
+            if outstanding:
+                print(
+                    "WARNING: "
+                    + str(len(outstanding))
+                    + " critical/high finding(s) remain in other categories; "
+                    "the branch is NOT clean. Re-run a full scan before pushing."
+                )
         if missing:
             print("WARNING: scanner coverage is incomplete; this is NOT an all-clear")
         return 1 if failed else 0

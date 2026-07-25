@@ -554,3 +554,62 @@ class NormalizeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScopedRescanCoverageTest(unittest.TestCase):
+    """A --only rescan must never launder the coverage record clean."""
+
+    def _coverage(self, tmp):
+        return json.loads((Path(tmp) / "scan-coverage.json").read_text())
+
+    def test_scoped_rescan_preserves_earlier_missing_reports(self) -> None:
+        # SKILL.md Step 5 runs `run-scan.sh --only <category>` every iteration.
+        # It used to overwrite scan-coverage.json with just that category, so
+        # {"missing_report": ["sast"]} became {"missing_report": [], "gate_passed": true}
+        # while sast had still never run.
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "gl-secret-detection-report.json").write_text('{"vulnerabilities": []}')
+
+            normalize.main([str(results), "--gate", "high", "--ran", "sast,secret_detection"])
+            first = self._coverage(tmp)
+            self.assertIn("sast", first["missing_report"])
+            self.assertFalse(first["gate_passed"])
+
+            normalize.main([str(results), "--gate", "high", "--ran", "secret_detection",
+                  "--only", "secret_detection"])
+            second = self._coverage(tmp)
+
+        self.assertIn("sast", second["missing_report"], "scoped rescan erased the gap")
+        self.assertIn("sast", second["scanners_run"], "scoped rescan forgot sast ran")
+        self.assertFalse(second["gate_passed"], "incomplete coverage reported as a pass")
+
+    def test_incomplete_coverage_fails_even_a_critical_only_gate(self) -> None:
+        # A HIGH coverage finding does not trip a critical-only gate on severity
+        # alone, so the rule is stated explicitly instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            rc = normalize.main([str(results), "--gate", "critical", "--ran", "sast"])
+            coverage = self._coverage(tmp)
+
+        self.assertEqual(rc, 1)
+        self.assertFalse(coverage["gate_passed"])
+
+    def test_report_only_gate_none_is_respected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rc = normalize.main([str(Path(tmp)), "--gate", "none", "--ran", "sast"])
+        self.assertEqual(rc, 0)
+
+    def test_remediation_text_survives_redaction(self) -> None:
+        # `why` is tool-authored guidance; redacting it mangled the image path
+        # the user needs ("Could not pull registry.gitlab.***").
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            skips = results / "scan-skips"
+            reason = "Could not pull registry.gitlab.com/ns/proj/img:1.2.3, so SAST did NOT run."
+            skips.write_text("sast\t" + reason + "\n")
+            normalize.main([str(results), "--gate", "high", "--ran", "sast", "--skips", str(skips)])
+            findings = json.loads((results / "findings.triaged.json").read_text())
+
+        whys = [(f.get("evidence") or {}).get("why") for f in findings]
+        self.assertIn(reason, whys)

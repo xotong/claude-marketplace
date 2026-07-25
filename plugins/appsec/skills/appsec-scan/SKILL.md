@@ -20,10 +20,9 @@ description: >
 
 # AppSec Scan — Catalog-Driven CI Mirror
 
-Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-scan.sh` orchestrates all four scanners; `scripts/normalize.py` emits `.appsec-results/findings.triaged.json` with per-finding `verification_status` and drives the severity gate. `scripts/fix-branch.sh` guards the fix loop. Scan mechanics live in `scripts/`, scanner commands in `scanners/` — never edit SKILL.md for those. New in v3.1: `run-scan.sh`, `normalize.py`, `fix-branch.sh`, `resolve-python.sh`, `CHANGELOG.md`, `MIGRATION.md`. **Config:** `config/scanner-preferences.yaml`. **Scanners:** `scanners/*.sh`. **Versions/pins:** `version:` in category block → UPDATE-GUIDE.md.
+Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-scan.sh` orchestrates all four scanners; `scripts/normalize.py` emits `.appsec-results/findings.triaged.json` with per-finding `verification_status` and drives the severity gate. `scripts/fix-branch.sh` guards the fix loop. Scan mechanics live in `scripts/`, scanner commands in `scanners/` — never edit SKILL.md for those. **Config:** `config/scanner-preferences.yaml`. **Scanners:** `scanners/*.sh`. **Versions/pins:** `version:` in category block → UPDATE-GUIDE.md.
 
-**Shell session:** see the shell contract in Step 1 — bash, one invocation per step.
-`run-scan.sh` self-locates its directories and self-loads preferences if run standalone (RUN_* flags absent), so Step 3 is also safe to re-run independently.
+**Shell session:** see the shell contract in Step 1 — bash, one invocation per step. `run-scan.sh` self-locates and self-loads (including the runtime), so Steps 3 and 5 are safe standalone.
 **Exit-code contract:** `run-scan.sh` exits 0 (gate passed), 1 (gate failed / findings present), 2 (usage/config error — e.g. unrecognised `ci_gate` value).
 
 ## Prerequisites
@@ -130,9 +129,7 @@ environment.
 
 For every **enabled** category component in the active profile, resolve the
 component against the catalog and check drift. `scripts/catalog.sh` is the only
-thing that talks to the network, and only to `$GITLAB_INSTANCE`. When
-`CATALOG_MODE=offline` (or the fetch fails) it uses the vendored snapshots in
-`reference/catalog/` and says so — the scan still runs.
+thing that talks to the network, and only to `$GITLAB_INSTANCE`.
 
 ```bash
 bash "$SCRIPTS_DIR/resolve-components.sh"
@@ -174,7 +171,7 @@ catalog; they were fixed in Step 1.5.
 bash "$SCRIPTS_DIR/run-scan.sh"
 ```
 
-run-scan.sh invokes `"$RUNTIME" run` per scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). Stdout: summary from `normalize.py`; exit 1 → findings, go Step 4; exit 0 → done. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning).
+run-scan.sh invokes `"$RUNTIME" run` per scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). Stdout: summary from `normalize.py`; exit 1 → findings, go Step 4; exit 0 → done. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — a scoped rescan for the Step 5 loop, NOT a first scan. Its verdict covers only that category; it prints a NOTE saying so and warns when other categories still hold critical/high findings. Always finish with a full scan before pushing.
 
 ---
 
@@ -200,34 +197,43 @@ After the loop, write `.appsec-results/TRIAGE.md` covering every finding that
 was **not** fixed. This is the user's guided companion for GitLab's
 Vulnerability Report triage after they push.
 
-Structure the file exactly like this:
+Sort every finding into one of **three** sections. Only the third is a GitLab
+dismissal — forcing a dismissal reason onto the other two is dishonest and sends
+the user to dismiss something that does not exist in the Vulnerability Report.
 
 ```markdown
 # AppSec Triage Plan — <APP_NAME> @ <shortsha> (<date>, profile: <profile>)
 
-## How these findings reach GitLab
-Security scan results populate the project Vulnerability Report when the
-scanners run in a pipeline on the **default branch** (GitLab Ultimate).
-MR pipelines show new findings in the MR security widget first. Dependency
-Scanning findings are matched from the uploaded SBOM server-side.
+## 1. Fixed on this branch
+| Finding | Severity | Location | What changed |
+|---|---|---|---|
+(Then: "Verify with <command>". Omit the section if nothing was fixed.)
 
-## How to dismiss a finding (UI)
-Secure → Vulnerability report → open the finding → **Dismiss vulnerability**
-→ pick the dismissal reason below → paste the justification comment (a comment
-is mandatory).
+## 2. Must fix before push — NOT dismissible
+Real findings still present. These have no GitLab dismissal reason: the action
+is to fix them, or consciously defer with an owner and a date.
+### <n>. [<severity>] <title> — <scanner>
+- Location: <file:line> · Why not fixed here: <reason> · Owner / by when: <...>
 
-## Findings
+## 3. Coverage gaps — NOT dismissible
+A scanner that did not run produces no GitLab vulnerability, so there is nothing
+to dismiss. The action is to restore coverage. Copy the `why` text verbatim from
+each `APPSEC-REPORT-*` finding — it names the fix.
+### <n>. <category> did not run
+- What to do: <the finding's evidence.why>
 
+## 4. Dismiss in GitLab
+Secure → Vulnerability report → open the finding → **Dismiss vulnerability** →
+pick a reason below → paste the justification (a comment is mandatory).
 ### <n>. [<severity>] <title> — <scanner>
 - Location: <file:line or image:layer>
-- Why not fixed here: <reason>
 - Dismissal reason: `<one of the five below>`
 - Justification (paste-ready): "<2-3 sentences: what was assessed, why this
   reason applies, compensating controls if any, review-by date if temporary>"
 ```
 
-Use exactly one of GitLab's five dismissal reasons per finding (these are the
-only values GitLab accepts):
+Section 4 only: use exactly one of GitLab's five dismissal reasons (the only
+values it accepts). Never apply them to sections 2 or 3.
 
 | Reason | Use when |
 |---|---|

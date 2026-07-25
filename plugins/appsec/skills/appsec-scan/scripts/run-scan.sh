@@ -254,6 +254,11 @@ CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
 
 mkdir -p .appsec-results
+# Self-ignoring output dir: the "add .appsec-results/ to .gitignore"
+# reminder enforces nothing, and this directory holds the raw secret
+# detection report. A .gitignore of "*" inside it keeps git away without
+# editing the project's own .gitignore.
+printf '*\n' > .appsec-results/.gitignore
 SKIPS_FILE=.appsec-results/scan-skips
 : >"$SKIPS_FILE"
 
@@ -369,6 +374,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
       fi
     else
       warning "[Fortify SCA] Failed to pull ${FORTIFY_SAST_IMAGE}; skipping scan"
+      record_skip sast "Could not pull ${FORTIFY_SAST_IMAGE}, so SAST did NOT run and your source was never analysed. Log in to the registry (docker login <registry-host>) or fix the image path in scanner-preferences.yaml, then re-run this skill."
     fi
   fi
 fi
@@ -396,6 +402,7 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
     fi
   else
     warning "[GitLab DS] Failed to pull ${GITLAB_DS_IMAGE}; skipping scan"
+    record_skip dependency_scanning "Could not pull ${GITLAB_DS_IMAGE}, so dependency scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
   fi
 fi
 
@@ -422,6 +429,7 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
     fi
   else
     warning "[Secret Detection] Failed to pull ${SECRET_DETECTION_IMAGE}; skipping scan"
+    record_skip secret_detection "Could not pull ${SECRET_DETECTION_IMAGE}, so secret detection did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
   fi
 elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
   info "[Secret Detection] Skipped — not a Git worktree or image unset"
@@ -447,6 +455,14 @@ if ! $DRY_RUN; then
       [ -z "$watchdog_pid" ] || wait "$watchdog_pid" 2>/dev/null || true
     fi
   done
+
+  # The analyzer exits 0 when it simply finds no lock file, so a non-zero rc is
+  # not the signal — the absence of a report is. Name the real cause instead of
+  # leaving the generic "expected a report and did not" text.
+  if [ -n "${GITLAB_DS_PID:-}" ] && ! ls .appsec-results/gl-sbom-*.cdx.json >/dev/null 2>&1 \
+     && [ ! -s .appsec-results/gl-dependency-scanning-report.json ]; then
+    record_skip dependency_scanning "The dependency analyzer produced no SBOM: it needs a lock file (package-lock.json, poetry.lock, a pip-compile requirements lock, go.sum...), not a plain manifest. Add one and re-run this skill, or rely on the CI pipeline for this category. Details: .appsec-results/gitlab-ds.log"
+  fi
 fi
 
 if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_CS_IMAGE" ]; then
@@ -488,6 +504,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
         fi
       else
         warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
+        record_skip container_scanning "Could not pull ${GITLAB_CS_IMAGE}, so container scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
       fi
       ;;
     archive)
@@ -511,6 +528,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
         fi
       else
         warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
+        record_skip container_scanning "Could not pull ${GITLAB_CS_IMAGE}, so container scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
       fi
       ;;
     error)
