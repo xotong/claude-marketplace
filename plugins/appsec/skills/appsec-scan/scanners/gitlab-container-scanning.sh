@@ -68,9 +68,9 @@ case "${CS_SCAN_MODE}" in
     fi
 
     if [ -f "${REPORT}" ]; then
-      cp "${REPORT}" "${RESULTS}/gl-container-scanning-report.json"
+      mv "${REPORT}" "${RESULTS}/gl-container-scanning-report.json"
       if [ -f "${SBOM_REPORT}" ]; then
-        cp "${SBOM_REPORT}" "${RESULTS}/gl-sbom-report.cdx.json"
+        mv "${SBOM_REPORT}" "${RESULTS}/gl-sbom-report.cdx.json"
       fi
       exit 0
     fi

@@ -50,6 +50,18 @@ if [ -z "${RUN_FORTIFY_SAST+x}" ] && \
   eval "$(bash "$SCRIPTS_DIR/load-prefs.sh" "$SKILL_DIR/config/scanner-preferences.yaml")"
 fi
 
+# load-prefs.sh never emits RUNTIME — it comes from detect-runtime.sh, which
+# SKILL.md Step 1.5 exports. Standalone invocations (Step 5's `--only` rescan,
+# or anyone taking "safe to re-run independently" at its word) previously died
+# with "required environment variables are unset: RUNTIME". Detect it here.
+if [ -z "${RUNTIME:-}" ]; then
+  RUNTIME="$(CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-auto}" bash "$SCRIPTS_DIR/detect-runtime.sh")" || {
+    echo 'ERROR: no usable container runtime; start docker or podman and retry' >&2
+    exit 2
+  }
+  export RUNTIME
+fi
+
 validate_env() {
   missing=
   for name in RUNTIME APPSEC_PROFILE; do
@@ -79,6 +91,9 @@ mark_attempted() {
 
 record_missing_image() {
   warning "[$1] Enabled but $2 is empty; skipping scanner"
+  if [ -n "${3:-}" ]; then
+    record_skip "$3" "$1 is enabled but its image ($2) is empty in scanner-preferences.yaml, so it did NOT run. Set the image for this category and re-run this skill."
+  fi
   if [ -n "$SKIPPED_IMAGE_SCANNERS" ]; then
     SKIPPED_IMAGE_SCANNERS="$SKIPPED_IMAGE_SCANNERS,$1"
   else
@@ -238,17 +253,51 @@ GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-}"
 CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
 
+mkdir -p .appsec-results
+SKIPS_FILE=.appsec-results/scan-skips
+: >"$SKIPS_FILE"
+
+# record_skip <category> <actionable reason shown to the user>
+record_skip() {
+  printf '%s\t%s\n' "$1" "$2" >>"$SKIPS_FILE"
+}
+
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -z "$FORTIFY_SAST_IMAGE" ]; then
-  record_missing_image "Fortify SCA" FORTIFY_SAST_IMAGE
+  record_missing_image "Fortify SCA" FORTIFY_SAST_IMAGE sast
 fi
 if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -z "$GITLAB_DS_IMAGE" ]; then
-  record_missing_image "GitLab DS" GITLAB_DS_IMAGE
+  record_missing_image "GitLab DS" GITLAB_DS_IMAGE dependency_scanning
 fi
 if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && [ -z "$SECRET_DETECTION_IMAGE" ]; then
-  record_missing_image "Secret Detection" SECRET_DETECTION_IMAGE
+  record_missing_image "Secret Detection" SECRET_DETECTION_IMAGE secret_detection
 fi
 if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -z "$GITLAB_CS_IMAGE" ]; then
-  record_missing_image "GitLab CS" GITLAB_CS_IMAGE
+  record_missing_image "GitLab CS" GITLAB_CS_IMAGE container_scanning
+fi
+
+# Every ENABLED category is expected to produce a report, marked BEFORE any
+# per-category precondition can bail out.
+#
+# This used to be marked inside each scanner's success path, so a category that
+# bailed early was neither "ran" nor "missing" — it vanished from
+# scan-coverage.json entirely. A Go repo with no Dockerfile therefore reported
+# "Gate verdict: PASSED", exit 0, with SAST and container scanning never run and
+# no warning at all: the exact false all-clear SKILL.md promises cannot happen.
+# Expect-first makes the guarantee uniform — anything without a report becomes a
+# coverage finding, whatever the reason it did not run.
+# if-form, not `a && b && c`: under `set -e` a false condition would make the
+# whole list non-zero and abort the run.
+if selected sast && [ "$RUN_FORTIFY_SAST" = true ]; then
+  mark_attempted sast
+fi
+if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ]; then
+  mark_attempted dependency_scanning
+fi
+if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
+  mark_attempted secret_detection
+fi
+if selected container_scanning && [ "$RUN_GITLAB_CS" = true ]; then
+  mark_attempted container_scanning
 fi
 
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
@@ -291,6 +340,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
     else
       info "[Fortify SCA] No supported project type detected; skipping"
+      record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript), so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
       RUN_FORTIFY_SAST=false
     fi
   fi
@@ -468,6 +518,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       ;;
     *)
       info "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
+      record_skip container_scanning "No Dockerfile found and CS_IMAGE is unset, so container scanning did NOT run locally. Write a Dockerfile for this project (or set CS_IMAGE=<image:tag> for an image already in your registry) and re-run this skill to get container coverage."
       info "Container scanning runs post-build in the pipeline."
       ;;
   esac
@@ -486,9 +537,9 @@ if $DRY_RUN; then
   if dry_python="$(command -v python3 2>/dev/null)" && \
      "$dry_python" -c "import sys" >/dev/null 2>&1; then
     if [ -n "$ONLY_CATEGORY" ]; then
-      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --only "$ONLY_CATEGORY"
+      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --only "$ONLY_CATEGORY"
     else
-      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES"
+      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE"
     fi
   elif [ -z "${PYTHON_INSTALL_URL:-}" ]; then
     warning "python3 is unavailable: install python3 or set settings.python.install_url."
@@ -505,12 +556,12 @@ PY_BIN="$(PYTHON_INSTALL_URL="${PYTHON_INSTALL_URL:-}" APPSEC_RESULTS_DIR=".apps
 if [ -n "$PY_BIN" ]; then
   if [ -n "$ONLY_CATEGORY" ]; then
     set +e
-    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --only "$ONLY_CATEGORY"
+    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --only "$ONLY_CATEGORY"
     gate_rc=$?
     set -e
   else
     set +e
-    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES"
+    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE"
     gate_rc=$?
     set -e
   fi

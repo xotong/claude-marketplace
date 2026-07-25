@@ -70,14 +70,14 @@ fi
 
 report_copied=0
 if [ -f "${REPORT}" ]; then
-  cp "${REPORT}" "${RESULTS}/gl-dependency-scanning-report.json"
+  mv "${REPORT}" "${RESULTS}/gl-dependency-scanning-report.json"
   report_copied=1
 fi
 
 sbom_count=0
 for sbom in "${CI_PROJECT_DIR}"/gl-sbom-*.cdx.json; do
   if [ -f "${sbom}" ]; then
-    cp "${sbom}" "${RESULTS}/"
+    mv "${sbom}" "${RESULTS}/"
     sbom_count=$((sbom_count + 1))
   fi
 done

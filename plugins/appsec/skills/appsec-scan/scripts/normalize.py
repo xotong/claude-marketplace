@@ -593,7 +593,26 @@ def redact_secret_findings(findings, matched_only=False):
         )
     return findings
 
-def coverage_findings(results_dir, scanners_run, existing_findings=None):
+def load_skip_reasons(path):
+    """category -> actionable reason, written by run-scan.sh when a scanner bails.
+
+    A coverage finding that just says "report missing" leaves the user with no
+    idea what to do. The reason names the fix (write a Dockerfile, set
+    FORTIFY_LANGUAGE) so the gap is actionable rather than merely visible.
+    """
+    reasons = {}
+    if not path:
+        return reasons
+    try:
+        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+            category, _, reason = line.partition("\t")
+            if category in CATEGORIES and reason.strip():
+                reasons[category] = reason.strip()
+    except OSError:
+        pass
+    return reasons
+
+def coverage_findings(results_dir, scanners_run, existing_findings=None, skip_reasons=None):
     reports = {category: [] for category in CATEGORIES}
     for path in Path(results_dir).rglob("*"):
         # ponytail: cached tools and catalog payloads are not scanner evidence.
@@ -629,6 +648,7 @@ def coverage_findings(results_dir, scanners_run, existing_findings=None):
     missing = [category for category in scanners_run if category in states]
     findings = []
     existing_findings = existing_findings or []
+    skip_reasons = skip_reasons or {}
     for category, state in states.items():
         rule_id = (
             "APPSEC-REPORT-MISSING"
@@ -646,7 +666,13 @@ def coverage_findings(results_dir, scanners_run, existing_findings=None):
                 "Scanner report " + state + ": " + category,
                 "HIGH",
                 {"file": "scan results", "line": None},
-                {"category_attempted": category},
+                {
+                    "category_attempted": category,
+                    "why": skip_reasons.get(
+                        category,
+                        "The scanner was expected to produce a report and did not.",
+                    ),
+                },
                 category=category,
                 rule_id=rule_id,
             )
@@ -730,6 +756,7 @@ def build_parser():
     parser.add_argument("--gate", choices=tuple(GATE_LEVELS), default=None)
     parser.add_argument("--only", choices=CATEGORIES)
     parser.add_argument("--ran", default=None)
+    parser.add_argument("--skips", default=None)
     return parser
 
 def main(argv=None):
@@ -748,7 +775,10 @@ def main(argv=None):
         parsed = normalize_reports(results_dir)
         if args.only:
             parsed = [item for item in parsed if item.get("category") == args.only]
-        coverage, missing = coverage_findings(results_dir, scanners_run, parsed)
+        skip_reasons = load_skip_reasons(args.skips)
+        coverage, missing = coverage_findings(
+            results_dir, scanners_run, parsed, skip_reasons
+        )
         normalized_new = parsed + coverage
         triaged_new = triage_findings(json.loads(json.dumps(normalized_new)))
         redact_secret_findings(normalized_new)

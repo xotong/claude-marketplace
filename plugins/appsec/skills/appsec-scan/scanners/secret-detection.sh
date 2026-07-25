@@ -42,7 +42,10 @@ fi
 /analyzer run
 
 if [ -f "${REPORT}" ]; then
-  cp "${REPORT}" "${RESULTS}/gl-secret-detection-report.json"
+  # mv, not cp: leaving the raw report in the project root put an unredacted
+  # secrets dump one `git add -A` away from being committed — the exact
+  # failure this scanner exists to prevent.
+  mv "${REPORT}" "${RESULTS}/gl-secret-detection-report.json"
 elif [ ! -f "${RESULTS}/gl-secret-detection-report.json" ]; then
   echo "ERROR: gl-secret-detection-report.json was not produced"
   exit 1
