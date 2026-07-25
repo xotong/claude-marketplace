@@ -11,6 +11,7 @@ usage() {
   echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
   echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none> [configured_image]" >&2
   echo "ERROR:    or: catalog.sh contract <component_path> <cache_dir>" >&2
+  echo "ERROR:    or: catalog.sh self-test" >&2
   exit 1
 }
 

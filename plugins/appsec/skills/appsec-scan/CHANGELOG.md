@@ -5,6 +5,33 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.2.0] — 2026-07-25
+
+### Added
+- `catalog.sh contract` + `scanners/<runner>.contract`: the component's declared inputs, permitted `options:` and report artifacts, extracted from `template.yml` as sorted flat text (no jq/python dependency). `check-drift` diffs the live component against it and emits `CONTRACT-DRIFT:` — this is what catches a new input such as fortify-sast's `go` language option
+- `scripts/resolve-components.sh`: Step 2.5 as a script. The SKILL.md loop it replaces relied on the shell word-splitting an unquoted variable, which bash does and zsh does not — on a zsh host it silently resolved 1 of 4 components and emitted a bogus DRIFT line from the unparsed remainder
+- `NEEDS-MAPPING:` escalation prefix, emitted when a component declares a capability no runner implements (currently fortify-sast `go`)
+- `coverage_complete` in `scan-coverage.json`, separate from `gate_passed`, because `ci_gate.fail_on: none` is report-only and always passes
+- Actionable `evidence.why` on every coverage finding, naming the fix (registry login, add a Dockerfile, add a lock file, run from inside a Git worktree)
+- `.appsec-results/.gitignore` containing `*`, so the results directory self-excludes without editing the project's `.gitignore`
+
+### Fixed
+- **False all-clear (four distinct paths).** Expected coverage is now read from `scanner-preferences.yaml`, independent of the invocation. Previously it came from each scanner's success path, from `--only`, and from the `RUN_*` environment, so a category could be absent from *both* `scanners_run` and `missing_report`. A Go repo with no Dockerfile reported `PASSED`/exit 0 with SAST and container scanning never run; a `--only` rescan overwrote the coverage record clean *every fix-loop iteration*; one stale `export RUN_SECRET_DETECTION=true` suppressed the self-load and dropped three enabled categories with no warning at all
+- Incomplete coverage now fails the gate at every threshold except `none`
+- SAST image path: the `fortify-sast` project has no container registry; images live in the catalogue's `docker-images` project. The configured path did not exist and could never have pulled
+- Image drift detection never fired: it looked for a `spec.inputs.image_tag.default` that only the synthetic self-test fixture had. Now derives the effective job image, resolving `$[[ inputs.X ]]` against declared defaults
+- Raw scanner reports (including `gl-secret-detection-report.json`, which carries `raw_source_code_extract`) were left in the project root, one `git add -A` from being committed. Runners now move rather than copy
+- `run-scan.sh` standalone exited 2: it self-loaded preferences but `load-prefs.sh` never emits `RUNTIME`. It now self-detects the container runtime
+- `preflight.sh` passed with a dead Docker daemon — `detect-runtime.sh` only checked binary presence. Adds `--require-daemon` with a bounded probe (macOS has no `timeout(1)`)
+- `fix-branch.sh --check-progress` silently accepted non-integer arguments, writing invalid JSON into the loop state and exiting 0 as if progress had been made
+- SKILL.md Step 1 derived `SKILL_DIR` from `${BASH_SOURCE[0]}`, which resolves to the agent's shell (`/bin`), and assumed one persistent shell across steps
+
+### Changed
+- `ENABLED_COMPONENTS` is now a `component|version|runner|image` tuple; the image is what `check-drift` compares against
+- TRIAGE.md restructured into four sections — fixed on this branch, must-fix (not dismissible), coverage gaps (not dismissible), then GitLab dismissals. Coverage gaps and unfixed true positives have no GitLab vulnerability to dismiss, so forcing them into one of the five dismissal reasons was misleading
+- Vendored snapshots refreshed: dependency-scanning and container-scanning 1.0.0 → 1.1.0; fortify-sast@25.2.0 re-fetched after the registry move
+- SKILL.md budget raised to 275 lines / 13,800 chars to fit the escalation-prefix table
+
 ## [3.1.0] — 2026-07-16
 
 ### Added

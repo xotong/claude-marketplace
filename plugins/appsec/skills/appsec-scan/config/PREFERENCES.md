@@ -80,7 +80,41 @@ settings:
 - **catalog.mode** — `online` resolves component versions live against
   `gitlab_instance` each run; `offline` skips the network and uses the vendored
   snapshots in `../reference/catalog/`.
-- **catalog.auth_token_env** — the env var *name* holding a `read_api` PAT.
+
+  **`offline` is not the airgap setting.** `airgap: true` only refuses profiles
+  pointing at gitlab.com; it does not force offline. If your instance hosts the
+  components — including a self-hosted GitLab inside an airgap — use `online`:
+  the only endpoint contacted is your own `gitlab_instance`, which the airgap
+  policy allows. Choose `offline` only when the catalogue is genuinely not
+  mirrored, or when you want resolution frozen.
+
+  Be aware what `offline` costs you:
+  - **Drift detection goes inert.** `check-drift` falls back to the vendored
+    snapshots, and `scanners/*.contract` were generated from those same
+    snapshots — so the comparison is a file against its own source and is
+    always clean. It cannot catch a new input or a moved image.
+  - **`~latest` stops meaning latest.** It resolves to the highest vendored
+    snapshot directory, so pinning silently becomes "whatever was last
+    vendored".
+
+  The snapshots remain valuable as an automatic fallback when the instance is
+  unreachable; that path works regardless of this setting.
+- **catalog.auth_token_env** — the env var *name* holding a `read_api` PAT for
+  the **GitLab API only**. It authenticates catalog metadata reads (tags,
+  `template.yml`, `README.md`, `AGENTS.md`) and nothing else — it is **not**
+  used to pull scanner images. Image credentials are `container_registry`
+  below, a separate setting.
+
+  Whether you need it depends solely on whether your instance serves those
+  projects to unauthenticated API reads. Being on the internal network does not
+  authenticate you to GitLab. Test it:
+
+  ```bash
+  curl -s -o /dev/null -w '%{http_code}\n' \
+    https://<your-gitlab>/api/v4/projects/<group>%2F<project>/repository/tags
+  ```
+
+  `200` → set `auth_token_env: ""`. `401`/`404` → keep a PAT.
   Ships as `GITLAB_READ_TOKEN` because the `lobster-thermidor` catalogue is
   private on gitlab.com: anonymous reads return `404`. Whenever this names a
   var, preflight requires that var to be non-empty — deliberately, so a
@@ -89,9 +123,12 @@ settings:
   since that path never calls the API. Set it to `""` only if your
   `gitlab_instance` serves the components anonymously. Token setup:
   MIGRATION.md step 0.
-- **container_registry** — env var *names* (not values) holding the registry
-  credentials used both when GTCS pulls a BYO image and when a local build must
-  pull a `FROM` base from the internal registry.
+- **container_registry** — env var *names* (not values) holding the **image
+  registry** credentials, used when GTCS pulls a BYO image and when a local
+  build must pull a `FROM` base. If your registry (e.g. a JFrog mirror) allows
+  anonymous pull, simply leave those env vars unset — the names can stay as
+  they are and empty values are passed through harmlessly. Unrelated to
+  `catalog.auth_token_env`.
 
 ## Per-category settings
 

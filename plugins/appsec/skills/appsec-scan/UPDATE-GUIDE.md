@@ -75,17 +75,31 @@ sourceanalyzer -b "$APP_NAME" -debug-verbose -python-version 3 \
 
 ## Scenario 2 — New language added to Fortify SCA
 
-The upstream component added a new language variant (e.g. Go support).
+The upstream component added a new language variant. **This is not hypothetical:
+fortify-sast@25.2.0 already declares `go`**, and `scanners/fortify-sast.sh` has a
+`go)` arm that emits `NEEDS-MAPPING:` because the correct `sourceanalyzer`
+invocation for Go has not been mirrored yet. Completing that is the worked
+example below.
+
+You will normally learn about this from a `CONTRACT-DRIFT:` line naming a new
+`input.language.option=<lang>`.
 
 **Steps:**
 
-1. Open `scanners/fortify-sast.sh` and add a new language branch in the
-   `case "$FORTIFY_LANGUAGE" in` block.
+1. Open `scanners/fortify-sast.sh` and add (or replace the `NEEDS-MAPPING:`
+   stub with) a real language branch in the `case "$FORTIFY_LANGUAGE" in` block,
+   mirroring the component's script for that language.
 2. Open `scripts/run-scan.sh` and add the new project-type detection flag
    (e.g. `HAS_GO`) and extend the language auto-detection precedence chain.
+   Without this, the language is only reachable by setting `FORTIFY_LANGUAGE`
+   explicitly, and a Go-only repo produces a SAST coverage gap.
 3. Add the new language to the Prerequisites table `FORTIFY_LANGUAGE` row in SKILL.md.
-4. Update `# Last synced` in `fortify-sast.sh`.
-5. Commit: `git commit -m "feat: add Go language support to Fortify SCA scanner"`
+4. **Regenerate the contract** so the option is recorded as expected:
+   `bash scripts/catalog.sh contract <component> <cache> > scanners/fortify-sast.contract`
+   (keep the `#` header — see Scenario 6). `tests/test_catalog.py` asserts every
+   declared language has a case arm, so this fails loudly if step 1 was skipped.
+5. Update `# Last synced` in `fortify-sast.sh`.
+6. `python3 -m pytest tests/ -q`, then commit.
 
 No new scanner file is needed — Fortify SCA is a single multi-language runner.
 
@@ -145,9 +159,9 @@ Quarterly or after a component release, run `catalog.sh resolve` with the new
 # Example: refresh all 4 components (adjust version as needed)
 for component in \
   "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast 25.2.0" \
-  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.0.0" \
+  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.1.0" \
   "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection 1.0.0" \
-  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.0.0"; do
+  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.1.0"; do
   path="${component% *}"; ver="${component##* }"
   bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
     resolve https://gitlab.com "$path" "$ver" /tmp/catalog-refresh ""
@@ -268,7 +282,7 @@ APPSEC_PROFILE=catalog bash "$SKILL_DIR/scripts/run-scan.sh" --dry-run
 # 6. Test normalize.py with existing results (empty RAN list for unit test)
 python3 "$SKILL_DIR/scripts/normalize.py" .appsec-results --ran ""
 
-# 7. Budget check (CI enforces ≤260 lines / ≤13000 chars)
+# 7. Budget check (CI enforces ≤275 lines / ≤13800 chars)
 wc -l "$SKILL_DIR/SKILL.md" && wc -c "$SKILL_DIR/SKILL.md"
 ```
 
@@ -299,4 +313,6 @@ March, June, September, and December. Check for:
 - New `before_script` or `after_script` steps
 - Image tag updates
 
-Drift detection now runs automatically at every scan run via `scripts/catalog.sh check-drift`; the quarterly task is refreshing snapshots and `Last-synced` headers (Scenario 6).
+Drift detection runs automatically at every scan via `scripts/catalog.sh check-drift`, in two forms: **image drift** (configured `image:` vs the component's effective job image) and **contract drift** (declared inputs, `options:` and report artifacts vs `scanners/<runner>.contract`). The quarterly task is refreshing snapshots, contracts and `Last synced` headers (Scenario 6).
+
+Note that `catalog.mode: offline` makes both checks inert — the contracts were generated from the same vendored snapshots they would be compared against. Run drift checks against a live instance.

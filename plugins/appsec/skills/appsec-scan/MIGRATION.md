@@ -54,17 +54,13 @@ bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
   '~latest' /tmp/cat-live GITLAB_READ_TOKEN
 
 # 4. Orchestration without containers: every scanner command printed,
-#    credentials shown masked.
-#    RUNTIME is required: run-scan.sh self-loads scanner-preferences.yaml, but
-#    load-prefs.sh does not emit RUNTIME — normally the SKILL.md flow exports it
-#    (Step 1). Standalone, pass it yourself or the run exits 2.
-RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
-  APPSEC_PROFILE=catalog \
+#    credentials shown masked. run-scan.sh self-loads preferences and
+#    self-detects the container runtime, so this works standalone.
+APPSEC_PROFILE=catalog \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh --dry-run
 
 # 5. One real scan against a throwaway repo (pulls the public images)
-RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
-  APPSEC_PROFILE=catalog \
+APPSEC_PROFILE=catalog \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh
 
 # 6. Test suite
@@ -89,7 +85,9 @@ diff <(cd /tmp/cat-live/lobster-thermidor/devops/ci-catalogue && find . -mindept
 
 Any difference means a snapshot is behind. Refresh it via UPDATE-GUIDE.md Scenario 6 **before** step 1 — you cannot do it once you are inside the airgap.
 
-Only after all six checks pass, continue to step 1. Then revoke the PAT — it has no role inside the airgap, where step 4 sets `catalog.mode: offline`.
+Only after all six checks pass, continue to step 1.
+
+Whether to revoke this gitlab.com PAT afterwards depends on step 4: it is only needed for reads against **gitlab.com**, so it has no role inside the airgap. Your internal instance may need its own separate PAT — see "Do you need `auth_token_env`?" in step 4.
 
 ---
 
@@ -146,7 +144,7 @@ company:
       enabled: true
     dependency_scanning:
       component: lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning
-      version: "1.0.0"
+      version: "1.1.0"
       image: jfrog.internal/security/dependency-scanning:2
       runner: gitlab-dependency-scanning.sh
       enabled: true
@@ -158,7 +156,7 @@ company:
       enabled: true
     container_scanning:
       component: lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
-      version: "1.0.0"
+      version: "1.1.0"
       image: jfrog.internal/security/container-scanning:8
       runner: gitlab-container-scanning.sh
       enabled: true
@@ -176,9 +174,10 @@ In the `settings:` block of `config/scanner-preferences.yaml`:
 settings:
   airgap: true
   catalog:
-    mode: offline                  # skip live catalog; use reference/catalog/ snapshots
-    auth_token_env: GITLAB_READ_TOKEN   # read_api PAT for internal GitLab; unused (and not
-                                        # required by preflight) while catalog.mode: offline
+    mode: online                   # see "Which catalog mode?" below — online is
+                                   # correct when your instance hosts the components
+    auth_token_env: GITLAB_READ_TOKEN   # GitLab API only; set "" if your instance
+                                        # serves the components anonymously
   jq:
     prefer: host
     install_url: "https://jfrog.internal/artifactory/tools/jq/{os}/{arch}/jq"
@@ -186,11 +185,55 @@ settings:
     prefer: host
     install_url: "https://jfrog.internal/artifactory/tools/python3/{os}/{arch}/python3.tar.gz"
   container_registry:
-    user_env: CS_REGISTRY_USER
+    user_env: CS_REGISTRY_USER          # leave the VARS unset for an anonymous-pull registry
     password_env: CS_REGISTRY_PASSWORD
 ```
 
 Set `default_profile: company` (or `export APPSEC_PROFILE=company` before each run). With `airgap: true`, any profile pointing at gitlab.com is refused at load time.
+
+### Which catalog mode?
+
+`airgap: true` and `catalog.mode` are independent. `airgap` only refuses profiles
+pointing at gitlab.com — it does **not** force offline.
+
+**Use `online` if your internal GitLab hosts the components** (the usual case
+after step 5). The only endpoint contacted is your own `gitlab_instance`, which
+the airgap policy permits, and you keep live version resolution plus image and
+contract drift detection.
+
+**Use `offline` only if the catalogue is not mirrored**, or you deliberately want
+resolution frozen. Know what it costs:
+
+- **Drift detection goes inert.** `check-drift` falls back to the vendored
+  snapshots, and `scanners/*.contract` were generated from those same snapshots,
+  so the comparison always matches. A new component input or a moved image
+  cannot be detected.
+- **`~latest` stops meaning latest** — it resolves to the highest vendored
+  snapshot directory.
+
+Either way the snapshots still serve as an automatic fallback when the instance
+is unreachable; that path does not depend on this setting.
+
+### Do you need `auth_token_env`?
+
+It authenticates **GitLab API reads only** (tags, `template.yml`, `README.md`,
+`AGENTS.md`). It is never used to pull scanner images — those use
+`container_registry`, so an anonymous-pull JFrog mirror needs nothing here.
+
+Being inside the network does not authenticate you to GitLab. Test whether your
+instance serves the projects anonymously:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  https://gitlab.internal.company.com/api/v4/projects/<group>%2F<project>/repository/tags
+```
+
+`200` → set `auth_token_env: ""`. `401`/`404` → keep the PAT and export it.
+
+**Careful:** when `auth_token_env` names a variable and `mode` is `online`,
+preflight fails if that variable is unset. That is deliberate — it stops a
+tokenless run silently degrading to snapshots and looking like a live check — but
+it means naming a var "just in case" blocks every run until a token exists.
 
 ---
 
@@ -201,9 +244,9 @@ The vendored snapshots in `reference/catalog/` are used when `catalog.mode: offl
 ```bash
 for component in \
   "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast 25.2.0" \
-  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.0.0" \
+  "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning 1.1.0" \
   "lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection 1.0.0" \
-  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.0.0"; do
+  "lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning 1.1.0"; do
   path="${component% *}"; ver="${component##* }"
   GITLAB_READ_TOKEN="$GITLAB_READ_TOKEN" \
     bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
@@ -231,18 +274,24 @@ CATALOG_MODE=offline bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh \
   /tmp/cat-test ""
 
 # 3. Dry-run (no containers, verify orchestration)
-#    RUNTIME must be passed explicitly — see step 0.3 check 4.
-RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
-  APPSEC_PROFILE=company \
+APPSEC_PROFILE=company \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh --dry-run
 
 # 4. One live scan (pulls images from internal registry, runs all enabled scanners)
-RUNTIME=$(bash plugins/appsec/skills/appsec-scan/scripts/detect-runtime.sh) \
-  APPSEC_PROFILE=company \
+APPSEC_PROFILE=company \
   bash plugins/appsec/skills/appsec-scan/scripts/run-scan.sh
 
-# 5. pytest
+# 5. Coverage honesty: every enabled category must appear in scanners_run, and
+#    anything without a report must appear in missing_report with coverage_complete
+#    false. A category missing from BOTH lists is a bug — report it.
+cat .appsec-results/scan-coverage.json
+
+# 6. Contracts must match the components your instance actually serves
+#    (regenerate per UPDATE-GUIDE.md Scenario 6 if this reports CONTRACT-DRIFT)
+bash plugins/appsec/skills/appsec-scan/scripts/resolve-components.sh
+
+# 7. pytest
 python3 -m pytest plugins/appsec/skills/appsec-scan/tests/ -v
 ```
 
-All five checks passing = migration complete. For ongoing maintenance see UPDATE-GUIDE.md Scenario 6 (quarterly snapshot refresh) and PREFERENCES.md for profile-switching guidance.
+All seven checks passing = migration complete. For ongoing maintenance see UPDATE-GUIDE.md Scenario 6 (quarterly snapshot refresh) and PREFERENCES.md for profile-switching guidance.

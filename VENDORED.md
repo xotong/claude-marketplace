@@ -120,12 +120,14 @@ The `appsec-scan` skill vendors offline fallback snapshots of 4 GitLab CI/CD Cat
 
 | Component | Tag | Fetched | Source |
 |---|---|---|---|
-| `lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast` | 25.2.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
-| `lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast` | 25.2.0 | 2026-07-25 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning` | 1.0.0, 1.1.0 | 2026-07-25 | gitlab.com (private, authenticated fetch) |
 | `lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
-| `lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning` | 1.0.0, 1.1.0 | 2026-07-25 | gitlab.com (private, authenticated fetch) |
 
-Each snapshot includes `template.yml`, `README.md`, and `AGENTS.md`. **Note:** the `fortify-sast@25.2.0` `AGENTS.md` was fetched from HEAD (the file was added upstream after the 25.2.0 tag was cut, on 2026-07-15); future refreshes will find it at the tag directly. Refresh snapshots quarterly per UPDATE-GUIDE.md Scenario 6.
+Each snapshot includes `template.yml`, `README.md`, and `AGENTS.md`. Prior tag directories are kept; the resolver picks the highest. Refresh snapshots quarterly per UPDATE-GUIDE.md Scenario 6, and regenerate `plugins/appsec/skills/appsec-scan/scanners/*.contract` at the same time so component input/report drift keeps being detected.
+
+**Note:** `fortify-sast@25.2.0` was re-fetched on 2026-07-25. The earlier copy had been taken partly from HEAD and predated the component's registry move — it still named `…/ci-catalogue/fortify-sast/` for scanner images, whereas the tag now declares `…/ci-catalogue/docker-images/`. The `fortify-sast` project has no container registry of its own; all images live in the `docker-images` project.
 
 ---
 

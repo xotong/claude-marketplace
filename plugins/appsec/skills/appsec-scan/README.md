@@ -13,7 +13,7 @@ The scanners are the four components of the private GitLab CI/CD Catalog at
 
 | Category | Catalog component | Shipped version | Runner | What runs locally |
 |---|---|---|---|---|
-| SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.0) | `fortify-sast.sh` | `fortify-sca` image; multi-language: maven, gradle, python, javascript |
+| SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.0) | `fortify-sast.sh` | `fortify-sca` image from the catalogue's `docker-images` project; maven, gradle, python, javascript (component declares `go` too — not mapped locally) |
 | Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.1.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output |
 | Secret Detection | `…/secret-detection/secret-detection` | `~latest` (1.0.0) | `secret-detection.sh` | GitLab-native Gitleaks-based analyzer |
 | Container Scanning | `…/container-scanning/container-scanning` | `~latest` (1.1.0) | `gitlab-container-scanning.sh` | GTCS; registry image or locally built archive |
@@ -55,12 +55,20 @@ logic ships with the skill, not baked into images.
 ## Component resolution (Step 2.5)
 
 `load-prefs.sh` emits `ENABLED_COMPONENTS` as space-separated
-**`component|version|runner|image`** tuples. For each triple, `catalog.sh` resolves the
+**`component|version|runner|image`** tuples. For each tuple, `catalog.sh` resolves the
 component against the active profile's `gitlab_instance` — live on every run — and
 caches `template.yml`, `README.md`, and `AGENTS.md` per resolved tag. The catalog is
 **advisory**: the image that actually runs is always the admin-pinned `image:` from
 config; resolution exists to surface the component's usage docs and to warn when the
 pinned world drifts from the catalog.
+
+Drift is checked two ways. **Image drift** compares the component's effective job image
+(resolving `$[[ inputs.X ]]` against declared defaults) with the configured `image:`.
+**Contract drift** diffs the component's declared inputs, permitted `options:` and
+report artifacts against the checked-in `scanners/<runner>.contract`, so a new input or
+option cannot land unnoticed — regenerate with `catalog.sh contract`. `template.yml` is
+the only machine source of truth; `AGENTS.md` is cached for guidance but its prose lags
+the template.
 
 ```mermaid
 sequenceDiagram
@@ -86,7 +94,8 @@ sequenceDiagram
         CS-->>M: component@tag [offline-fallback]
     end
     M->>CS: check-drift component cache runner
-    CS-->>M: DRIFT lines (runner &gt;90 days stale, configured image != template image)
+    CS-->>M: DRIFT (runner &gt;90 days stale, configured image != template image)
+    CS-->>M: CONTRACT-DRIFT (component inputs/reports != scanners/&lt;runner&gt;.contract)
 ```
 
 Auth uses the `read_api` PAT in the env var named by `settings.catalog.auth_token_env`
@@ -105,10 +114,10 @@ touch. Full schema and switching guide: [`config/PREFERENCES.md`](config/PREFERE
 | `settings.container_runtime` | `auto` (docker, then podman) or forced |
 | `settings.jq.*` | host jq preferred; optional `install_url`; degrades to UNKNOWN severity summary |
 | `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
-| `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — controls run-scan.sh exit code |
-| `settings.catalog.mode` | `online` (resolve live) or `offline` (snapshots only) |
-| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT; ships `GITLAB_READ_TOKEN` (the lobster-thermidor catalogue is private — anonymous reads 404). Preflight requires the named var unless `catalog.mode: offline`. Setup: [MIGRATION.md step 0](MIGRATION.md) |
-| `settings.container_registry.*` | env var *names* for registry credentials used by GTCS |
+| `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — severity threshold for the gate. Incomplete coverage fails the gate at every level except `none`, which is report-only |
+| `settings.catalog.mode` | `online` (resolve live against `gitlab_instance`) or `offline` (vendored snapshots only). **`offline` makes drift detection inert** — the contracts were generated from those same snapshots, so they always match. Use `online` wherever the instance is reachable, including an airgap with a mirrored catalogue |
+| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT for the **GitLab API only** — unrelated to image pulls. Ships `GITLAB_READ_TOKEN` because the lobster-thermidor catalogue is private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Preflight requires the named var unless `catalog.mode: offline`. Setup: [MIGRATION.md step 0](MIGRATION.md) |
+| `settings.container_registry.*` | env var *names* for **image registry** credentials used by GTCS. Leave the vars unset for an anonymous-pull registry |
 
 Two profiles (`APPSEC_PROFILE` overrides `default_profile`):
 
@@ -206,17 +215,21 @@ appsec-scan/
 ├── MIGRATION.md           internet → airgapped platform runbook
 ├── scripts/               host-side helpers — bash 3.2 / POSIX awk safe
 │   ├── load-prefs.sh      YAML → eval-ready env; the model never parses YAML
-│   ├── catalog.sh         resolve / check-drift / self-test
+│   ├── catalog.sh         resolve / check-drift / contract / self-test
 │   ├── detect-runtime.sh  docker | podman
 │   ├── resolve-jq.sh      jq from PATH or configured URL, else degrade
 │   ├── resolve-python.sh  python3 from PATH or configured URL, else degrade
 │   ├── container-target.sh  what GTCS scans: registry | archive | none
+│   ├── resolve-components.sh  Step 2.5: resolve every enabled component + drift table
 │   ├── run-scan.sh        scan orchestrator: invokes all scanners, calls normalize.py
 │   ├── fix-branch.sh      fix-loop guard: --init and --check-progress
 │   └── normalize.py       raw reports → findings.triaged.json (verification statuses)
 ├── scanners/              run INSIDE Linux analyzer containers (mounted at /runner.sh)
 │   ├── preflight.sh
-│   ├── fortify-sast.sh    multi-language SAST: maven | gradle | python | javascript
+│   ├── fortify-sast.sh    SAST: maven | gradle | python | javascript (component also
+│   │                      declares `go`; unmapped locally — emits NEEDS-MAPPING)
+│   ├── *.contract         per-runner snapshot of the component's declared inputs and
+│   │                      reports; check-drift diffs the live component against it
 │   ├── gitlab-dependency-scanning.sh
 │   ├── secret-detection.sh
 │   └── gitlab-container-scanning.sh
@@ -253,6 +266,8 @@ The editable source is [`docs/architecture.drawio`](docs/architecture.drawio)
 3. Refresh the vendored snapshot — UPDATE-GUIDE.md "Refresh catalog snapshots":
    `catalog.sh resolve <instance> <component> <version> <cache>` then copy
    `template.yml`, `README.md`, `AGENTS.md` into `reference/catalog/…/<tag>/`.
-4. Update the runner's `# Last synced :` header if its logic was reviewed against the
+4. Regenerate the runner's `.contract` (UPDATE-GUIDE.md Scenario 6) — otherwise the
+   next run reports CONTRACT-DRIFT, or worse, a new input lands unnoticed.
+5. Update the runner's `# Last synced :` header if its logic was reviewed against the
    new template.
-5. `python3 -m pytest plugins/appsec/skills/appsec-scan/tests/ -v`.
+6. `python3 -m pytest plugins/appsec/skills/appsec-scan/tests/ -v`.

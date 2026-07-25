@@ -366,7 +366,7 @@ info "Project: $APP_NAME  Branch: $BRANCH"
 info "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Dockerfile=$HAS_DOCKERFILE HAS_POM_NO_GRADLE=$HAS_POM_NO_GRADLE"
 mkdir -p .appsec-results
 grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
-  info "Reminder: add .appsec-results/ to .gitignore"
+  info ".appsec-results/ is self-ignoring (it contains its own .gitignore); no change to your repo's .gitignore is needed"
 
 # ponytail: RUN_* values are data; only the literal string true enables a scanner.
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE" ]; then
