@@ -3,7 +3,7 @@
 # Scanner      : GitLab Secret Detection
 # Target       : Git repository working tree
 # CI component : lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection@~latest
-# Last synced  : 2026-07-15
+# Last synced  : 2026-07-25
 # Image env var: SECRET_DETECTION_IMAGE
 # Image note   : The pinned profile image: is what runs; the template default is
 #                registry.gitlab.com/security-products/secrets:7.

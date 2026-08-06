@@ -354,16 +354,18 @@ HAS_GRADLE=false
 HAS_PACKAGE_JSON=false
 HAS_REQUIREMENTS=false
 HAS_DOCKERFILE=false
+HAS_GO=false
 [ -f pom.xml ] && HAS_POM=true
 { [ -f build.gradle ] || [ -f build.gradle.kts ]; } && HAS_GRADLE=true
 [ -f package.json ] && HAS_PACKAGE_JSON=true
 { [ -f requirements.txt ] || [ -f pyproject.toml ]; } && HAS_REQUIREMENTS=true
 [ -f Dockerfile ] && HAS_DOCKERFILE=true
+[ -f go.mod ] && HAS_GO=true
 HAS_POM_NO_GRADLE=false
 { $HAS_POM && ! $HAS_GRADLE; } && HAS_POM_NO_GRADLE=true
 
 info "Project: $APP_NAME  Branch: $BRANCH"
-info "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Dockerfile=$HAS_DOCKERFILE HAS_POM_NO_GRADLE=$HAS_POM_NO_GRADLE"
+info "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Go=$HAS_GO Dockerfile=$HAS_DOCKERFILE HAS_POM_NO_GRADLE=$HAS_POM_NO_GRADLE"
 mkdir -p .appsec-results
 grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
   info ".appsec-results/ is self-ignoring (it contains its own .gitignore); no change to your repo's .gitignore is needed"
@@ -375,9 +377,10 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     elif $HAS_POM; then FORTIFY_LANGUAGE=maven
     elif $HAS_REQUIREMENTS; then FORTIFY_LANGUAGE=python
     elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
+    elif $HAS_GO; then FORTIFY_LANGUAGE=go
     else
       info "[Fortify SCA] No supported project type detected; skipping"
-      record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript), so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
+      record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript/go), so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
       RUN_FORTIFY_SAST=false
     fi
   fi

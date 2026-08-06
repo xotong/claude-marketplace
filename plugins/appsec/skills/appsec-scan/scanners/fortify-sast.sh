@@ -3,9 +3,9 @@
 # Scanner      : Fortify SAST
 # Target       : Source tree in analyzer workspace
 # CI component : lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast@~latest
-# Last synced  : 2026-07-15
+# Last synced  : 2026-07-25
 # Image env var: FORTIFY_SAST_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
-# Languages    : maven, gradle, python, javascript
+# Languages    : maven, gradle, python, javascript, go
 # Output       : fortify-sast.fpr
 #
 # HOW TO UPDATE
@@ -64,14 +64,20 @@ case "${FORTIFY_LANGUAGE}" in
       "${SOURCE_PATH}"
     ;;
   go)
-    # The component declares `go` (see fortify-sast.contract) but the correct
-    # sourceanalyzer translation for Go is not mirrored here yet. Fail loudly
-    # and specifically rather than pretending the language is unknown.
-    echo "NEEDS-MAPPING: component fortify-sast declares language 'go' but this runner has no scan command for it. Add a go) arm mirroring the component's script block, then regenerate fortify-sast.contract." >&2
-    exit 3
+    # Mirrors the component's <job-name>-go job (template.yml:151-158):
+    #   sourceanalyzer -b $CI_JOB_ID -clean
+    #   (cd $[[ inputs.source-path ]] && go mod download)
+    #   sourceanalyzer -b $CI_JOB_ID -debug-verbose $[[ inputs.source-path ]]
+    # The -clean above already ran; go mod download resolves the module graph so
+    # sourceanalyzer can follow imports. Note the component omits
+    # -Dcom.fortify.sca.follow.imports=false here, unlike the javascript arm.
+    ( cd "${SOURCE_PATH}" && go mod download )
+    sourceanalyzer -b "${APP_NAME}" \
+      -debug-verbose \
+      "${SOURCE_PATH}"
     ;;
   "")
-    echo "ERROR: FORTIFY_LANGUAGE is required (maven|gradle|python|javascript)" >&2
+    echo "ERROR: FORTIFY_LANGUAGE is required (maven|gradle|python|javascript|go)" >&2
     exit 2
     ;;
   *)
