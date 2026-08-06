@@ -223,7 +223,7 @@ Read `.appsec-results/findings.triaged.json`. Present each finding: severity, na
 bash "$SCRIPTS_DIR/fix-branch.sh" --init
 ```
 
-Names the branch `appsec/fix-<YYYYMMDD>-<shortsha>`. Ask for approval once before making changes — it will create a new branch. Loop maximum **5 iterations**: apply fixes → rescan ONLY the affected category (`bash "$SCRIPTS_DIR/run-scan.sh" --only <category>`; for secret findings, rerun only GitLab Secret Detection first) → `bash "$SCRIPTS_DIR/fix-branch.sh" --check-progress <prev_count> <curr_count>` — the two `TOTAL C+H` **counts**, not file paths (exits 1 on cap/no-progress → stop). When the loop ends, run the app's relevant tests. Never push or open an MR without the user explicitly asking. Never rewrite git history.
+Names the branch `appsec/fix-<YYYYMMDD>-<shortsha>`. Ask for approval once before making changes — it will create a new branch. **Skip every finding whose `remediation_status` is `blocked_registry_gap`** — the upgrade is not in the mirror, so attempting it burns an iteration and cannot succeed; it belongs in TRIAGE.md §3b. Loop maximum **5 iterations**: apply fixes → rescan ONLY the affected category (`bash "$SCRIPTS_DIR/run-scan.sh" --only <category>`; for secret findings, rerun only GitLab Secret Detection first) → `bash "$SCRIPTS_DIR/fix-branch.sh" --check-progress <prev_count> <curr_count>` — the two `TOTAL C+H` **counts**, not file paths (exits 1 on cap/no-progress → stop). When the loop ends, run the app's relevant tests. Never push or open an MR without the user explicitly asking. Never rewrite git history.
 
 ---
 
@@ -257,6 +257,15 @@ to dismiss. The action is to restore coverage. Copy the `why` text verbatim from
 each `APPSEC-REPORT-*` finding — it names the fix.
 ### <n>. <category> did not run
 - What to do: <the finding's evidence.why>
+
+## 3b. Blocked — upgrade not in the mirror — NOT dismissible
+Every `remediation_status: blocked_registry_gap` finding. The fix exists upstream
+but the internal registry does not carry it, so it could not be applied here.
+ONE batched table — this is a single request to the platform team, not one ask
+per finding. Omit the section when there are none.
+| Package | Have | Need | Ecosystem | CVE |
+|---|---|---|---|---|
+- What to do: ask the platform team to mirror the versions above, then re-run.
 
 ## 4. Dismiss in GitLab
 Secure → Vulnerability report → open the finding → **Dismiss vulnerability** →

@@ -172,6 +172,14 @@ function split_key_value(s,    idx) {
       settings_block = "catalog"
       next
     }
+    if (indent == 2 && key == "package_registries" && strip_comment(value) == "") {
+      settings_block = "package_registries"
+      next
+    }
+    if (indent == 4 && settings_block == "package_registries") {
+      settings["package_registries." key] = parse_scalar(value)
+      next
+    }
     if (indent == 2 && key == "container_registry" && strip_comment(value) == "") {
       settings_block = "container_registry"
       next
@@ -277,6 +285,11 @@ END {
   print "SETTING\tcontainer_registry.password_env\t" settings["container_registry.password_env"]
   print "SETTING\tci_gate.fail_on\t" settings["ci_gate.fail_on"]
   print "SETTING\timage_policy\t" settings["image_policy"]
+  print "SETTING\tpackage_registries.npm\t" settings["package_registries.npm"]
+  print "SETTING\tpackage_registries.pypi\t" settings["package_registries.pypi"]
+  print "SETTING\tpackage_registries.maven\t" settings["package_registries.maven"]
+  print "SETTING\tpackage_registries.go\t" settings["package_registries.go"]
+  print "SETTING\tpackage_registries.auth_token_env\t" settings["package_registries.auth_token_env"]
 
   if (profile_seen[active_profile]) {
     print "GITLAB_INSTANCE\t" profile_gitlab[active_profile]
@@ -310,6 +323,11 @@ cs_user_env=
 cs_pass_env=
 ci_gate_fail_on=high
 image_policy=follow-component
+pkg_reg_npm=
+pkg_reg_pypi=
+pkg_reg_maven=
+pkg_reg_go=
+pkg_reg_auth_env=
 gitlab_instance=
 
 sast_component=
@@ -370,6 +388,11 @@ while IFS="$tab" read -r record field1 field2 field3; do
         container_registry.password_env) cs_pass_env=$field2 ;;
         ci_gate.fail_on) [ -z "$field2" ] || ci_gate_fail_on=$field2 ;;
         image_policy) [ -z "$field2" ] || image_policy=$field2 ;;
+        package_registries.npm) pkg_reg_npm=$field2 ;;
+        package_registries.pypi) pkg_reg_pypi=$field2 ;;
+        package_registries.maven) pkg_reg_maven=$field2 ;;
+        package_registries.go) pkg_reg_go=$field2 ;;
+        package_registries.auth_token_env) pkg_reg_auth_env=$field2 ;;
       esac
       ;;
     PROFILE_AUTH_TOKEN_ENV)
@@ -531,6 +554,9 @@ emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"
 emit CI_GATE_FAIL_ON "$ci_gate_fail_on"
 emit IMAGE_POLICY "$image_policy"
+emit PACKAGE_REGISTRY_AUTH_ENV "$pkg_reg_auth_env"
+emit PACKAGE_REGISTRIES "$(printf '{"npm":"%s","pypi":"%s","maven":"%s","go":"%s"}' \
+  "$pkg_reg_npm" "$pkg_reg_pypi" "$pkg_reg_maven" "$pkg_reg_go")"
 emit GITLAB_INSTANCE "$gitlab_instance"
 emit FORTIFY_SAST_IMAGE "$fortify_sast_image"
 emit SECRET_DETECTION_IMAGE "$secret_detection_image"

@@ -95,6 +95,26 @@ settings:
 
   Note `image:` is still required under `follow-component`: it is what the effective
   ref is built from, and the fallback when adoption is not possible.
+- **package_registries** — URL templates used to check, before the fix loop runs,
+  whether a suggested upgrade is obtainable here. All empty (the shipped default)
+  disables the check entirely. Placeholders: `{package}` `{version}` `{group_path}`
+  `{artifact}` `{module}`.
+
+  Verdicts and what they do:
+
+  | Verdict | Meaning | Effect |
+  |---|---|---|
+  | available | 200, version confirmed | stays `fixable_candidate` — loop may attempt it |
+  | absent | 404 | `blocked_registry_gap` — loop skips it, TRIAGE.md §3b lists it |
+  | unknown | timeout, auth failure, 5xx, no template | nothing changes |
+
+  `unknown` deliberately changes nothing: a registry you could not reach is not
+  evidence a package is missing, and treating it as one would send developers
+  chasing mirroring requests for packages that are already there.
+
+  Gap findings still count toward the gate — a vulnerability you cannot fix yet is
+  still a vulnerability. Container-scanning findings are never probed: those are OS
+  packages in a base image, fixed by rebuilding on a newer base.
 - **catalog resolution** — there is no mode switch. Components are always
   resolved live against the active profile's `gitlab_instance`; if that fetch
   fails for any reason, `catalog.sh` falls back to the vendored snapshots in

@@ -163,10 +163,16 @@ class SkillDocTokenBudgetTest(unittest.TestCase):
         # either wastes several minutes of container time or silently skips the
         # category they actually cared about. Routing that removes that ambiguity
         # earns its lines.
+        #
+        # Raised again from 310/16200 in 2026-08 for the registry-gap path: the
+        # fix loop must be told to skip blocked_registry_gap findings, and
+        # TRIAGE.md needs the batched mirroring table. Both are load-bearing --
+        # without the skip the loop spends its 5-iteration budget on upgrades the
+        # mirror cannot serve.
         lines = SKILL_TEXT.splitlines()
 
-        self.assertLessEqual(len(lines), 310)
-        self.assertLessEqual(len(SKILL_TEXT), 16200)
+        self.assertLessEqual(len(lines), 320)
+        self.assertLessEqual(len(SKILL_TEXT), 17000)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):

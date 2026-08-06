@@ -59,6 +59,32 @@ settings:
     # Setup: MIGRATION.md step 0.
     auth_token_env: GITLAB_READ_TOKEN
 
+  # Package registries used to CHECK whether a suggested upgrade is actually
+  # obtainable here, before the fix loop tries it. Leave every value empty to skip
+  # the check entirely (nothing is probed, no status changes).
+  #
+  # These are URL TEMPLATES, not base URLs: Artifactory's API shape differs per
+  # ecosystem and per deployment, so the exact URL is declared here rather than
+  # guessed. Placeholders: {package} {version} {group_path} {artifact} {module}
+  #
+  # A template containing {version} addresses one exact version, so HTTP 200 means
+  # available. A listing-style URL (pypi's simple index) is matched by searching the
+  # response body for the version string. 404 means absent; anything else — timeout,
+  # auth failure, 5xx — is recorded as unknown and changes nothing, because a
+  # registry we could not reach is not evidence the package is missing.
+  #
+  # Findings whose fix exists upstream but not here become blocked_registry_gap:
+  # the fix loop skips them and TRIAGE.md lists them as one batched mirroring
+  # request. Container-scanning findings are never probed — those are OS packages
+  # in a base image, remediated by rebuilding on a newer base, not by a registry.
+  package_registries:
+    npm: ""    # e.g. https://jfrog.internal/artifactory/api/npm/npm-virtual/{package}/{version}
+    pypi: ""   # e.g. https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/{package}/
+    maven: ""  # e.g. https://jfrog.internal/artifactory/maven-virtual/{group_path}/{artifact}/{version}/
+    go: ""     # e.g. https://jfrog.internal/artifactory/api/go/go-virtual/{module}/@v/{version}.info
+    # Env var NAME holding a registry token. Leave empty for anonymous read.
+    auth_token_env: ""
+
   # Container scanning: names of env vars holding registry credentials, used both
   # when GTCS pulls a BYO image and when a local build must pull a FROM base from
   # the internal registry.

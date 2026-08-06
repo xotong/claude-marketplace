@@ -236,6 +236,12 @@ def parse_generic_json(path, data, category=None):
             package_name = package.get("name") or raw_location.get("package")
             if package_name:
                 evidence["package"] = package_name
+            # The dependency manifest is the ecosystem signal (package-lock.json ->
+            # npm, pom.xml -> maven). It has to be kept here because _gitlab_location
+            # collapses dependency findings to {"package": name} and drops the file.
+            manifest = raw_location.get("file") or raw_location.get("path")
+            if manifest:
+                evidence["manifest"] = manifest
             if dependency.get("version"):
                 evidence["installed_version"] = dependency.get("version")
             fixed = vulnerability.get("fixed_version")
@@ -339,9 +345,33 @@ def first_text(element, names):
             return node.text.strip()
     return None
 
+def _fvdl_recommendations(root):
+    """Map Fortify classID -> remediation text.
+
+    FVDL keeps guidance in top-level <Description classID="..."> blocks, not on the
+    <Vulnerability> elements, so it has to be collected separately and joined on
+    ClassID. Without this every SAST finding reached the developer with no
+    remediation at all, which is the one category where they most need it.
+    """
+    guidance = {}
+    for node in root.iter():
+        if strip_ns(node.tag).lower() != "description":
+            continue
+        class_id = node.get("classID") or node.get("classid")
+        if not class_id:
+            continue
+        text = first_text(node, ["Recommendations", "Abstract", "Explanation"])
+        if not text:
+            continue
+        collapsed = " ".join(str(text).split())
+        if collapsed:
+            guidance[class_id] = collapsed[:1200]
+    return guidance
+
 def parse_fvdl_root(root, path):
     path = Path(path)
     findings = []
+    recommendations = _fvdl_recommendations(root)
     for vulnerability in root.iter():
         if strip_ns(vulnerability.tag).lower() != "vulnerability":
             continue
@@ -360,13 +390,17 @@ def parse_fvdl_root(root, path):
             ["LineStart", "FunctionDeclarationSourceLocation/Line", "Line"],
         )
         rule_id = first_text(class_info, ["ClassID", "RuleID"])
+        evidence = {"raw_report": str(path)}
+        guidance = recommendations.get(rule_id) if rule_id else None
+        if guidance:
+            evidence["solution"] = guidance
         findings.append(
             new_finding(
                 "fortify",
                 name or "Fortify vulnerability",
                 severity or "HIGH",
                 {"file": file_name or str(path), "line": line},
-                {"raw_report": str(path)},
+                evidence,
                 category="sast",
                 rule_id=rule_id,
             )
@@ -489,7 +523,62 @@ def normalize_reports(results_dir):
             findings.append(parse_failure_finding(path, error))
     return findings
 
-def triage_findings(findings):
+# Mirrors check-remediation.py's inference. Kept here too so normalize.py stays a
+# pure function of its inputs — it reads the availability map, never the network.
+_MANIFEST_ECOSYSTEMS = {
+    "package-lock.json": "npm",
+    "package.json": "npm",
+    "yarn.lock": "npm",
+    "npm-shrinkwrap.json": "npm",
+    "pnpm-lock.yaml": "npm",
+    "pom.xml": "maven",
+    "build.gradle": "maven",
+    "build.gradle.kts": "maven",
+    "gradle.lockfile": "maven",
+    "requirements.txt": "pypi",
+    "pyproject.toml": "pypi",
+    "Pipfile.lock": "pypi",
+    "poetry.lock": "pypi",
+    "go.mod": "go",
+    "go.sum": "go",
+    "Gemfile.lock": "rubygems",
+}
+
+def _registry_gap(finding, availability):
+    """True only when the mirror explicitly answered 'absent'.
+
+    'unknown' must never route here: a registry we could not reach is not proof
+    the package is missing, and mislabelling it would send the developer chasing
+    a mirroring request for something that is already available.
+    """
+    if not availability:
+        return False
+    if finding.get("category") != "dependency_scanning":
+        return False
+    evidence = finding.get("evidence") or {}
+    package = evidence.get("package")
+    fixed = evidence.get("fixed_version")
+    if not package or not fixed:
+        return False
+    manifest = evidence.get("manifest") or (finding.get("location") or {}).get("file")
+    path = str(manifest or "").replace("\\", "/")
+    ecosystem = _MANIFEST_ECOSYSTEMS.get(path.rsplit("/", 1)[-1]) if path else None
+    if not ecosystem:
+        return False
+    return availability.get(f"{ecosystem}|{package}|{fixed}") == "absent"
+
+def load_availability(path):
+    """Read the registry-availability map; any problem degrades to 'no data'."""
+    if not path:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def triage_findings(findings, availability=None):
+    availability = availability or {}
     for finding in findings:
         location = finding.get("location") or {}
         evidence = finding.get("evidence") or {}
@@ -518,6 +607,19 @@ def triage_findings(findings):
             finding["verification_status"] = "not_fixable_locally"
             finding["remediation_status"] = "blocked_external_dependency"
             finding["triage_reason"] = "The scanner did not report a fixed version."
+        elif _registry_gap(finding, availability):
+            # The scanner named a fixed version, but the internal mirror does not
+            # carry it. Distinct from blocked_external_dependency: there IS a known
+            # fix, it just cannot be fetched here yet. The fix loop must not spend
+            # an iteration on it, and TRIAGE.md turns it into a mirroring request.
+            finding["verification_status"] = "not_fixable_locally"
+            finding["remediation_status"] = "blocked_registry_gap"
+            finding["triage_reason"] = (
+                "Upgrade to {} is available upstream but not in the configured "
+                "registry mirror; request it before this can be fixed here.".format(
+                    evidence.get("fixed_version")
+                )
+            )
         elif TEST_PATH_RE.search(path):
             finding["verification_status"] = "likely_false_positive"
             finding["remediation_status"] = "needs_user_decision"
@@ -766,6 +868,7 @@ def build_parser():
     parser.add_argument("--only", choices=CATEGORIES)
     parser.add_argument("--ran", default=None)
     parser.add_argument("--skips", default=None)
+    parser.add_argument("--availability", default=None)
     return parser
 
 def _previous_scanners_run(results_dir):
@@ -802,7 +905,10 @@ def main(argv=None):
             results_dir, scanners_run, parsed, skip_reasons
         )
         normalized_new = parsed + coverage
-        triaged_new = triage_findings(json.loads(json.dumps(normalized_new)))
+        availability = load_availability(args.availability)
+        triaged_new = triage_findings(
+            json.loads(json.dumps(normalized_new)), availability
+        )
         redact_secret_findings(normalized_new)
         redact_secret_findings(triaged_new)
 

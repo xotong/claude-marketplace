@@ -111,6 +111,7 @@ Findings carry a `verification_status`:
 | `confirmed_true_positive` | Real. Fix it. |
 | `likely_false_positive` | Probably noise — but it still counts against the gate. Dismiss it in GitLab's Vulnerability Report with a justification; don't just ignore it. |
 | `not_fixable_locally` | Needs infra, a dependency upgrade, or a decision above your pay grade. |
+| `blocked_registry_gap` | There *is* a fix — the version just isn't in our mirror yet. See TRIAGE.md §3b for the batched list to send your platform team. Nothing for you to do until it's mirrored. |
 | `needs_human_review` | The skill isn't confident. Look at it yourself. |
 
 ---

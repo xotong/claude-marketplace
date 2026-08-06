@@ -636,18 +636,48 @@ if $DRY_RUN; then
 fi
 
 PY_BIN="$(PYTHON_INSTALL_URL="${PYTHON_INSTALL_URL:-}" APPSEC_RESULTS_DIR=".appsec-results" bash "$SCRIPTS_DIR/resolve-python.sh" || true)"
-if [ -n "$PY_BIN" ]; then
+
+# Ask the mirror which suggested upgrades are actually obtainable, so the fix loop
+# never spends one of its five iterations on a version we cannot fetch. Needs a
+# first normalize pass to know the packages, so this runs between two passes; the
+# second pass folds the answers into remediation_status. No registries configured
+# (the shipped default) => probe writes an empty map and pass 2 is skipped entirely.
+AVAILABILITY_ARGS=""
+run_normalize() {
   if [ -n "$ONLY_CATEGORY" ]; then
-    set +e
-    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --only "$ONLY_CATEGORY"
-    gate_rc=$?
-    set -e
+    # AVAILABILITY_ARGS is an intentional word list, not one argument.
+    # shellcheck disable=SC2086
+    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --only "$ONLY_CATEGORY" $AVAILABILITY_ARGS
   else
-    set +e
-    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE"
-    gate_rc=$?
-    set -e
+    # shellcheck disable=SC2086
+    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" $AVAILABILITY_ARGS
   fi
+}
+
+# Probing needs a configured registry URL. Without one the first pass IS the only
+# pass — its output is already on stdout and its exit code is the gate.
+probe_configured() {
+  printf '%s' "${PACKAGE_REGISTRIES:-}" | grep -q '[a-zA-Z]://'
+}
+
+if [ -n "$PY_BIN" ]; then
+  if probe_configured; then
+    # Pass 1 is discarded output — it exists only so check-remediation.py can see
+    # which packages and fixed versions the scanners actually reported.
+    set +e
+    run_normalize >/dev/null 2>&1
+    "$PY_BIN" "$SCRIPTS_DIR/check-remediation.py" .appsec-results \
+      --registries "${PACKAGE_REGISTRIES:-}" \
+      --token-env "${PACKAGE_REGISTRY_AUTH_ENV:-}"
+    set -e
+    [ -f .appsec-results/registry-availability.json ] && \
+      AVAILABILITY_ARGS="--availability .appsec-results/registry-availability.json"
+  fi
+
+  set +e
+  run_normalize
+  gate_rc=$?
+  set -e
   if [ "$gate_rc" -eq 0 ] && [ -n "$SKIPPED_IMAGE_SCANNERS" ]; then
     warning "enabled scanners skipped for missing images: $SKIPPED_IMAGE_SCANNERS"
     exit 2
