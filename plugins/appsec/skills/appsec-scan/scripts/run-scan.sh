@@ -282,6 +282,41 @@ record_skip() {
   printf '%s\t%s\n' "$1" "$2" >>"$SKIPS_FILE"
 }
 
+# Resolve every enabled category's image BEFORE the missing-image checks below,
+# so a category that legitimately omits image: (deriving it from the component)
+# is not mistaken for one whose image was left unset by accident.
+#
+# Skipped under --dry-run: resolution pulls to verify availability, and a dry run
+# must not touch the network.
+if ! $DRY_RUN; then
+  for spec in \
+    "FORTIFY_SAST_IMAGE sast lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast RUN_FORTIFY_SAST" \
+    "GITLAB_DS_IMAGE dependency_scanning lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning RUN_GITLAB_DS" \
+    "SECRET_DETECTION_IMAGE secret_detection lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection RUN_SECRET_DETECTION" \
+    "GITLAB_CS_IMAGE container_scanning lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning RUN_GITLAB_CS"; do
+    # shellcheck disable=SC2086
+    set -- $spec
+    var=$1; cat_name=$2; comp=$3; run_flag=$4
+    eval "flag_value=\${$run_flag:-false}"
+    [ "$flag_value" = true ] || continue
+    selected "$cat_name" || continue
+
+    eval "configured=\${$var:-}"
+    tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
+      "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
+
+    if effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
+        "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}"); then
+      [ -n "$effective" ] && eval "$var=\$effective"
+    else
+      error "[$cat_name] could not resolve a scanner image; refusing to continue"
+      error "  A scanner whose image cannot be determined must not be silently skipped —"
+      error "  that would report a clean scan for a category that never ran."
+      exit 2
+    fi
+  done
+fi
+
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -z "$FORTIFY_SAST_IMAGE" ]; then
   record_missing_image "Fortify SCA" FORTIFY_SAST_IMAGE sast
 fi
@@ -340,38 +375,6 @@ fi
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
 SOURCE_PATH="${SOURCE_PATH:-src}"
-
-# Track the component's analyzer version without hand-editing config. Each image
-# keeps its configured registry/path (your mirror) and takes the tag the component
-# template declares at the resolved tag. Skipped entirely under --dry-run: adoption
-# pulls to check availability, and a dry run must not touch the network.
-# See scripts/resolve-image.sh and settings.image_policy.
-if [ "${IMAGE_POLICY:-follow-component}" = "follow-component" ] && ! $DRY_RUN; then
-  for spec in \
-    "FORTIFY_SAST_IMAGE lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast" \
-    "GITLAB_DS_IMAGE lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning" \
-    "SECRET_DETECTION_IMAGE lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection" \
-    "GITLAB_CS_IMAGE lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning"; do
-    var=${spec%% *}
-    comp=${spec##* }
-    eval "configured=\${$var:-}"
-    [ -n "$configured" ] || continue
-    tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
-      "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
-    [ -n "$tmpl" ] || continue
-    effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
-      "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}") || effective=$configured
-    [ -n "$effective" ] && eval "$var=\$effective"
-  done
-fi
-
-FORTIFY_SAST_PID=
-FORTIFY_SAST_WATCHDOG=
-GITLAB_DS_PID=
-GITLAB_DS_WATCHDOG=
-SECRET_DETECTION_PID=
-SECRET_DETECTION_WATCHDOG=
-GITLAB_CS_PID=
 
 HAS_POM=false
 HAS_GRADLE=false

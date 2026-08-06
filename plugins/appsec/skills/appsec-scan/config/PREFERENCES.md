@@ -95,6 +95,23 @@ settings:
 
   Note `image:` is still required under `follow-component`: it is what the effective
   ref is built from, and the fallback when adoption is not possible.
+- **image: and runner: are OPTIONAL.** The common config is
+  `component` + `version` + `enabled`; declare either field only to override.
+
+  | Field | Omitted | Declared |
+  |---|---|---|
+  | `image:` | derived from the component template each run | used as the registry/path, with the template supplying the tag under `follow-component` |
+  | `runner:` | this category's shipped runner script | points at a custom or swapped runner |
+
+  Omitting `image:` requires snapshots vendored from an instance whose templates
+  name a registry you can reach — see MIGRATION.md "Re-vendor". If the image cannot
+  be derived and none is configured, **the scan stops with a non-zero exit**. It does
+  not guess a registry and does not skip the scanner: a skipped scanner would read
+  as a clean result for a category that never ran.
+
+  `runner:` stays declarable because `check-drift` uses the name to locate the
+  sibling `<runner>.contract`, and because the runner is local code that a component
+  cannot supply — see docs/ARCHITECTURE.md.
 - **package_registries** — URL templates used to check, before the fix loop runs,
   whether a suggested upgrade is obtainable here. All empty (the shipped default)
   disables the check entirely. Placeholders: `{package}` `{version}` `{group_path}`

@@ -9,6 +9,80 @@ Use this runbook when moving from the default `catalog` profile (which resolves 
 
 ---
 
+## Re-vendor the catalogue snapshots from YOUR instance
+
+**Do this once before rolling the skill out, and again whenever a component is
+republished.** Everything below depends on it.
+
+The snapshots shipped in this repo were vendored from **gitlab.com**, so their
+templates name `registry.gitlab.com/...`. Your internal catalogue's templates name
+your internal registry instead. Until you re-vendor, two things are wrong:
+
+- the permanent `DRIFT: image drift:` advisory on every run is just gitlab.com-vs-yours,
+  not a real signal; and
+- with `image:` omitted, an offline fallback would derive a **public** registry ref
+  your network cannot reach.
+
+Re-vendoring replaces the snapshots with your instance's templates, so both problems
+disappear and `image:` becomes genuinely unnecessary.
+
+```bash
+cd plugins/appsec/skills/appsec-scan
+
+# Anonymous read (typical for an internal instance):
+bash scripts/revendor.sh https://gitlab.internal.example
+
+# Or, if your instance requires a read_api PAT:
+export GITLAB_READ_TOKEN=glpat-...
+bash scripts/revendor.sh https://gitlab.internal.example GITLAB_READ_TOKEN
+```
+
+For each enabled component this resolves `~latest`, copies `template.yml`,
+`README.md` and `AGENTS.md` into `reference/catalog/<component>/<tag>/`, stamps a
+provenance header, and regenerates `scanners/<runner>.contract`.
+
+> **Safety:** a component that resolves `[offline-fallback]` is **refused**, not
+> vendored. Re-vendoring from the fallback would copy a snapshot onto itself and
+> make a stale component look freshly confirmed. If you see that refusal, fix the
+> connection or the token — do not work around it.
+
+### Review and publish
+
+Re-vendoring changes what runs on every developer's machine, so it goes through
+review like any other change:
+
+```bash
+# 1. See what moved. Contract changes are the ones that matter.
+git diff --stat plugins/appsec/skills/appsec-scan/reference/catalog/
+git diff plugins/appsec/skills/appsec-scan/scanners/*.contract
+
+# 2. Confirm images now resolve to YOUR registry (no registry.gitlab.com).
+for c in fortify-sast/fortify-sast dependency-scanning/dependency-scanning \
+         secret-detection/secret-detection container-scanning/container-scanning; do
+  bash scripts/catalog.sh template-image \
+    "lobster-thermidor/devops/ci-catalogue/$c" /nonexistent
+done
+
+# 3. Gate + tests.
+python3 ../../../../ci/check-appsec-drift.py
+python3 -m pytest tests/ -q
+
+# 4. Publish to skillshub.
+git checkout -b appsec/revendor-$(date +%Y%m%d)
+git add reference/catalog scanners/*.contract
+git commit -m "chore(appsec): re-vendor catalogue snapshots from internal GitLab"
+git push -u origin HEAD
+```
+
+Developers pick it up with `/plugin marketplace update`.
+
+**A `CONTRACT-DRIFT:` line in step 3 is not a failure to route around.** It means a
+component changed shape underneath its runner — reconcile the runner first
+(UPDATE-GUIDE.md), then re-run. Merging past it re-creates the gap the contracts
+exist to catch.
+
+---
+
 ## 0 — Validate on gitlab.com first (do this before steps 1–6)
 
 Prove the skill works end to end against the **public** instance while you still have internet. Everything after this step assumes the mechanics already work, so a failure here is much cheaper to diagnose than the same failure inside the airgap.

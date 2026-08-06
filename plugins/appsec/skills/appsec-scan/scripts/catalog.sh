@@ -268,16 +268,60 @@ template_image_ref() {
       }
       next
     }
+    # variables: blocks, at document level (keys indented 2) and inside a job
+    # (keys indented 4). dependency-scanning builds its image through these
+    # rather than through spec.inputs:
+    #   variables: {ANALYZER_IMAGE_PREFIX, ANALYZER_IMAGE_NAME, ANALYZER_IMAGE_VERSION}
+    #   job.variables.DS_ANALYZER_IMAGE: $PREFIX/$NAME:$VERSION
+    #   job.image: "$DS_ANALYZER_IMAGE"
+    # Without resolving them the ref is underivable and the category needs an
+    # explicit image: in config.
+    /^variables:[ \t]*$/  { in_vars = 1; vars_indent = 2; next }
+    /^  variables:[ \t]*$/ { in_vars = 1; vars_indent = 4; next }
+    in_vars {
+      if ($0 ~ /^[ \t]*$/) next
+      if ($0 ~ /^[ \t]*#/) next
+      indent = match($0, /[^ ]/) - 1
+      if (indent >= vars_indent) {
+        line = trim($0); idx = index(line, ":")
+        if (idx > 1) {
+          vk = substr(line, 1, idx - 1)
+          vv = unquote(trim(substr(line, idx + 1)))
+          if (!(vk in varmap)) varmap[vk] = vv
+        }
+        next
+      }
+      in_vars = 0
+    }
     image == "" && $0 ~ /^  image:[ \t]/ {
       v = $0; sub(/^  image:[ \t]*/, "", v); image = unquote(trim(v))
     }
     END {
       if (image == "") exit 0
-      while (match(image, /\$\[\[[ \t]*inputs\.[A-Za-z0-9_.-]+[ \t]*\]\]/)) {
-        k = substr(image, RSTART, RLENGTH)
-        sub(/^\$\[\[[ \t]*inputs\./, "", k); sub(/[ \t]*\]\]$/, "", k)
-        if (!(k in def)) exit 0
-        image = substr(image, 1, RSTART - 1) def[k] substr(image, RSTART + RLENGTH)
+      # Alternate between input and variable expansion: a variable value may
+      # itself contain $[[ inputs.x ]], and vice versa. Bounded so a self
+      # referential definition cannot spin.
+      for (pass = 0; pass < 20; pass++) {
+        if (match(image, /\$\[\[[ \t]*inputs\.[A-Za-z0-9_.-]+[ \t]*\]\]/)) {
+          k = substr(image, RSTART, RLENGTH)
+          sub(/^\$\[\[[ \t]*inputs\./, "", k); sub(/[ \t]*\]\]$/, "", k)
+          if (!(k in def)) exit 0
+          image = substr(image, 1, RSTART - 1) def[k] substr(image, RSTART + RLENGTH)
+          continue
+        }
+        if (match(image, /\$\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
+          k = substr(image, RSTART + 2, RLENGTH - 3)
+          if (!(k in varmap)) exit 0
+          image = substr(image, 1, RSTART - 1) varmap[k] substr(image, RSTART + RLENGTH)
+          continue
+        }
+        if (match(image, /\$[A-Za-z_][A-Za-z0-9_]*/)) {
+          k = substr(image, RSTART + 1, RLENGTH - 1)
+          if (!(k in varmap)) exit 0
+          image = substr(image, 1, RSTART - 1) varmap[k] substr(image, RSTART + RLENGTH)
+          continue
+        }
+        break
       }
       if (image ~ /\$/) exit 0
       print image

@@ -121,8 +121,12 @@ class ResolveImageTest(unittest.TestCase):
             configured,
         )
 
-    def test_empty_configured_image_yields_nothing(self) -> None:
-        self.assertEqual(self._resolve("", "anything:1", self._runtime("d6", True)), "")
+    def test_empty_configured_image_derives_from_template(self) -> None:
+        """image: is optional; the component supplies the whole ref."""
+        self.assertEqual(
+            self._resolve("", "jfrog.internal/security/x:1", self._runtime("d6", True)),
+            "jfrog.internal/security/x:1",
+        )
 
 
 class CatalogTemplateImageTest(unittest.TestCase):
@@ -145,9 +149,91 @@ class CatalogTemplateImageTest(unittest.TestCase):
             "registry.gitlab.com/security-products/container-scanning:8.6.31",
         )
 
-    def test_prints_nothing_when_image_is_underivable(self) -> None:
-        """Silence beats guessing: DS builds its ref from an undeclared variable."""
-        self.assertEqual(self._template_image(DS_COMPONENT), "")
+    def test_prints_nothing_when_a_variable_is_never_defined(self) -> None:
+        """Silence beats guessing when the ref depends on something undeclared."""
+        import tempfile as _tf
+
+        with _tf.TemporaryDirectory() as cache:
+            comp = "acme/underivable/underivable"
+            tag_dir = Path(cache) / comp / "1.0.0"
+            tag_dir.mkdir(parents=True)
+            (tag_dir / "template.yml").write_text(
+                "spec:\n  inputs:\n    stage:\n      default: test\n---\n"
+                "job:\n  image: \"$NEVER_DEFINED_ANYWHERE\"\n"
+            )
+            proc = subprocess.run(
+                ["bash", str(CATALOG), "template-image", comp, cache],
+                capture_output=True, text=True, cwd=str(SKILL_DIR), check=True,
+            )
+            self.assertEqual(proc.stdout.strip(), "")
+
+
+
+
+class OptionalImageFieldTest(unittest.TestCase):
+    """image: is optional. Omitted => derive from the component; underivable => stop."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "runtime"
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(path.stat().st_mode | stat.S_IEXEC)
+        self.runtime = str(path)
+
+    def test_omitted_image_uses_template_verbatim(self) -> None:
+        """When the catalogue already names the internal registry, config needs no image:."""
+        proc = subprocess.run(
+            ["bash", str(RESOLVE_IMAGE), "", "jfrog.internal/security/secrets:7", self.runtime],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(proc.stdout.strip(), "jfrog.internal/security/secrets:7")
+
+    def test_omitted_image_and_underivable_template_fails_loudly(self) -> None:
+        """Never guess a registry, never silently skip: a skipped scanner reads as clean."""
+        proc = subprocess.run(
+            ["bash", str(RESOLVE_IMAGE), "", "", self.runtime],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.stdout.strip(), "")
+        self.assertIn("cannot determine which image to run", proc.stderr)
+        self.assertIn("revendor.sh", proc.stderr)
+
+
+class TemplateImageVariableResolutionTest(unittest.TestCase):
+    """dependency-scanning builds its ref through variables:, not spec.inputs."""
+
+    def _template_image(self, component: str) -> str:
+        proc = subprocess.run(
+            ["bash", str(CATALOG), "template-image", component, "/nonexistent-cache-dir"],
+            capture_output=True,
+            text=True,
+            cwd=str(SKILL_DIR),
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    def test_dependency_scanning_now_resolves(self) -> None:
+        self.assertEqual(
+            self._template_image(DS_COMPONENT),
+            "registry.gitlab.com/security-products/dependency-scanning:2",
+        )
+
+    def test_every_shipped_component_resolves(self) -> None:
+        """No shipped category should need an explicit image: to function."""
+        base = "lobster-thermidor/devops/ci-catalogue"
+        for component in (
+            f"{base}/fortify-sast/fortify-sast",
+            f"{base}/dependency-scanning/dependency-scanning",
+            f"{base}/secret-detection/secret-detection",
+            f"{base}/container-scanning/container-scanning",
+        ):
+            with self.subTest(component=component):
+                self.assertNotEqual(self._template_image(component), "")
 
 
 if __name__ == "__main__":

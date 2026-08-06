@@ -30,10 +30,28 @@ TEMPLATE=${2:-}
 RUNTIME=${3:-${RUNTIME:-docker}}
 POLICY=${4:-${IMAGE_POLICY:-follow-component}}
 
-# Without a configured image there is nothing to run and nothing to decide.
-[ -n "$CONFIGURED" ] || { printf '%s\n' ""; exit 0; }
-
 emit() { printf '%s\n' "$1"; }
+
+# No image: in config — the component is the sole source. This is the intended
+# steady state when the catalogue's templates already name your internal
+# registry: config carries component and version, nothing else.
+if [ -z "$CONFIGURED" ]; then
+  if [ -z "$TEMPLATE" ]; then
+    # Fail loudly. Guessing a registry, or silently skipping the scanner, are
+    # both worse than stopping: one runs an unknown image, the other reports a
+    # clean scan for a category that never ran.
+    echo "ERROR: cannot determine which image to run." >&2
+    echo "  No image: is set for this category and the component template does not" >&2
+    echo "  declare a resolvable image (it may build the ref from a variable this" >&2
+    echo "  template never defines, or no snapshot was cached)." >&2
+    echo "  Fix: set image: for this category in scanner-preferences.yaml, or" >&2
+    echo "  re-vendor snapshots from an instance whose template declares one:" >&2
+    echo "    bash scripts/revendor.sh <instance_url> [token_env]" >&2
+    exit 2
+  fi
+  emit "$TEMPLATE"
+  exit 0
+fi
 
 if [ "$POLICY" != "follow-component" ]; then
   emit "$CONFIGURED"
@@ -41,7 +59,7 @@ if [ "$POLICY" != "follow-component" ]; then
 fi
 
 # Nothing to follow: the template declares no resolvable image (underivable
-# variable, or no snapshot cached).
+# variable, or no snapshot cached). The configured image stands on its own.
 if [ -z "$TEMPLATE" ]; then
   emit "$CONFIGURED"
   exit 0

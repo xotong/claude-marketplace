@@ -455,6 +455,19 @@ append_enabled_component() {
   fi
 }
 
+# runner: is optional. Each category has exactly one shipped runner, so the
+# common config carries only component/version/enabled. Declaring it stays
+# supported for a custom or swapped runner, and check-drift uses the name to
+# locate the sibling <runner>.contract.
+default_runner_for() {
+  case "$1" in
+    sast)                printf 'fortify-sast.sh' ;;
+    dependency_scanning) printf 'gitlab-dependency-scanning.sh' ;;
+    secret_detection)    printf 'secret-detection.sh' ;;
+    container_scanning)  printf 'gitlab-container-scanning.sh' ;;
+  esac
+}
+
 apply_runner_flag() {
   category_name=$1
   runner_name=$2
@@ -536,6 +549,7 @@ for category_name in $category_order; do
   esac
 
   if [ "$category_enabled" = "true" ]; then
+    [ -n "$category_runner" ] || category_runner=$(default_runner_for "$category_name")
     apply_runner_flag "$category_name" "$category_runner"
     if [ -n "$category_component" ] && [ -n "$category_version" ] && [ -n "$category_runner" ]; then
       append_enabled_component "$category_component" "$category_version" "$category_runner" "$category_image"

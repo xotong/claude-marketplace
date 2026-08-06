@@ -69,32 +69,73 @@ class ScannerPreferencesTest(unittest.TestCase):
             with self.subTest(profile=profile_name):
                 self.assertEqual(set(profile.get("categories", {})), EXPECTED_CATEGORIES)
 
-    def test_every_category_has_component_image_runner_enabled(self) -> None:
+    def test_category_requires_component_version_enabled(self) -> None:
+        """image: and runner: are optional overrides; the other three are not."""
+        required = {"component", "version", "enabled"}
+        optional = {"image", "runner"}
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
                 with self.subTest(profile=profile_name, category=category_name):
-                    self.assertEqual(set(category), {"component", "version", "image", "runner", "enabled"})
+                    keys = set(category)
+                    self.assertTrue(required <= keys, f"missing {required - keys}")
+                    self.assertFalse(keys - required - optional, "unknown keys present")
                     self.assertIsInstance(category["component"], str)
                     self.assertGreaterEqual(category["component"].count("/"), 2)
                     self.assertIsInstance(category["version"], str)
                     self.assertTrue(category["version"])
-                    self.assertIsInstance(category["image"], str)
-                    self.assertIsInstance(category["runner"], str)
                     self.assertIsInstance(category["enabled"], bool)
 
-    def test_enabled_category_runner_exists_or_none(self) -> None:
+    def test_declared_runner_must_exist(self) -> None:
+        """An omitted runner defaults to the shipped one; a declared one must be real."""
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
-                runner = category["runner"]
+                runner = category.get("runner")
+                if not runner or runner == "none":
+                    continue
                 with self.subTest(profile=profile_name, category=category_name, runner=runner):
                     self.assertTrue((SCANNERS_DIR / runner).is_file())
 
-    def test_enabled_runner_category_has_image(self) -> None:
+    def test_every_category_resolves_a_runner(self) -> None:
+        """Omitting runner: must not leave a category unable to run."""
+        defaults = {
+            "sast": "fortify-sast.sh",
+            "dependency_scanning": "gitlab-dependency-scanning.sh",
+            "secret_detection": "secret-detection.sh",
+            "container_scanning": "gitlab-container-scanning.sh",
+        }
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
-                if category["enabled"]:
-                    with self.subTest(profile=profile_name, category=category_name):
-                        self.assertTrue(category["image"], "enabled runner needs an image")
+                resolved = category.get("runner") or defaults.get(category_name)
+                with self.subTest(profile=profile_name, category=category_name):
+                    self.assertIsNotNone(resolved, "no runner and no default")
+                    self.assertTrue((SCANNERS_DIR / resolved).is_file())
+
+    def test_omitted_image_is_derivable_from_the_component(self) -> None:
+        """A category may omit image: only if the template supplies one."""
+        import subprocess
+
+        for profile_name, profile in PREFERENCES["profiles"].items():
+            for category_name, category in profile["categories"].items():
+                if category.get("image") or not category["enabled"]:
+                    continue
+                with self.subTest(profile=profile_name, category=category_name):
+                    proc = subprocess.run(
+                        [
+                            "bash",
+                            str(SCANNERS_DIR.parent / "scripts" / "catalog.sh"),
+                            "template-image",
+                            category["component"],
+                            "/nonexistent-cache-dir",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        cwd=str(SCANNERS_DIR.parent),
+                        check=True,
+                    )
+                    self.assertTrue(
+                        proc.stdout.strip(),
+                        f"{category_name} omits image: but its template declares none",
+                    )
 
     def test_catalog_profile_targets_gitlab_com(self) -> None:
         self.assertEqual(
