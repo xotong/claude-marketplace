@@ -155,6 +155,11 @@ function split_key_value(s,    idx) {
       settings_block = ""
       next
     }
+    if (indent == 2 && key == "image_policy") {
+      settings["image_policy"] = parse_scalar(value)
+      settings_block = ""
+      next
+    }
     if (indent == 2 && key == "jq" && strip_comment(value) == "") {
       settings_block = "jq"
       next
@@ -271,6 +276,7 @@ END {
   print "SETTING\tcontainer_registry.user_env\t" settings["container_registry.user_env"]
   print "SETTING\tcontainer_registry.password_env\t" settings["container_registry.password_env"]
   print "SETTING\tci_gate.fail_on\t" settings["ci_gate.fail_on"]
+  print "SETTING\timage_policy\t" settings["image_policy"]
 
   if (profile_seen[active_profile]) {
     print "GITLAB_INSTANCE\t" profile_gitlab[active_profile]
@@ -303,6 +309,7 @@ catalog_auth_env=
 cs_user_env=
 cs_pass_env=
 ci_gate_fail_on=high
+image_policy=follow-component
 gitlab_instance=
 
 sast_component=
@@ -362,6 +369,7 @@ while IFS="$tab" read -r record field1 field2 field3; do
         container_registry.user_env) cs_user_env=$field2 ;;
         container_registry.password_env) cs_pass_env=$field2 ;;
         ci_gate.fail_on) [ -z "$field2" ] || ci_gate_fail_on=$field2 ;;
+        image_policy) [ -z "$field2" ] || image_policy=$field2 ;;
       esac
       ;;
     PROFILE_AUTH_TOKEN_ENV)
@@ -522,6 +530,7 @@ emit CATALOG_AUTH_ENV "$catalog_auth_env"
 emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"
 emit CI_GATE_FAIL_ON "$ci_gate_fail_on"
+emit IMAGE_POLICY "$image_policy"
 emit GITLAB_INSTANCE "$gitlab_instance"
 emit FORTIFY_SAST_IMAGE "$fortify_sast_image"
 emit SECRET_DETECTION_IMAGE "$secret_detection_image"

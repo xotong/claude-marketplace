@@ -70,6 +70,19 @@ settings:
   ci_gate:
     fail_on: high
 
+  # Which scanner image tag actually runs.
+  #   follow-component (default) = track the component. Each category's image: below
+  #       supplies the REGISTRY AND PATH (your mirror); the component template at the
+  #       resolved tag supplies the TAG. So a component moving to 8.6.31 gives you
+  #       <your-registry>/container-scanning:8.6.31 without editing this file, and
+  #       without ever pulling from a public registry. The candidate is pulled first
+  #       as an availability check: if your mirror does not carry that tag yet, the
+  #       run says so, tells you exactly what to mirror, and falls back to the image:
+  #       below rather than failing.
+  #   pinned = always use image: exactly as written. No adoption, no pull check.
+  #       Use when you need byte-identical reproducibility across runs.
+  image_policy: follow-component
+
 # ─────────────────────────────────────────────────────────────────────────
 # Profiles
 # ─────────────────────────────────────────────────────────────────────────

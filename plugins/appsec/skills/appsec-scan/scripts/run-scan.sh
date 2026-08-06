@@ -341,6 +341,30 @@ APP_NAME="${APP_NAME:-$(basename "$PWD")}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
 SOURCE_PATH="${SOURCE_PATH:-src}"
 
+# Track the component's analyzer version without hand-editing config. Each image
+# keeps its configured registry/path (your mirror) and takes the tag the component
+# template declares at the resolved tag. Skipped entirely under --dry-run: adoption
+# pulls to check availability, and a dry run must not touch the network.
+# See scripts/resolve-image.sh and settings.image_policy.
+if [ "${IMAGE_POLICY:-follow-component}" = "follow-component" ] && ! $DRY_RUN; then
+  for spec in \
+    "FORTIFY_SAST_IMAGE lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast" \
+    "GITLAB_DS_IMAGE lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning" \
+    "SECRET_DETECTION_IMAGE lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection" \
+    "GITLAB_CS_IMAGE lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning"; do
+    var=${spec%% *}
+    comp=${spec##* }
+    eval "configured=\${$var:-}"
+    [ -n "$configured" ] || continue
+    tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
+      "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
+    [ -n "$tmpl" ] || continue
+    effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
+      "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}") || effective=$configured
+    [ -n "$effective" ] && eval "$var=\$effective"
+  done
+fi
+
 FORTIFY_SAST_PID=
 FORTIFY_SAST_WATCHDOG=
 GITLAB_DS_PID=

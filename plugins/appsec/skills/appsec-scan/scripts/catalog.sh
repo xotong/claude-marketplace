@@ -11,6 +11,7 @@ usage() {
   echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
   echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none> [configured_image]" >&2
   echo "ERROR:    or: catalog.sh contract <component_path> <cache_dir>" >&2
+  echo "ERROR:    or: catalog.sh template-image <component_path> <cache_dir>" >&2
   echo "ERROR:    or: catalog.sh self-test" >&2
   exit 1
 }
@@ -379,6 +380,21 @@ date_to_epoch() {
   fi
 }
 
+# Print the component template's effective job image at the resolved tag, or
+# nothing when the template builds it from a shell variable the template does not
+# declare (e.g. dependency-scanning's $DS_ANALYZER_IMAGE). Prints nothing rather
+# than guessing — callers treat empty as "keep what the admin configured".
+template_image_cmd() {
+  local component_path cache_dir base_dir tag
+  component_path=$1
+  cache_dir=$2
+  base_dir="${cache_dir%/}/${component_path}"
+  [ -d "$base_dir" ] || base_dir="$(skill_dir)/reference/catalog/${component_path}"
+  tag=$(fallback_tag_dir "$base_dir" || true)
+  [ -n "$tag" ] || return 0
+  template_image_ref "$base_dir/$tag/template.yml"
+}
+
 check_drift_cmd() {
   local component_path cache_dir runner_path configured_image base_dir tag template_path runner_name
   local synced_line synced_date now_epoch synced_epoch ninety_days template_image contract_expected
@@ -604,6 +620,10 @@ main() {
     check-drift)
       [ $# -eq 4 ] || [ $# -eq 5 ] || usage
       check_drift_cmd "$2" "$3" "$4" "${5:-}"
+      ;;
+    template-image)
+      [ $# -eq 3 ] || usage
+      template_image_cmd "$2" "$3"
       ;;
     contract)
       [ $# -eq 3 ] || usage

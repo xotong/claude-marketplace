@@ -48,8 +48,8 @@ settings:
     install_url: ""           # optional: fetch portable python3 tarball if missing
   ci_gate:
     fail_on: high             # critical | high | medium | none
+  image_policy: follow-component   # follow-component | pinned
   catalog:
-    mode: online              # online = resolve live | offline = snapshots only
     auth_token_env: ""        # env var NAME holding a read_api PAT (blank = anonymous)
   container_registry:
     user_env: CS_REGISTRY_USER      # env var NAMES holding registry creds
@@ -82,6 +82,19 @@ settings:
   `scripts/run-scan.sh` exits 1 (gate failed). Values: `critical` | `high` (default) |
   `medium` | `none`. Set `none` to always exit 0 (report-only mode). `likely_false_positive`
   findings still count toward the gate — dismiss them in GitLab's Vulnerability Report.
+- **image_policy** — which scanner image tag actually runs.
+  - `follow-component` (default) — track the component automatically. The category's
+    `image:` supplies the **registry and path** (your mirror); the component template
+    at the resolved tag supplies the **tag**. A component moving to `8.6.31` gives you
+    `<your-registry>/container-scanning:8.6.31` with no config edit and no pull from a
+    public registry. The candidate is pulled first as an availability check — if your
+    mirror does not carry that tag yet, the run prints exactly what to mirror and falls
+    back to `image:` rather than failing. Skipped under `--dry-run` (no network).
+  - `pinned` — always use `image:` verbatim. No adoption, no pull check. Use when you
+    need byte-identical reproducibility.
+
+  Note `image:` is still required under `follow-component`: it is what the effective
+  ref is built from, and the fallback when adoption is not possible.
 - **catalog resolution** — there is no mode switch. Components are always
   resolved live against the active profile's `gitlab_instance`; if that fetch
   fails for any reason, `catalog.sh` falls back to the vendored snapshots in
