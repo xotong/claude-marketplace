@@ -49,8 +49,22 @@ if [ -z "$CONFIGURED" ]; then
     echo "    bash scripts/revendor.sh <instance_url> [token_env]" >&2
     exit 2
   fi
-  emit "$TEMPLATE"
-  exit 0
+  # Verify it the same way the configured path does. Without a configured image
+  # there is nothing to fall back to, so an unavailable image is fatal here
+  # rather than a warning — the alternative is a docker-run failure several
+  # steps later with a far less useful message.
+  if "$RUNTIME" pull -q "$TEMPLATE" >/dev/null 2>&1; then
+    emit "$TEMPLATE"
+    exit 0
+  fi
+  echo "ERROR: the component's image is not available from this registry." >&2
+  echo "  Component declares: ${TEMPLATE}" >&2
+  echo "  No image: is set for this category, so there is nothing to fall back to." >&2
+  echo "  Fix (either one):" >&2
+  echo "    - mirror ${TEMPLATE} into your registry, or" >&2
+  echo "    - set image: for this category in scanner-preferences.yaml to pin a" >&2
+  echo "      version you do carry (it also becomes the fallback for future bumps)." >&2
+  exit 2
 fi
 
 if [ "$POLICY" != "follow-component" ]; then

@@ -77,10 +77,10 @@ class LoadPrefsTest(unittest.TestCase):
         self.assertEqual(values["RUN_GITLAB_DS"], "true")
         self.assertEqual(values["RUN_SECRET_DETECTION"], "true")
         self.assertEqual(values["RUN_GITLAB_CS"], "true")
-        self.assertEqual(
-            values["FORTIFY_SAST_IMAGE"],
-            "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review",
-        )
+        # image: is no longer declared in the shipped config — it is derived from
+        # the component template at run time (run-scan.sh, resolve-image.sh), so
+        # load-prefs emits it empty.
+        self.assertEqual(values["FORTIFY_SAST_IMAGE"], "")
         self.assertEqual(values["GITLAB_INSTANCE"], "https://gitlab.com")
         self.assertEqual(values["PYTHON_INSTALL_URL"], "")
         self.assertEqual(values["CI_GATE_FAIL_ON"], "high")

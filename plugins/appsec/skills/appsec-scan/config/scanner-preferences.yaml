@@ -96,17 +96,18 @@ settings:
   ci_gate:
     fail_on: high
 
-  # Which scanner image tag actually runs.
-  #   follow-component (default) = track the component. Each category's image: below
-  #       supplies the REGISTRY AND PATH (your mirror); the component template at the
-  #       resolved tag supplies the TAG. So a component moving to 8.6.31 gives you
-  #       <your-registry>/container-scanning:8.6.31 without editing this file, and
-  #       without ever pulling from a public registry. The candidate is pulled first
-  #       as an availability check: if your mirror does not carry that tag yet, the
-  #       run says so, tells you exactly what to mirror, and falls back to the image:
-  #       below rather than failing.
-  #   pinned = always use image: exactly as written. No adoption, no pull check.
-  #       Use when you need byte-identical reproducibility across runs.
+  # Which scanner image actually runs.
+  #   follow-component (default) = track the component.
+  #       No image: declared  -> the template's ref is used whole. This is the norm
+  #           when the catalogue names a registry you can reach.
+  #       image: declared     -> it supplies the REGISTRY AND PATH (your mirror) and
+  #           the template supplies the TAG, so a component bump reaches you without
+  #           editing this file and without ever pulling from a public registry.
+  #       Either way the candidate is pulled first as an availability check. With an
+  #       image: to fall back to, an unmirrored tag warns and degrades. Without one,
+  #       it stops the scan and names what to mirror — there is nothing safe to run.
+  #   pinned = use image: exactly as written; no adoption, no pull check. Requires
+  #       image:. Use when you need byte-identical reproducibility across runs.
   image_policy: follow-component
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -115,44 +116,31 @@ settings:
 default_profile: catalog
 
 profiles:
-  # catalog — public private-catalogue defaults for gitlab.com testing.
-  # component: is the CI/CD Catalog path that catalog.sh resolves.
-  # version: ~latest means "pick the highest stable tag"; an exact pin keeps the
-  #          current tag and emits an advisory when a newer stable tag exists.
-  # image: is what actually RUNS locally; admins pin it independently of the
-  #        component version and bump it on their own schedule.
+  # catalog — gitlab.com defaults, used by the Platform Team to test against the
+  # public catalogue. Like `company`, it declares no image: or runner:. Every
+  # component's template already names the image, and deriving it also picks up
+  # bumps: container-scanning resolves to :8.6.31 rather than the :8 this file
+  # used to hardcode.
   catalog:
     gitlab_instance: https://gitlab.com
     categories:
       sast:
         component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
         version: ~latest
-        # Images live in the catalogue's docker-images project, NOT in the
-        # component project — fortify-sast has no container registry at all.
-        image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
-        runner: fortify-sast.sh
         enabled: true
       dependency_scanning:
         component: lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning
         version: ~latest
-        image: registry.gitlab.com/security-products/dependency-scanning:2  # Derived from ANALYZER_IMAGE_* template vars; closest literal public default.
-        runner: gitlab-dependency-scanning.sh
         enabled: true
       secret_detection:
         component: lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection
         version: ~latest
-        image: registry.gitlab.com/security-products/secrets:7
-        runner: secret-detection.sh
         enabled: true
       container_scanning:
         component: lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
         version: ~latest
-        image: registry.gitlab.com/security-products/container-scanning:8
-        runner: gitlab-container-scanning.sh
         enabled: true
 
-  # company — production preferences (internal GitLab + internal registry).
-  # image: is what actually RUNS (admin-pinned; edit to your real internal path).
   company:
     gitlab_instance: https://gitlab.internal.example
     # Internal instance serves the ci-catalogue projects to unauthenticated API
