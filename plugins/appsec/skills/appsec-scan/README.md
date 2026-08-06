@@ -1,273 +1,238 @@
-# appsec-scan — Architecture
+# appsec-scan
 
-`appsec-scan` runs the **same security scanners as CI, locally, using the same container
-images**, before code is pushed to GitLab. Scanner selection, component versions, and
-images come from one admin-owned config file — the model executing the skill only reads
-config and invokes helper scripts; it never guesses endpoints or parses YAML. After a
-scan it offers a fix loop on a dedicated branch, and everything it cannot fix lands in a
-guided triage plan (`.appsec-results/TRIAGE.md`) mapped to the GitLab Vulnerability
-Report dismissal workflow.
+**Run the same security scanners CI runs — on your machine, before you push.**
 
-The scanners are the four components of the private GitLab CI/CD Catalog at
-`gitlab.com/lobster-thermidor/devops/ci-catalogue`:
+If CI is going to flag it, you find out now instead of after the pipeline goes red.
+The skill scans your working tree, tells you what it found, offers to fix what it can
+on a throwaway branch, and writes a triage plan for the rest.
 
-| Category | Catalog component | Shipped version | Runner | What runs locally |
-|---|---|---|---|---|
-| SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.0) | `fortify-sast.sh` | `fortify-sca` image from the catalogue's `docker-images` project; maven, gradle, python, javascript (component declares `go` too — not mapped locally) |
-| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.1.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output |
-| Secret Detection | `…/secret-detection/secret-detection` | `~latest` (1.0.0) | `secret-detection.sh` | GitLab-native Gitleaks-based analyzer |
-| Container Scanning | `…/container-scanning/container-scanning` | `~latest` (1.1.0) | `gitlab-container-scanning.sh` | GTCS; registry image or locally built archive |
-
-(`…` = `lobster-thermidor/devops/ci-catalogue`. Component paths are
-`<project-path>/<template-name>`; every component repo ships `templates/<name>.yml`,
-`README.md`, and an agent-oriented `AGENTS.md`.)
-
-DAST is deliberately **not** part of this skill — it needs a deployed target and a GitLab
-runner, which doesn't fit a shift-left local scan. Use the `appsec-dast-sim` skill for
-design-time DAST simulation, or the catalogue's `dast` / `api-security` components in CI.
-
-## How a scan runs
-
-`SKILL.md` is an orchestration script the model executes step by step. Mechanical work
-lives in `scripts/` (host side) and `scanners/` (container side); the model's job is
-sequencing, result interpretation, and the fix loop.
-
-```mermaid
-flowchart TD
-    S1["Step 1 — locate skill directories"] --> S15["Step 1.5 — load-prefs.sh parses scanner-preferences.yaml<br/>emits profile env, 4 RUN_* flags, ENABLED_COMPONENTS tuples"]
-    S15 --> RT["detect-runtime.sh — docker or podman"]
-    RT --> S2["Step 2 — preflight.sh environment checks"]
-    S2 --> S25["Step 2.5 — catalog.sh resolve + check-drift per component<br/>(version-aware: ~latest or exact pin)"]
-    S25 --> S3["Step 3 — run-scan.sh (single command)<br/>Fortify + DS + Secrets parallel · GTCS sequential · resolve-jq.sh · container-target.sh"]
-    S3 --> NP["normalize.py → findings.triaged.json<br/>verification_status per finding · coverage findings · severity gate"]
-    NP --> Q{"exit 0?"}
-    Q -->|"yes"| DONE["all clear"]
-    Q -->|"no"| S4["Step 4 — review findings.triaged.json<br/>severity · scanner · location · verification_status · triage_reason"]
-    S4 --> S5["Step 5 — fix-branch.sh --init · one approval · new branch<br/>≤5 × fix → run-scan.sh --only category → fix-branch.sh --check-progress · tests"]
-    S5 --> S6["Step 6 — TRIAGE.md for everything not fixed"]
+```
+You: /appsec-scan
 ```
 
-Fortify, Dependency Scanning, and Secret Detection run **in parallel** (backgrounded,
-PIDs collected by a wait loop); Container Scanning runs sequentially. Every scanner is a
-`$RUNTIME run --rm` with its runner script mounted read-only at `/runner.sh` — scanner
-logic ships with the skill, not baked into images.
+That's the whole interface. Everything below is context for when something goes wrong
+or you want more control.
 
-## Component resolution (Step 2.5)
+---
 
-`load-prefs.sh` emits `ENABLED_COMPONENTS` as space-separated
-**`component|version|runner|image`** tuples. For each tuple, `catalog.sh` resolves the
-component against the active profile's `gitlab_instance` — live on every run — and
-caches `template.yml`, `README.md`, and `AGENTS.md` per resolved tag. The catalog is
-**advisory**: the image that actually runs is always the admin-pinned `image:` from
-config; resolution exists to surface the component's usage docs and to warn when the
-pinned world drifts from the catalog.
+## Before your first scan
 
-Drift is checked two ways. **Image drift** compares the component's effective job image
-(resolving `$[[ inputs.X ]]` against declared defaults) with the configured `image:`.
-**Contract drift** diffs the component's declared inputs, permitted `options:` and
-report artifacts against the checked-in `scanners/<runner>.contract`, so a new input or
-option cannot land unnoticed — regenerate with `catalog.sh contract`. `template.yml` is
-the only machine source of truth; `AGENTS.md` is cached for guidance but its prose lags
-the template.
+You need two things:
 
-```mermaid
-sequenceDiagram
-    participant M as SKILL.md Step 2.5
-    participant CS as catalog.sh
-    participant GL as gitlab_instance API
-    participant SN as reference/catalog/ snapshots
-    M->>CS: resolve instance component version cache [token_env]
-    alt version is ~latest
-        CS->>GL: GET repository/tags
-        GL-->>CS: tag list
-        Note over CS: highest stable tag<br/>(prereleases and v-prefix excluded)
-    else exact pin (e.g. 25.2.0)
-        Note over CS: pinned tag used as-is
-        CS->>GL: GET repository/tags (comparison only, non-fatal)
-        CS-->>M: ADVISORY when a newer stable tag exists
-    end
-    CS->>GL: GET template.yml + README.md + AGENTS.md at tag
-    GL-->>CS: files cached per component@tag
-    CS-->>M: component@tag [online]
-    opt network or auth failure
-        CS->>SN: pinned tag dir if present, else highest snapshot
-        CS-->>M: component@tag [offline-fallback]
-    end
-    M->>CS: check-drift component cache runner
-    CS-->>M: DRIFT (runner &gt;90 days stale, configured image != template image)
-    CS-->>M: CONTRACT-DRIFT (component inputs/reports != scanners/&lt;runner&gt;.contract)
-```
-
-Auth uses the `read_api` PAT in the env var named by `settings.catalog.auth_token_env`
-(the token is passed via `curl --config`, never argv). Reads are anonymous when that
-setting is empty. The shipped `catalog` profile needs the PAT: its components live in a
-private gitlab.com catalogue where anonymous reads return `404`.
-
-## Configuration — `config/scanner-preferences.yaml`
-
-Admin-owned (Platform Team via CODEOWNERS). One file declares everything the skill may
-touch. Full schema and switching guide: [`config/PREFERENCES.md`](config/PREFERENCES.md).
-
-| Setting | Meaning |
+| Requirement | Check it |
 |---|---|
-| `settings.airgap` | `true` = no public internet: profiles whose `gitlab_instance` is gitlab.com are refused; offline is not an error. Ships `false` (default profile targets gitlab.com) |
-| `settings.container_runtime` | `auto` (docker, then podman) or forced |
-| `settings.jq.*` | host jq preferred; optional `install_url`; degrades to UNKNOWN severity summary |
-| `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
-| `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — severity threshold for the gate. Incomplete coverage fails the gate at every level except `none`, which is report-only |
-| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT for the **GitLab API only** — unrelated to image pulls. Ships `GITLAB_READ_TOKEN` because the lobster-thermidor catalogue is private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Settable per profile (next to `gitlab_instance`) so gitlab.com can require a PAT while an internal instance reads anonymously. Preflight requires the named var whenever one is named. Setup: [MIGRATION.md step 0](MIGRATION.md) |
-| `settings.container_registry.*` | env var *names* for **image registry** credentials used by GTCS. Leave the vars unset for an anonymous-pull registry |
+| **Docker or Podman**, running | `docker info` (or `podman info`) |
+| **python3** on PATH | `python3 --version` |
 
-Two profiles (`APPSEC_PROFILE` overrides `default_profile`):
+> Without `python3` the scan still runs, but severity normalization, triage, and the
+> gate degrade to raw counts with `UNKNOWN` status. Your platform admin can point
+> `settings.python.install_url` at an internal tarball to auto-provision it.
 
-- **`catalog`** (default) — `https://gitlab.com`, the four lobster-thermidor components,
-  images from the catalogue's registries.
-- **`company`** — internal-mirror placeholder: same component names on the internal
-  GitLab instance, images from the internal JFrog. This is the airgap-safe profile.
+Then ask your platform admin which **profile** you should use. Profiles decide which
+GitLab instance and which image registry the skill talks to:
 
-Each category block is five keys:
-
-```yaml
-sast:
-  component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
-  version: "~latest"       # or an exact tag, e.g. "25.2.0"
-  image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
-  runner: fortify-sast.sh
-  enabled: true
+```bash
+export APPSEC_PROFILE=company     # internal GitLab + internal registry
 ```
 
-`version:` is the platform team's pinning lever, per component:
+If your profile's catalogue needs authentication, you also need a `read_api` token:
 
-- **`~latest`** (shipped default) — resolve the highest stable tag on every run.
-- **exact tag** — reproducible resolution; `catalog.sh` prints
-  `ADVISORY: <component> pinned <X>, newer stable <Y> available` when the catalog moves,
-  so pins never rot silently.
-
-`image:` stays independently pinned — bump it when a DRIFT/ADVISORY line says the
-component moved and you have mirrored the new image.
-
-## Findings model
-
-`scripts/normalize.py` processes raw scanner reports into three output files under `.appsec-results/`:
-
-- **`findings.triaged.json`** — one object per finding, fields: `category`, `severity`, `scanner`, `location`, `verification_status`, `remediation_status`, `triage_reason`, `fingerprint`
-- **`findings.normalized.json`** — all findings normalized to a common schema before triage
-- **`scan-coverage.json`** — which scanners ran, their reports, and any coverage findings
-
-**`verification_status` values:** `confirmed_true_positive` | `likely_false_positive` | `not_fixable_locally` | `needs_human_review`
-
-**FP-fails-gate:** `likely_false_positive` findings still count toward the severity gate — they must be dismissed in GitLab's Vulnerability Report, not silently dropped. **Coverage findings:** a selected scanner that produces no report generates a HIGH-severity coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). The model may override a `verification_status` with explicit reasoning.
-
-For the internet → airgapped platform migration runbook, see [`MIGRATION.md`](MIGRATION.md).
-
-## Network and airgap policy
-
-- `scripts/catalog.sh` is the **only** network path in the skill, and it only talks to
-  the active profile's `gitlab_instance`. No WebFetch, no other hosts.
-- Fully offline operation: automatic fallback to vendored snapshots on any network failure
-  falls back to the vendored snapshots under
-  `reference/catalog/lobster-thermidor/devops/ci-catalogue/<name>/<name>/<tag>/`.
-- Scanner images are admin-pinned refs; in airgapped environments they point at the
-  internal mirror (see the mirror table in the repo-root README).
-
-## Findings, fix loop, and triage
-
-Scan results are the start of the workflow, not the end. Findings the skill can fix are
-fixed on a dedicated branch; everything else must end up **dismissed with a
-justification in the GitLab Vulnerability Report** — `TRIAGE.md` is the bridge.
-
-```mermaid
-sequenceDiagram
-    actor Dev
-    participant SK as appsec-scan (local)
-    participant BR as fix branch
-    participant GL as GitLab
-    Dev->>SK: pre-push scan
-    SK-->>Dev: severity table + classification (solvable now / not fixable here)
-    Dev->>SK: one approval for the fix loop
-    SK->>BR: appsec/fix-YYYYMMDD-sha · ≤5 iterations of fix → rescan affected scanner · project tests
-    SK-->>Dev: fixes committed + TRIAGE.md for the remainder
-    Dev->>GL: push + MR — CI runs the same catalog components
-    GL-->>Dev: Vulnerability Report entries
-    Dev->>GL: dismiss each remaining finding with the TRIAGE.md justification
+```bash
+export GITLAB_READ_TOKEN=glpat-xxxxxxxxxxxx
 ```
 
-Each `TRIAGE.md` entry carries the finding location, why it was not fixed locally, one of
-the five GitLab dismissal reasons, and a paste-ready justification comment. Guardrails:
-one approval gates the loop, the loop aborts early on no-progress, history is never
-rewritten, and nothing is pushed without an explicit ask.
+Whether you need that token depends on your profile — see
+[Do I need a token?](#do-i-need-a-token) below. Put both exports in your shell profile
+(`~/.bashrc` / `~/.zshrc`) so you set them once.
 
-## File map
+---
+
+## Your first scan
+
+From the root of the repo you want to scan:
 
 ```
-appsec-scan/
-├── SKILL.md               orchestration script the model executes (never edits)
-├── README.md              this document
-├── UPDATE-GUIDE.md        maintainer guide: sync scenarios, snapshot refresh
-├── docs/
-│   ├── architecture.drawio   editable poster source
-│   └── architecture.png      exported poster (embedded below)
-├── config/
-│   ├── scanner-preferences.yaml   admin-owned truth: profiles, components, versions, images
-│   └── PREFERENCES.md             schema + switching guide
-├── CHANGELOG.md           version history (Keep a Changelog format)
-├── MIGRATION.md           internet → airgapped platform runbook
-├── scripts/               host-side helpers — bash 3.2 / POSIX awk safe
-│   ├── load-prefs.sh      YAML → eval-ready env; the model never parses YAML
-│   ├── catalog.sh         resolve / check-drift / contract / self-test
-│   ├── detect-runtime.sh  docker | podman
-│   ├── resolve-jq.sh      jq from PATH or configured URL, else degrade
-│   ├── resolve-python.sh  python3 from PATH or configured URL, else degrade
-│   ├── container-target.sh  what GTCS scans: registry | archive | none
-│   ├── resolve-components.sh  Step 2.5: resolve every enabled component + drift table
-│   ├── revendor.sh        refresh reference/catalog/ + contracts from a live instance
-│   ├── run-scan.sh        scan orchestrator: invokes all scanners, calls normalize.py
-│   ├── fix-branch.sh      fix-loop guard: --init and --check-progress
-│   └── normalize.py       raw reports → findings.triaged.json (verification statuses)
-├── scanners/              run INSIDE Linux analyzer containers (mounted at /runner.sh)
-│   ├── preflight.sh
-│   ├── fortify-sast.sh    SAST: maven | gradle | python | javascript (component also
-│   │                      declares `go`; unmapped locally — emits NEEDS-MAPPING)
-│   ├── *.contract         per-runner snapshot of the component's declared inputs and
-│   │                      reports; check-drift diffs the live component against it
-│   ├── gitlab-dependency-scanning.sh
-│   ├── secret-detection.sh
-│   └── gitlab-container-scanning.sh
-├── reference/catalog/…    vendored component snapshots (template.yml + README.md + AGENTS.md)
-└── tests/                 pytest suite — hermetic; docker smoke tests env-gated
+/appsec-scan
 ```
 
-## Architecture poster
+The skill will:
 
-![appsec-scan architecture](docs/architecture.png)
+1. Check your environment and fail fast with a specific message if something's missing.
+2. Work out which scanners apply to your project (Maven? Go? a Dockerfile?).
+3. Run them — SAST, dependency scanning, and secret detection in parallel; container
+   scanning after.
+4. Print a severity summary.
+5. Offer to fix what it can, on a new branch, after asking you once.
+6. Write `.appsec-results/TRIAGE.md` for anything it couldn't fix.
 
-The editable source is [`docs/architecture.drawio`](docs/architecture.drawio)
-(diagrams.net). Re-export the PNG after editing:
-`draw.io -x -f png -s 1.5 -o docs/architecture.png docs/architecture.drawio`.
+Nothing is committed, pushed, or changed on your current branch without you saying yes.
 
-## Supported platforms
+### What you get
+
+Everything lands in `.appsec-results/` (which ignores itself — your repo's `.gitignore`
+needs no change):
+
+| File | What it's for |
+|---|---|
+| `TRIAGE.md` | **Start here.** Human-readable plan: what was fixed, what you must fix, what to dismiss in GitLab and how to word it |
+| `findings.triaged.json` | Every finding with severity, location, and a verification status |
+| `scan-coverage.json` | Which scanners actually ran — read this before trusting an all-clear |
+| `gl-*.json`, `*.fpr` | Raw scanner reports, for uploading or deeper inspection |
+
+### Reading the result
+
+The one thing worth internalising:
+
+> **A scanner that did not run is not a pass.** If a scanner was selected but produced
+> no report, that becomes a HIGH-severity coverage finding and fails the gate. "No
+> findings" and "didn't scan" are deliberately not the same outcome.
+
+Findings carry a `verification_status`:
+
+| Status | Meaning |
+|---|---|
+| `confirmed_true_positive` | Real. Fix it. |
+| `likely_false_positive` | Probably noise — but it still counts against the gate. Dismiss it in GitLab's Vulnerability Report with a justification; don't just ignore it. |
+| `not_fixable_locally` | Needs infra, a dependency upgrade, or a decision above your pay grade. |
+| `needs_human_review` | The skill isn't confident. Look at it yourself. |
+
+---
+
+## Common tasks
+
+Most of these are easiest to ask for in plain language — the skill drives the scripts
+for you:
+
+> "rescan just the SAST findings"
+> "show me what you'd run without running it"
+> "scan this as a Go project"
+
+**Force a language** when detection guesses wrong:
+
+```bash
+FORTIFY_LANGUAGE=go /appsec-scan
+```
+
+Supported: `maven`, `gradle`, `python`, `javascript`, `go`.
+
+**Point at a subdirectory** in a monorepo (defaults to `src`):
+
+```bash
+SOURCE_PATH=services/api /appsec-scan
+```
+
+**Switch profile for one run:**
+
+```bash
+APPSEC_PROFILE=catalog /appsec-scan
+```
+
+### Running the scanner directly
+
+`run-scan.sh` is safe to invoke on its own — it self-loads preferences and detects the
+container runtime if they aren't already set. You need the skill's install path, which
+varies by machine:
+
+```bash
+# Find it once, then reuse:
+SKILL=$(dirname "$(find ~/.claude -name run-scan.sh -path '*appsec-scan*' 2>/dev/null | head -1)")
+
+cd /path/to/your/repo
+"$SKILL/run-scan.sh" --only sast     # one category, much faster while iterating
+"$SKILL/run-scan.sh" --dry-run       # print every container command, credentials redacted
+```
+
+Valid `--only` categories: `sast`, `dependency_scanning`, `secret_detection`,
+`container_scanning`.
+
+---
+
+## Troubleshooting
+
+### "No scanner image env vars are set"
+Preflight found no configured scanners. You almost certainly haven't set
+`APPSEC_PROFILE`, or you set it to a profile name that isn't in
+`config/scanner-preferences.yaml`. Check the profile list:
+
+```bash
+grep -A1 "^profiles:" config/scanner-preferences.yaml
+```
+
+### "Cannot connect to the Docker daemon"
+Docker isn't running, or your user isn't in the `docker` group.
+
+```bash
+docker info                      # confirm the daemon is up
+sudo usermod -aG docker "$USER"  # then log out and back in
+```
+
+On WSL2, enable Docker Desktop's integration for your distro under
+**Settings → Resources → WSL Integration**.
+
+### The catalogue fetch failed but the scan continued
+That's intended. `catalog.sh` falls back to the vendored snapshots in
+`reference/catalog/` and says so. Scans keep working with no network. Only version
+resolution and drift warnings are affected.
+
+### SAST was skipped
+Fortify needs a recognisable project. It looks for `pom.xml`, `build.gradle`,
+`package.json`, `requirements.txt` / `pyproject.toml`, or `go.mod` at the repo root.
+Monorepo with the build file in a subdirectory? Set the language explicitly:
+
+```bash
+FORTIFY_LANGUAGE=maven SOURCE_PATH=services/api /appsec-scan
+```
+
+### Everything says UNKNOWN
+`python3` wasn't found, so normalization degraded to raw counts. Install `python3`, or
+ask your admin to set `settings.python.install_url`.
+
+### Do I need a token?
+
+Only if your profile's GitLab instance requires authentication to read the CI/CD
+Catalog. Check `auth_token_env` for your profile in `config/scanner-preferences.yaml`:
+
+- **Named env var** (e.g. `GITLAB_READ_TOKEN`) → you need a `read_api` PAT in that
+  variable. Preflight fails fast if it's unset, so a run can never quietly fall back to
+  vendored snapshots and look like a live check.
+- **Empty (`""`)** → your instance serves the catalogue anonymously. No token needed.
+
+The token is used for the **GitLab API only** — never for pulling images. Image
+registry credentials are separate (`settings.container_registry.*`).
+
+---
+
+## Platform support
 
 | Platform | Status | Notes |
 |---|---|---|
-| macOS | Fully supported | Docker Desktop or podman required |
-| Linux (Ubuntu / Debian) | Fully supported | Docker or podman; host `python3` preferred |
-| WSL2 (Windows) | Fully supported — **recommended Windows path** | Full sandboxing; avoids all native-Windows caveats |
-| Native Windows (Git Bash + Docker Desktop) | Best-effort | Claude Code can run `.sh` scripts only via Git for Windows (Git Bash); without it Claude Code uses PowerShell and this skill cannot run. Docker Desktop required. Known caveats: Docker volume-mount path translation may need `MSYS_NO_PATHCONV=1`; scan timeout process cleanup is best-effort. WSL2 avoids these. |
-| Native PowerShell / cmd | Not supported | — |
+| Linux (Ubuntu / Debian) | Supported | Docker or Podman; host `python3` preferred |
+| macOS | Supported | Docker Desktop, Colima, or Podman |
+| **WSL2 (Windows)** | Supported — **use this on Windows** | Avoids every native-Windows caveat below |
+| Native Windows (Git Bash + Docker Desktop) | Best effort | Claude Code can only run `.sh` scripts through Git Bash. Volume-mount translation may need `MSYS_NO_PATHCONV=1`; timeout cleanup is best-effort; `python3`/`jq` auto-download does not work. Prefer WSL2. |
+| PowerShell / cmd | Not supported | — |
 
-**Prerequisites (all platforms):** a container runtime (Docker Desktop or podman) and either host `python3` or an admin-configured `settings.python.install_url`. Auto-download of `python3`/`jq` does not work in native Git Bash — install them in the environment; on WSL2/Linux it works automatically.
+---
 
-## Platform team: bumping a component version
+## What this skill deliberately does not do
 
-1. Edit the category's `version:` in `config/scanner-preferences.yaml` (exact tag or
-   back to `~latest`).
-2. If the component's default image moved (DRIFT/ADVISORY line), mirror the new image
-   and bump the category's `image:`.
-3. Refresh the vendored snapshot — UPDATE-GUIDE.md "Refresh catalog snapshots":
-   `catalog.sh resolve <instance> <component> <version> <cache>` then copy
-   `template.yml`, `README.md`, `AGENTS.md` into `reference/catalog/…/<tag>/`.
-4. Regenerate the runner's `.contract` (UPDATE-GUIDE.md Scenario 6) — otherwise the
-   next run reports CONTRACT-DRIFT, or worse, a new input lands unnoticed.
-5. Update the runner's `# Last synced :` header if its logic was reviewed against the
-   new template.
-6. `python3 -m pytest plugins/appsec/skills/appsec-scan/tests/ -v`.
+- **DAST.** Needs a deployed target and a runner — that isn't a local pre-push check.
+  Use the [`appsec-dast-sim`](../appsec-dast-sim/README.md) skill for design-time
+  analysis, or the catalogue's `dast` / `api-security` components in CI.
+- **Push, or upload results anywhere.** Everything stays in `.appsec-results/`. The
+  Fortify component's SRM upload path is not part of the local runner.
+- **Block your commit.** It reports; you decide. Findings you don't fix are meant to be
+  dismissed in GitLab's Vulnerability Report with a justification — `TRIAGE.md` gives
+  you the wording.
+
+---
+
+## More
+
+| Document | For |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How it works internally, with diagrams |
+| [`config/PREFERENCES.md`](config/PREFERENCES.md) | Admins: every config key and how to change it |
+| [`UPDATE-GUIDE.md`](UPDATE-GUIDE.md) | Maintainers: keeping runners in sync with the CI components |
+| [`MIGRATION.md`](MIGRATION.md) | Admins: moving from the public catalogue to an internal instance |
+| [`CHANGELOG.md`](CHANGELOG.md) | Version history |

@@ -1,5 +1,10 @@
 # Scanner preferences — admin guide
 
+> **Who this is for:** Platform Team admins who own `scanner-preferences.yaml`.
+> Developers running scans want [`../README.md`](../README.md) instead.
+>
+> **Common tasks:** [switch profile](#switching-profiles) · [pin a component version](#how-to-pin-an-exact-component-version-platform-team-how-to) · [container scan target](#container-scanning-how-the-target-image-is-chosen)
+
 `scanner-preferences.yaml` is the single admin-owned control point for this
 skill. It is versioned, so changes go through an MR with Platform Team approval
 (CODEOWNERS). Users never pick scanners — the skill reads this file each run.
@@ -12,8 +17,8 @@ flags — the model never parses the YAML itself.
 
 **Platform support:** macOS, Linux, and WSL2 are fully supported. Native Windows
 requires Git for Windows (Git Bash) so Claude Code can run `.sh` scripts, plus
-Docker Desktop; WSL2 is strongly recommended instead. See README.md for the full
-matrix. Auto-download of `python3`/`jq` does not work in native Git Bash —
+Docker Desktop; WSL2 is strongly recommended instead. See [`../README.md`](../README.md)
+for the full matrix. Auto-download of `python3`/`jq` does not work in native Git Bash —
 install them in the environment (on WSL2/Linux the `install_url` path works).
 
 ## Switching profiles

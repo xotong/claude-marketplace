@@ -1,6 +1,23 @@
 # AppSec Scan — Update Guide
 
+> **Who this is for:** maintainers reconciling the runner scripts with upstream CI
+> components. Developers running scans want [`README.md`](README.md); admins changing
+> config want [`config/PREFERENCES.md`](config/PREFERENCES.md).
+
 This guide explains how to keep `appsec-scan` in sync with your GitLab CI components.
+
+**CI enforces part of this for you.** `ci/check-appsec-drift.py` runs on every MR that
+touches `scanners/`, `reference/catalog/`, or `scanner-preferences.yaml`. It compares each
+runner against the vendored component snapshots, fully offline, and **fails the pipeline on
+`CONTRACT-DRIFT`** — a component input or report artifact that no longer matches the
+runner's `.contract`. Image pins and 90-day sync staleness are reported but do not block,
+because admins pin images independently of component versions.
+
+Run it yourself before pushing:
+
+```bash
+python3 ci/check-appsec-drift.py   # from the repo root
+```
 
 ---
 
