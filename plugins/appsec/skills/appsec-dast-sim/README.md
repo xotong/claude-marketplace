@@ -14,6 +14,25 @@ You: /appsec-dast-sim
 
 No containers. No credentials. No running app. Nothing leaves your machine.
 
+That runs the full checklist. To review one area, just ask for it:
+
+| You say | You get |
+|---|---|
+| "OWASP review", "audit my API", "is my API secure" | the full WSTG checklist |
+| "check auth security", "is my login secure" | authentication |
+| "can users access other users' data", "IDOR check" | authorization |
+| "find XSS or SQLi", "is my input validated", "SSRF" | injection and input validation |
+| "check session handling", "cookie security" | session management |
+| "am I hashing passwords properly", "TLS check" | cryptography |
+| "can this flow be abused" | business logic |
+| "check my headers", "CORS review" | configuration |
+
+**Not sure?** Ask for "a security review" and you'll get a checklist to pick from,
+written in plain language rather than WSTG codes.
+
+> A scoped review marks every phase it skipped as `SKIP (out of requested scope)`,
+> never as a pass — and says up front that it isn't a full OWASP review.
+
 ---
 
 ## When to use this

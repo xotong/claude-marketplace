@@ -10,8 +10,25 @@ on a throwaway branch, and writes a triage plan for the rest.
 You: /appsec-scan
 ```
 
-That's the whole interface. Everything below is context for when something goes wrong
-or you want more control.
+That runs everything. If you'd rather pick, just say what you want in plain English —
+the skill works out which scanner you mean:
+
+| You say | You get |
+|---|---|
+| "do all security scans", "is this safe to push" | all four scanners |
+| "do a SAST scan", "scan my code", "run Fortify" | SAST only |
+| "check my dependencies", "any vulnerable libraries", "CVE check" | dependency scanning only |
+| "any hardcoded secrets", "did I commit a key" | secret detection only |
+| "do a container scan", "scan my Docker image" | container scanning only |
+
+**Not sure which you need?** Just say "run a security scan" and you'll get a checklist
+to pick from, described in plain language — no need to know what SAST or SCA mean.
+Picking nothing in particular gets you everything, which is the right default.
+
+> A scoped scan always tells you which categories it *didn't* cover, and never reports
+> "clear to push" on its own. Run the full set before you actually push.
+
+Everything below is context for when something goes wrong or you want more control.
 
 ---
 

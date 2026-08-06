@@ -12,9 +12,16 @@ description: >
   fix loop (fix-branch.sh, ≤5 iterations) and guided triage plan (TRIAGE.md).
   Use when the user says: "appsec scan", "run security scanners", "run Fortify",
   "pre-push security check", "CI security pipeline locally", "mirror CI scanners",
-  "container security scan", "SCA scan", "SAST scan", "dependency scan",
-  "secret scan", "secret detection", "security before merge", "scan profile",
-  "catalog components", "triage plan", "fix security findings".
+  "security before merge", "scan profile", "catalog components", "triage plan",
+  "fix security findings", "do all security scans", "full security scan",
+  "scan everything", "is this safe to push".
+  Also activate for a SINGLE category and scan only that one (Step 0 routes):
+  SAST — "SAST scan", "static analysis", "run Fortify", "scan my code";
+  Dependency — "dependency scan", "SCA scan", "check my dependencies",
+  "any vulnerable libraries", "CVE check", "SBOM";
+  Secrets — "secret scan", "secret detection", "any hardcoded secrets",
+  "leaked credentials", "did I commit a key", "gitleaks";
+  Container — "container scan", "image scan", "scan my Docker image", "GTCS".
   Do NOT activate for general code review, unit testing, or lint-only requests.
 ---
 
@@ -35,6 +42,37 @@ Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-
 | `APP_NAME` | Application name (default: `basename $PWD`) |
 | `SOURCE_PATH` | Source dir for Fortify (default: `src`) |
 | `CI_PROJECT_URL` | GitLab project URL (Fortify source control config) |
+
+---
+
+## Step 0 — Decide what to scan
+
+Set `SCAN_SCOPE` from the user's words **before** running anything.
+
+| The user asked about | `SCAN_SCOPE` |
+|---|---|
+| their code, SAST, static analysis, Fortify | `sast` |
+| dependencies, libraries, packages, SCA, CVEs, SBOM | `dependency_scanning` |
+| secrets, credentials, API keys, tokens, gitleaks | `secret_detection` |
+| a container, an image, Docker, GTCS | `container_scanning` |
+| everything, a full scan, pushing safely, or bare `/appsec-scan` | `all` |
+| anything you are not sure about | **ask — below** |
+
+**When unsure, ask — never guess.** Use `AskUserQuestion` with `multiSelect: true`.
+Many developers cannot tell these categories apart, so label by what the developer
+would recognise, not by tool name:
+
+- `Everything (recommended)` — all four; exactly what CI will run
+- `My source code` — injection, unsafe calls, insecure patterns in code you wrote
+- `My dependencies` — known CVEs in libraries you pull in
+- `Hardcoded secrets` — keys, tokens, passwords committed by accident
+- `My container image` — OS and package CVEs in the image you ship
+
+Map the answer back to the table's `SCAN_SCOPE` values. If several categories are
+picked but not all four, run Step 3 once per category.
+
+A scoped scan still reports the categories it did **not** cover — that is deliberate,
+not a bug. Never present a scoped result as "you are clear to push."
 
 ---
 
@@ -165,10 +203,11 @@ catalog; they were fixed in Step 1.5.
 ## Step 3 — Run the scan
 
 ```bash
-bash "$SCRIPTS_DIR/run-scan.sh"
+bash "$SCRIPTS_DIR/run-scan.sh"                        # SCAN_SCOPE=all
+bash "$SCRIPTS_DIR/run-scan.sh" --only "$SCAN_SCOPE"   # one category from Step 0
 ```
 
-run-scan.sh invokes `"$RUNTIME" run` per scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). Stdout: summary from `normalize.py`; exit 1 → findings, go Step 4; exit 0 → done. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — a scoped rescan for the Step 5 loop, NOT a first scan. Its verdict covers only that category; it prints a NOTE saying so and warns when other categories still hold critical/high findings. Always finish with a full scan before pushing.
+run-scan.sh invokes `"$RUNTIME" run` per scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). Stdout: summary from `normalize.py`; exit 1 → findings, go Step 4; exit 0 → done. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — used both for a Step 0 scoped request and the Step 5 rescan loop. `--only` narrows what RUNS, never what is EXPECTED: uncovered categories still surface as coverage findings, so a scoped run cannot read as an all-clear. Report the scoped verdict, then name the categories that did not run and say a full scan is needed before pushing.
 
 ---
 

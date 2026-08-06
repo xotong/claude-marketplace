@@ -83,6 +83,37 @@ class SkillDocumentationContractTest(unittest.TestCase):
         )
         self.assertNotRegex(SKILL_TEXT, re.compile(r"glpat-[A-Za-z0-9]"))
 
+    def test_scan_scope_routing_is_complete_and_fail_closed(self) -> None:
+        """Step 0 must route every category, ask when unsure, and never let a
+        scoped run read as an all-clear."""
+        self.assertIn("SCAN_SCOPE", SKILL_TEXT)
+        self.assertIn("AskUserQuestion", SKILL_TEXT)
+
+        # Every category run-scan.sh accepts must be routable from Step 0,
+        # otherwise a keyword request silently falls through to a full scan.
+        run_scan = RUN_SCAN.read_text(encoding="utf-8")
+        for category in (
+            "sast",
+            "dependency_scanning",
+            "secret_detection",
+            "container_scanning",
+        ):
+            with self.subTest(category=category):
+                self.assertIn(category, SKILL_TEXT)
+                self.assertIn(category, run_scan)
+
+        # Asking beats guessing which scanners the user meant.
+        self.assertRegex(
+            SKILL_TEXT, re.compile(r"(?i)when unsure, ask|ask\b[^.]{0,40}never guess")
+        )
+        # A scoped scan must never be reported as clearance to push.
+        self.assertRegex(
+            SKILL_TEXT,
+            re.compile(r"(?is)scoped[\s\S]{0,400}(not cover|did not run|full scan)"),
+        )
+        # --only narrows execution, not expected coverage (anti false all-clear).
+        self.assertIn("never what is EXPECTED", SKILL_TEXT)
+
     def test_skill_documents_airgap_and_runtime_abstraction(self) -> None:
         required_strings = [
             "APPSEC_AIRGAP",
@@ -125,10 +156,17 @@ class SkillDocTokenBudgetTest(unittest.TestCase):
         # (ADVISORY / DRIFT / CONTRACT-DRIFT / NEEDS-MAPPING). The budget exists
         # to keep this readable by a small orchestrator model; a decision table
         # that removes ambiguity earns its lines back.
+        #
+        # Raised again from 275/13800 in 2026-08 for Step 0 (scan-scope routing)
+        # and its keyword triggers. Same rationale: the alternative is guessing
+        # which scanners the user meant, and guessing wrong on a security scan
+        # either wastes several minutes of container time or silently skips the
+        # category they actually cared about. Routing that removes that ambiguity
+        # earns its lines.
         lines = SKILL_TEXT.splitlines()
 
-        self.assertLessEqual(len(lines), 275)
-        self.assertLessEqual(len(SKILL_TEXT), 13800)
+        self.assertLessEqual(len(lines), 310)
+        self.assertLessEqual(len(SKILL_TEXT), 16200)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):
