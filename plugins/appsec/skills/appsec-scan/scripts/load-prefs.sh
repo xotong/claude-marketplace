@@ -8,15 +8,31 @@
 #   - blank lines and #-comment lines
 #   - settings.airgap
 #   - settings.container_runtime
+#   - settings.ca_bundle
+#   - settings.pip_index_url
+#   - settings.maven_settings
 #   - settings.jq.install_url
 #   - settings.python.install_url
 #   - settings.catalog.auth_token_env
 #   - settings.container_registry.user_env
 #   - settings.container_registry.password_env
+#   - settings.container_registry.base_repo
+#   - settings.container_registry.hardened_repo
 #   - settings.ci_gate.fail_on
 #   - default_profile
 #   - profiles.<name>.gitlab_instance
+#   - profiles.<name>.{auth_token_env,base_repo,hardened_repo}   (override the global)
 #   - profiles.<name>.categories.<category>.{component,version,image,runner,enabled}
+#
+# Config key -> exported name, for whoever wires a new key into a runner:
+#   ca_bundle                        -> CA_BUNDLE          (host path; mounted, then
+#                                       exported inside the container as
+#                                       ADDITIONAL_CA_CERT_BUNDLE)
+#   pip_index_url                    -> APPSEC_PIP_INDEX_URL
+#   maven_settings                   -> MAVEN_SETTINGS     (already read by
+#                                       scanners/fortify-sast.sh)
+#   container_registry.base_repo     -> BASE_IMAGE_REPO
+#   container_registry.hardened_repo -> HARDENED_IMAGE_REPO (suggestion-only)
 #
 # Runner -> RUN_* mapping. Keep this table aligned with the case statement below;
 # it is the single source of truth referenced from SKILL.md.
@@ -60,8 +76,8 @@ trap cleanup EXIT INT TERM HUP
 
 if ! awk -v requested_profile="$requested_profile" '
 function trim(s) {
-  sub(/^[ \t]+/, "", s)
-  sub(/[ \t]+$/, "", s)
+  sub(/^[ \t\r]+/, "", s)
+  sub(/[ \t\r]+$/, "", s)
   return s
 }
 
@@ -104,6 +120,9 @@ function split_key_value(s,    idx) {
 }
 
 {
+  # Normalize one mixed-CRLF line before indentation or scalar comparisons can
+  # silently disable the scanner declared on that line.
+  sub(/\r$/, "")
   raw = $0
   if (raw ~ /^[ \t]*$/ || raw ~ /^[ \t]*#/) {
     next
@@ -160,6 +179,24 @@ function split_key_value(s,    idx) {
       settings_block = ""
       next
     }
+    # Airgap plumbing. Each one clears settings_block for the same reason the
+    # scalars above do: leaving a stale block name set would let the NEXT
+    # indent-4 key be filed under the previous block.
+    if (indent == 2 && key == "ca_bundle") {
+      settings["ca_bundle"] = parse_scalar(value)
+      settings_block = ""
+      next
+    }
+    if (indent == 2 && key == "pip_index_url") {
+      settings["pip_index_url"] = parse_scalar(value)
+      settings_block = ""
+      next
+    }
+    if (indent == 2 && key == "maven_settings") {
+      settings["maven_settings"] = parse_scalar(value)
+      settings_block = ""
+      next
+    }
     if (indent == 2 && key == "jq" && strip_comment(value) == "") {
       settings_block = "jq"
       next
@@ -208,6 +245,14 @@ function split_key_value(s,    idx) {
       settings["container_registry.password_env"] = parse_scalar(value)
       next
     }
+    if (indent == 4 && settings_block == "container_registry" && key == "base_repo") {
+      settings["container_registry.base_repo"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "container_registry" && key == "hardened_repo") {
+      settings["container_registry.hardened_repo"] = parse_scalar(value)
+      next
+    }
     if (indent == 4 && settings_block == "ci_gate" && key == "fail_on") {
       settings["ci_gate.fail_on"] = parse_scalar(value)
       next
@@ -218,7 +263,7 @@ function split_key_value(s,    idx) {
     next
   }
 
-  if (indent == 2 && value == "") {
+  if (indent == 2 && strip_comment(value) == "") {
     current_profile = key
     profile_seen[current_profile] = 1
     profile_order[++profile_count] = current_profile
@@ -247,16 +292,42 @@ function split_key_value(s,    idx) {
     next
   }
 
-  if (indent == 4 && key == "categories" && value == "") {
+  # base_repo / hardened_repo are properties of the registry this profile talks
+  # to, so like auth_token_env they override the global default — including an
+  # explicit "", which is how a profile turns an inherited probe back off.
+  if (indent == 4 && key == "base_repo") {
+    profile_base_repo[current_profile] = parse_scalar(value)
+    profile_base_repo_set[current_profile] = 1
+    current_block = ""
+    next
+  }
+
+  if (indent == 4 && key == "hardened_repo") {
+    profile_hardened_repo[current_profile] = parse_scalar(value)
+    profile_hardened_repo_set[current_profile] = 1
+    current_block = ""
+    next
+  }
+
+  if (indent == 4 && key == "categories" && strip_comment(value) == "") {
     current_block = "categories"
     current_category = ""
     next
   }
 
-  if (current_block == "categories" && indent == 6 && value == "") {
-    current_category = key
-    cat_count[current_profile]++
-    cat_order[current_profile, cat_count[current_profile]] = current_category
+  if (current_block == "categories" && indent == 6) {
+    # Clear the prior slot before interpreting every category-level key so a
+    # typo can never graft its nested settings onto the preceding scanner.
+    current_category = ""
+    if (key !~ /^(sast|dependency_scanning|secret_detection|container_scanning)$/) {
+      print "PARSER_WARNING\tWARNING: unknown category key \047" key "\047 in profile \047" current_profile "\047"
+      next
+    }
+    if (strip_comment(value) == "") {
+      current_category = key
+      cat_count[current_profile]++
+      cat_order[current_profile, cat_count[current_profile]] = current_category
+    }
     next
   }
 
@@ -278,6 +349,11 @@ END {
 
   print "SETTING\tairgap\t" settings["airgap"]
   print "SETTING\tcontainer_runtime\t" settings["container_runtime"]
+  print "SETTING\tca_bundle\t" settings["ca_bundle"]
+  print "SETTING\tpip_index_url\t" settings["pip_index_url"]
+  print "SETTING\tmaven_settings\t" settings["maven_settings"]
+  print "SETTING\tcontainer_registry.base_repo\t" settings["container_registry.base_repo"]
+  print "SETTING\tcontainer_registry.hardened_repo\t" settings["container_registry.hardened_repo"]
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
   print "SETTING\tpython.install_url\t" settings["python.install_url"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
@@ -295,6 +371,12 @@ END {
     print "GITLAB_INSTANCE\t" profile_gitlab[active_profile]
     if (profile_auth_set[active_profile]) {
       print "PROFILE_AUTH_TOKEN_ENV\t" profile_auth[active_profile]
+    }
+    if (profile_base_repo_set[active_profile]) {
+      print "PROFILE_BASE_REPO\t" profile_base_repo[active_profile]
+    }
+    if (profile_hardened_repo_set[active_profile]) {
+      print "PROFILE_HARDENED_REPO\t" profile_hardened_repo[active_profile]
     }
     for (i = 1; i <= cat_count[active_profile]; i++) {
       category = cat_order[active_profile, i]
@@ -319,8 +401,13 @@ container_runtime=
 jq_install_url=
 python_install_url=
 catalog_auth_env=
+ca_bundle=
+pip_index_url=
+maven_settings=
 cs_user_env=
 cs_pass_env=
+base_image_repo=
+hardened_image_repo=
 ci_gate_fail_on=high
 image_policy=follow-component
 pkg_reg_npm=
@@ -384,8 +471,13 @@ while IFS="$tab" read -r record field1 field2 field3; do
         jq.install_url) jq_install_url=$field2 ;;
         python.install_url) python_install_url=$field2 ;;
         catalog.auth_token_env) catalog_auth_env=$field2 ;;
+        ca_bundle) ca_bundle=$field2 ;;
+        pip_index_url) pip_index_url=$field2 ;;
+        maven_settings) maven_settings=$field2 ;;
         container_registry.user_env) cs_user_env=$field2 ;;
         container_registry.password_env) cs_pass_env=$field2 ;;
+        container_registry.base_repo) base_image_repo=$field2 ;;
+        container_registry.hardened_repo) hardened_image_repo=$field2 ;;
         ci_gate.fail_on) [ -z "$field2" ] || ci_gate_fail_on=$field2 ;;
         image_policy) [ -z "$field2" ] || image_policy=$field2 ;;
         package_registries.npm) pkg_reg_npm=$field2 ;;
@@ -398,8 +490,17 @@ while IFS="$tab" read -r record field1 field2 field3; do
     PROFILE_AUTH_TOKEN_ENV)
       catalog_auth_env=$field1
       ;;
+    PROFILE_BASE_REPO)
+      base_image_repo=$field1
+      ;;
+    PROFILE_HARDENED_REPO)
+      hardened_image_repo=$field1
+      ;;
     GITLAB_INSTANCE)
       gitlab_instance=$field1
+      ;;
+    PARSER_WARNING)
+      warn "$field1"
       ;;
     CATEGORY)
       if [ -n "$category_order" ]; then
@@ -447,11 +548,16 @@ if [ "$appsec_airgap" = "true" ] && [ "$normalized_instance" = "https://gitlab.c
   exit 1
 fi
 
+# Tuple: component|version|runner|image|category
+# The category is last so the three fields every consumer already reads keep
+# their positions. Consumers that want the image must take field 4 with
+# "${rest%%|*}", not the trailing "${rest#*|}" — the latter now swallows the
+# category too.
 append_enabled_component() {
   if [ -n "$enabled_components" ]; then
-    enabled_components="$enabled_components $1|$2|$3|$4"
+    enabled_components="$enabled_components $1|$2|$3|$4|$5"
   else
-    enabled_components="$1|$2|$3|$4"
+    enabled_components="$1|$2|$3|$4|$5"
   fi
 }
 
@@ -510,6 +616,15 @@ else
   gitlab_cs_image=$container_scanning_image_yaml
 fi
 
+# MAVEN_SETTINGS predates settings.maven_settings — run-scan.sh and
+# fortify-sast.sh already read it from the ambient environment. Emitting the
+# shipped empty default unconditionally would silently unset a working export
+# and send the maven build back to the public central repo, so an existing
+# value wins here exactly as it does for the *_IMAGE overrides above.
+if [ -n "${MAVEN_SETTINGS:-}" ]; then
+  maven_settings=$MAVEN_SETTINGS
+fi
+
 for category_name in $category_order; do
   category_component=
   category_version=
@@ -552,7 +667,7 @@ for category_name in $category_order; do
     [ -n "$category_runner" ] || category_runner=$(default_runner_for "$category_name")
     apply_runner_flag "$category_name" "$category_runner"
     if [ -n "$category_component" ] && [ -n "$category_version" ] && [ -n "$category_runner" ]; then
-      append_enabled_component "$category_component" "$category_version" "$category_runner" "$category_image"
+      append_enabled_component "$category_component" "$category_version" "$category_runner" "$category_image" "$category_name"
     fi
   fi
 done
@@ -564,8 +679,19 @@ emit CONTAINER_RUNTIME "$container_runtime"
 emit JQ_INSTALL_URL "$jq_install_url"
 emit PYTHON_INSTALL_URL "$python_install_url"
 emit CATALOG_AUTH_ENV "$catalog_auth_env"
+emit CA_BUNDLE "$ca_bundle"
+# Deliberately NOT named PIP_INDEX_URL. These assignments get eval'd into the
+# caller's own shell, and pip reads PIP_INDEX_URL directly — exporting the
+# shipped empty default would point the developer's own pip at an empty index
+# and break every unrelated `pip install` in that terminal.
+emit APPSEC_PIP_INDEX_URL "$pip_index_url"
+emit MAVEN_SETTINGS "$maven_settings"
 emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"
+emit BASE_IMAGE_REPO "$base_image_repo"
+# Suggestion-only: a hardened image is a different image, not a newer tag, so
+# this must never feed a status decision or the fix loop. See the config comment.
+emit HARDENED_IMAGE_REPO "$hardened_image_repo"
 emit CI_GATE_FAIL_ON "$ci_gate_fail_on"
 emit IMAGE_POLICY "$image_policy"
 emit PACKAGE_REGISTRY_AUTH_ENV "$pkg_reg_auth_env"

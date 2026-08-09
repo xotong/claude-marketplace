@@ -21,6 +21,18 @@ settings:
   # Container runtime. auto = detect docker, then podman. Or force docker/podman.
   container_runtime: auto
 
+  # Internal HTTPS CA bundle (PEM), given as a path ON THE HOST.
+  # An airgapped estate terminates TLS on its own CA, so a scanner container
+  # talking to JFrog or the internal GitLab rejects every certificate without
+  # this — and the failure reads like a network outage rather than a trust
+  # problem, which is why it costs a day to diagnose.
+  # The file is bind-mounted read-only into each scanner container and exported
+  # inside it as ADDITIONAL_CA_CERT_BUNDLE, the variable the GitLab analyzers
+  # read. The dependency-scanning template forwards it into its own child
+  # processes via DS_MAVEN_RESOLUTION_EXPORTED_VARS / DS_GRADLE_RESOLUTION_EXPORTED_VARS.
+  # Empty (the shipped default) = disabled: nothing is mounted, nothing exported.
+  ca_bundle: ""   # e.g. /etc/ssl/certs/internal-ca.pem
+
   # jq powers the Step 5 severity summary. It is OPTIONAL — without it the
   # summary shows UNKNOWN but the scan still runs.
   #   prefer: host  = use jq from PATH if present.
@@ -59,6 +71,21 @@ settings:
     # Setup: MIGRATION.md step 0.
     auth_token_env: GITLAB_READ_TOKEN
 
+  # Where the dependency-scanning analyzer RESOLVES packages from while it builds
+  # the SBOM. Both of these default, inside the component itself, to values that
+  # only work with public internet — the checked-in contract records
+  # input.pip-index-url.default=https://pypi.org/simple/ and
+  # input.maven-setting-path.default=settings.xml — so on an airgapped host the
+  # analyzer reaches for public PyPI, hangs, and reports a broken SBOM rather
+  # than saying it could not resolve anything.
+  #
+  # Empty (the shipped default) = leave the analyzer's own default alone.
+  pip_index_url: ""   # e.g. https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/
+  # Host path to a Maven settings.xml naming the internal mirror. Bind-mounted
+  # read-only into the scanner container; the Fortify SAST maven build reads the
+  # same value. Empty = disabled, nothing is mounted.
+  maven_settings: ""  # e.g. /home/dev/.m2/settings-internal.xml
+
   # Package registries used to CHECK whether a suggested upgrade is actually
   # obtainable here, before the fix loop tries it. Leave every value empty to skip
   # the check entirely (nothing is probed, no status changes).
@@ -92,6 +119,27 @@ settings:
     user_env: CS_REGISTRY_USER
     password_env: CS_REGISTRY_PASSWORD
 
+    # Base-image lookup templates, for container-scanning findings that live in
+    # the FROM image rather than in application code. These are REF TEMPLATES
+    # with {image} and {tag}, not base URLs — same reason package_registries
+    # above are templates: a repository layout is a deployment decision, not
+    # something to guess. {image} is the Dockerfile FROM repository with its
+    # registry and namespace stripped (python, node), because the question being
+    # asked is "does OUR registry carry this?".
+    # Empty (the shipped default) = nothing is probed and nothing is suggested.
+    #
+    # base_repo answers exactly one yes/no — "is this base image obtainable
+    # here?" — and is the ONLY one of the two that may change a finding's status.
+    base_repo: ""      # e.g. dock.artifactory.internal/docker-virtual/{image}:{tag}
+    # hardened_repo is SUGGESTION-ONLY, and its contract is deliberately weaker.
+    # A hardened image is a DIFFERENT image, not a newer tag:
+    # cgr.dev/chainguard/python vs docker.io/python differ in libc, usually ship
+    # no shell and no package manager, and run as a non-root UID. Adopting one is
+    # an application decision a human has to weigh, so this template must NEVER
+    # set a finding's status and the fix loop must NEVER apply it. Wire it into
+    # the triage branch and the loop will "fix" builds by breaking them.
+    hardened_repo: ""  # e.g. dock.artifactory.internal/hardened-virtual/{image}:{tag}
+
   # Severity threshold for the normalized scan gate: critical|high|medium|none.
   ci_gate:
     fail_on: high
@@ -123,6 +171,21 @@ profiles:
   # used to hardcode.
   catalog:
     gitlab_instance: https://gitlab.com
+    # Public equivalents of settings.container_registry.base_repo/hardened_repo,
+    # so an internet-connected test drives the same probe code path an airgapped
+    # estate uses instead of leaving it permanently unexercised. Profile-level
+    # values override the global ones exactly as auth_token_env does; the
+    # `company` profile and the global defaults stay empty.
+    base_repo: docker.io/library/{image}:{tag}
+    # Chainguard's free tier is public and anonymously pullable, but it publishes
+    # :latest ONLY. A versioned {tag} therefore misses, and "no hardened
+    # candidate" is the honest answer here, not a bug to go fix.
+    hardened_repo: cgr.dev/chainguard/{image}:{tag}
+    # No other hardened catalogue can ship as a shared URL:
+    #   Docker Hardened Images are org-scoped — docker.io/<your-org>/dhi-{image}:{tag}
+    #   Hummingbird's registry and namespace are unconfirmed. Paste your own
+    #   rather than trusting a guess; a wrong URL probes as "absent" and invents
+    #   mirroring work for the platform team.
     categories:
       sast:
         component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast

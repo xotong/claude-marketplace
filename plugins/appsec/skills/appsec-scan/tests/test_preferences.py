@@ -58,6 +58,34 @@ class SettingsBlockTest(unittest.TestCase):
         self.assertIn("user_env", cr)
         self.assertIn("password_env", cr)
 
+    def test_airgap_knobs_exist_and_ship_disabled(self) -> None:
+        """ca_bundle / pip_index_url / maven_settings must be declarable, and must
+        default to off — nothing may be mounted or rewritten unless an admin says so."""
+        for key in ("ca_bundle", "pip_index_url", "maven_settings"):
+            with self.subTest(key=key):
+                self.assertIn(key, self.settings, "airgap estates have no other way in")
+                self.assertIsInstance(self.settings[key], str)
+                self.assertEqual(self.settings[key], "", "shipped default must disable it")
+
+    def test_global_base_image_templates_exist_and_ship_empty(self) -> None:
+        """They live inside container_registry, which already holds this
+        registry's credential env-var names — not in a new top-level block."""
+        cr = self.settings.get("container_registry", {})
+        for key in ("base_repo", "hardened_repo"):
+            with self.subTest(key=key):
+                self.assertIn(key, cr)
+                self.assertIsInstance(cr[key], str)
+                self.assertEqual(cr[key], "", "no probing by default")
+
+    def test_the_two_base_image_templates_state_their_differing_contracts(self) -> None:
+        """A hardened image is a DIFFERENT image, not a newer tag. Without this
+        warning in the file the next maintainer wires hardened_repo into the
+        triage branch and the fix loop starts 'fixing' builds by breaking them."""
+        text = PREFERENCES_PATH.read_text(encoding="utf-8")
+        self.assertIn("ONLY one of the two that may change a finding's status", text)
+        self.assertIn("SUGGESTION-ONLY", text)
+        self.assertIn("fix loop must NEVER apply it", text)
+
 
 class ScannerPreferencesTest(unittest.TestCase):
     def test_default_profile_is_catalog(self) -> None:
@@ -145,6 +173,50 @@ class ScannerPreferencesTest(unittest.TestCase):
     def test_catalog_and_company_profiles_exist(self) -> None:
         self.assertIn("catalog", PREFERENCES["profiles"])
         self.assertIn("company", PREFERENCES["profiles"])
+
+    def test_catalog_profile_ships_public_base_image_templates(self) -> None:
+        """Real public values, so an internet-connected run exercises the same
+        probe code path an airgapped estate uses instead of leaving it dead."""
+        catalog = PREFERENCES["profiles"]["catalog"]
+        self.assertEqual(catalog["base_repo"], "docker.io/library/{image}:{tag}")
+        self.assertEqual(catalog["hardened_repo"], "cgr.dev/chainguard/{image}:{tag}")
+
+    def test_company_profile_declares_no_base_image_templates(self) -> None:
+        """The internal registry layout is the admin's to paste in; guessing it
+        would probe the wrong path and report 'absent' for images that exist."""
+        company = PREFERENCES["profiles"]["company"]
+        self.assertNotIn("base_repo", company)
+        self.assertNotIn("hardened_repo", company)
+
+    def test_every_declared_base_image_template_is_a_ref_template(self) -> None:
+        """These are refs with {image} and {tag}, not base URLs — a pasted base
+        URL would silently probe one wrong path for every image."""
+        declared = [
+            ("settings", key, PREFERENCES["settings"]["container_registry"][key])
+            for key in ("base_repo", "hardened_repo")
+        ] + [
+            (name, key, profile[key])
+            for name, profile in PREFERENCES["profiles"].items()
+            for key in ("base_repo", "hardened_repo")
+            if key in profile
+        ]
+        for where, key, value in declared:
+            if not value:
+                continue
+            with self.subTest(where=where, key=key):
+                self.assertIn("{image}", value)
+                self.assertIn("{tag}", value)
+
+    def test_no_hummingbird_registry_is_invented(self) -> None:
+        """Its registry/namespace is unconfirmed. A guessed URL probes as
+        'absent' and manufactures mirroring work for the platform team, which is
+        strictly worse than leaving the shape for the admin to paste."""
+        text = PREFERENCES_PATH.read_text(encoding="utf-8")
+        self.assertIn("Hummingbird", text, "the gap should be named, not silently omitted")
+        self.assertIn("unconfirmed", text)
+        for invented in ("hummingbird.io", "hummingbird.dev", "hmb.dev", "ghcr.io/hummingbird"):
+            with self.subTest(invented=invented):
+                self.assertNotIn(invented, text)
 
 
 class HelperScriptsTest(unittest.TestCase):
@@ -425,6 +497,87 @@ class HelperScriptsTest(unittest.TestCase):
                 "build -t appsec-local/sample-app:appsec-scan -f ./service/Dockerfile ./service",
                 runtime_log.read_text(encoding="utf-8"),
             )
+
+    # The sandbox above used to stop at container-target.sh. That gap is exactly
+    # how resolve-image.sh shipped calling `cut` unguarded: on a host without
+    # coreutils it exited 127, and run-scan.sh reads a non-zero exit from it as
+    # fatal and refuses to scan at all. The probe helpers get the same treatment.
+
+    def test_resolve_image_resolves_without_coreutils(self) -> None:
+        cases = [
+            # Adopt the component's tag, keep the configured registry.
+            (
+                ("jfrog.internal/security/cs:8", "registry.gitlab.com/sp/cs:8.6.31"),
+                "jfrog.internal/security/cs:8.6.31",
+            ),
+            # A port in the registry host is not a tag.
+            (
+                ("registry:5000/security/cs", "registry.gitlab.com/sp/cs:8.6.31"),
+                "registry:5000/security/cs:8.6.31",
+            ),
+            # Untagged template: nothing to follow.
+            (
+                ("registry:5000/security/cs:8", "registry.gitlab.com/sp/cs"),
+                "registry:5000/security/cs:8",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(tmp, {"fake-runtime": "#!/bin/sh\nexit 0\n"})
+            env = dict(os.environ, PATH=str(bin_dir))
+            for (configured, template), expected in cases:
+                with self.subTest(configured=configured):
+                    result = self.run_script(
+                        "resolve-image.sh",
+                        env=env,
+                        args=[configured, template, "fake-runtime", "follow-component", "no-pull"],
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
+
+    def test_resolve_base_image_verdicts_without_coreutils(self) -> None:
+        # `absent` must come from the registry's own wording, never from a helper
+        # that failed to launch.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(
+                tmp,
+                {"fake-runtime": "#!/bin/sh\necho 'manifest unknown' >&2\nexit 1\n"},
+            )
+            env = dict(os.environ, PATH=str(bin_dir))
+            absent = self.run_script(
+                "resolve-base-image.sh",
+                env=env,
+                args=["alpine", "3.19", "jfrog.internal/{image}:{tag}", "fake-runtime"],
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_bin = self.make_stub_dir(tmp, {})
+            env = dict(os.environ, PATH=str(empty_bin))
+            no_runtime = self.run_script(
+                "resolve-base-image.sh",
+                env=env,
+                args=["alpine", "3.19", "jfrog.internal/{image}:{tag}", "auto"],
+            )
+
+        self.assertEqual((absent.returncode, absent.stdout.strip()), (0, "absent"), absent.stderr)
+        self.assertEqual(
+            (no_runtime.returncode, no_runtime.stdout.strip()), (0, "unknown"), no_runtime.stderr
+        )
+
+    def test_sbom_vuln_scan_without_sboms_is_not_an_error(self) -> None:
+        # No lockfile means no SBOM, which is not a failure — and must not become
+        # one just because the userland is thin either.
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = self.make_stub_dir(tmp, {})
+            self.add_passthrough_tools(bin_dir, ["mkdir", "rm"])
+            env = dict(os.environ, PATH=str(bin_dir), CI_PROJECT_DIR=tmp)
+            result = subprocess.run(
+                [shutil.which("bash") or "/bin/bash", str(SCANNERS_DIR / "sbom-vuln-scan.sh")],
+                env=env, capture_output=True, text=True,
+            )
+            produced = list((Path(tmp) / ".appsec-results").glob("dependency-sbom-scan*.json"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(produced, [])
 
 
 if __name__ == "__main__":
