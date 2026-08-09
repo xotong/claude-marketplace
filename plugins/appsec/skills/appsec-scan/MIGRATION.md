@@ -116,7 +116,8 @@ If preflight reports `catalog auth: env var GITLAB_READ_TOKEN ... is not set`, t
 bash plugins/appsec/skills/appsec-scan/scripts/catalog.sh self-test
 
 # 2. Preferences load: expect GITLAB_INSTANCE=https://gitlab.com,
-#    CATALOG_AUTH_ENV=GITLAB_READ_TOKEN, four RUN_* flags true
+#    CATALOG_AUTH_ENV=GITLAB_READ_TOKEN, four RUN_* flags true, and four EMPTY
+#    *_IMAGE values — normal: the image is derived from the component in step 4.
 bash plugins/appsec/skills/appsec-scan/scripts/load-prefs.sh \
   plugins/appsec/skills/appsec-scan/config/scanner-preferences.yaml
 
@@ -170,27 +171,47 @@ Whether to revoke this gitlab.com PAT afterwards depends on step 4: it is only n
 
 ## 1 — Mirror scanner images
 
-Pull the four scanner images from their public source and push them to your internal JFrog registry. The exact image refs come from the `catalog` profile in `config/scanner-preferences.yaml`:
+Pull the four scanner images from their public source and push them to your internal
+JFrog registry. **Neither shipped profile declares an `image:`**, so the refs to mirror
+are the ones the *components* declare — ask the resolver rather than reading them out of
+this file, which would go stale on the next component bump:
 
-| Category | Public image (from `catalog` profile) | Internal target |
+```bash
+cd plugins/appsec/skills/appsec-scan
+for c in fortify-sast/fortify-sast dependency-scanning/dependency-scanning \
+         secret-detection/secret-detection container-scanning/container-scanning; do
+  bash scripts/catalog.sh template-image \
+    "lobster-thermidor/devops/ci-catalogue/$c" .appsec-results/catalog
+done
+```
+
+At the tags vendored today that prints:
+
+| Category | Image the component declares | Internal target |
 |---|---|---|
 | SAST | `registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review` | `jfrog.internal/security/fortify-sca:25.2.0-jdk17-review` |
 | Dependency Scanning | `registry.gitlab.com/security-products/dependency-scanning:2` | `jfrog.internal/security/dependency-scanning:2` |
 | Secret Detection | `registry.gitlab.com/security-products/secrets:7` | `jfrog.internal/security/secrets:7` |
-| Container Scanning | `registry.gitlab.com/security-products/container-scanning:8` | `jfrog.internal/security/container-scanning:8` |
+| Container Scanning | `registry.gitlab.com/security-products/container-scanning:8.6.31` | `jfrog.internal/security/container-scanning:8.6.31` |
 
 ```bash
 for pair in \
   "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review jfrog.internal/security/fortify-sca:25.2.0-jdk17-review" \
   "registry.gitlab.com/security-products/dependency-scanning:2 jfrog.internal/security/dependency-scanning:2" \
   "registry.gitlab.com/security-products/secrets:7 jfrog.internal/security/secrets:7" \
-  "registry.gitlab.com/security-products/container-scanning:8 jfrog.internal/security/container-scanning:8"; do
+  "registry.gitlab.com/security-products/container-scanning:8.6.31 jfrog.internal/security/container-scanning:8.6.31"; do
   src="${pair% *}"; dst="${pair##* }"
   docker pull "$src" && docker tag "$src" "$dst" && docker push "$dst"
 done
 ```
 
 Adjust the `jfrog.internal/security/` prefix to your actual internal registry path.
+
+**Mirroring under the same path is what lets you keep `image:` out of the config.** Once
+your catalogue's templates name your registry (step 5's re-vendor), the derived ref *is*
+the internal one and nothing local needs declaring. If your mirror uses a different
+layout, declare `image:` for that category instead — it then supplies the registry and
+path while the component keeps supplying the tag.
 
 ---
 
@@ -218,30 +239,29 @@ company:
     sast:
       component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
       version: "25.2.0"          # pin exact tag for reproducibility
-      image: jfrog.internal/security/fortify-sca:25.2.0-jdk17-review
-      runner: fortify-sast.sh
       enabled: true
     dependency_scanning:
       component: lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning
       version: "1.1.0"
-      image: jfrog.internal/security/dependency-scanning:2
-      runner: gitlab-dependency-scanning.sh
       enabled: true
     secret_detection:
       component: lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection
       version: "1.0.0"
-      image: jfrog.internal/security/secrets:7
-      runner: secret-detection.sh
       enabled: true
     container_scanning:
       component: lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
       version: "1.1.0"
-      image: jfrog.internal/security/container-scanning:8
-      runner: gitlab-container-scanning.sh
       enabled: true
 ```
 
 **Note:** the shipped `company:` profile uses `~latest` for all four `version:` fields. As part of this step, change each to the exact tag you want pinned (e.g. `"25.2.0"` as shown above) — `~latest` resolves to a different tag on each run and defeats airgap reproducibility. The ADVISORY line will fire when you need to bump a pin.
+
+**No `image:` anywhere.** After step 5 your own catalogue's templates name your own
+registry, so the derived ref is already internal. Add `image:` to a category only when
+your registry layout differs from the template's, or to pin a tag you carry while the
+component moves ahead — then it supplies the registry and path, and the template still
+supplies the tag. `runner:` is likewise only for a custom runner. Full matrix:
+[`config/PREFERENCES.md`](config/PREFERENCES.md#image--optional-and-this-is-the-only-description-of-it).
 
 ---
 
@@ -256,18 +276,53 @@ settings:
     auth_token_env: GITLAB_READ_TOKEN   # default for profiles that do not set their
                                         # own; the company profile below sets ""
 
+  # Internal TLS. Without this every scanner's HTTPS call fails in a way that
+  # reads like a network outage instead of a trust problem.
+  ca_bundle: "/etc/ssl/certs/internal-ca.pem"
+
+  # Where the dependency analyzer RESOLVES packages while building the SBOM.
+  # Its own defaults are public PyPI and ./settings.xml, which hang here.
+  pip_index_url: "https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/"
+  maven_settings: "/home/dev/.m2/settings-internal.xml"
+
   jq:
     prefer: host
     install_url: "https://jfrog.internal/artifactory/tools/jq/{os}/{arch}/jq"
   python:
     prefer: host
     install_url: "https://jfrog.internal/artifactory/tools/python3/{os}/{arch}/python3.tar.gz"
+
+  # Optional: ask the mirror whether a suggested upgrade is obtainable BEFORE the
+  # fix loop tries it. All empty = no probing at all, including the two image
+  # templates below. Exact URL shapes are per-deployment, so they are declared,
+  # never guessed.
+  package_registries:
+    npm: "https://jfrog.internal/artifactory/api/npm/npm-virtual/{package}/{version}"
+    pypi: "https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/{package}/"
+    maven: "https://jfrog.internal/artifactory/maven-virtual/{group_path}/{artifact}/{version}/"
+    go: "https://jfrog.internal/artifactory/api/go/go-virtual/{module}/@v/{version}.info"
+    auth_token_env: ""                  # env var NAME; empty = anonymous read
+
   container_registry:
     user_env: CS_REGISTRY_USER          # leave the VARS unset for an anonymous-pull registry
     password_env: CS_REGISTRY_PASSWORD
+    # "Does our registry carry this base image?" {image} is the Dockerfile FROM
+    # repo with registry/namespace stripped. absent => the container findings it
+    # blocks become blocked_registry_gap and TRIAGE.md §3b asks you to mirror it.
+    base_repo: "dock.artifactory.internal/docker-virtual/{image}:{tag}"
+    # Suggestion only. A hardened image is a DIFFERENT image (libc, no shell,
+    # non-root UID), so this never changes a status and the fix loop never
+    # applies it. Paste your own org's path — a guessed URL probes as "absent"
+    # and invents mirroring work.
+    hardened_repo: ""
 ```
 
 Set `default_profile: company` (or `export APPSEC_PROFILE=company` before each run). With `airgap: true`, any profile pointing at gitlab.com is refused at load time.
+
+`ca_bundle` and `maven_settings` are **host** paths: `run-scan.sh` bind-mounts each into
+the scanner container and passes the in-container path onward. Assume the CA is already
+baked into the mirrored scanner images as well; this setting covers the analyzers that
+read `ADDITIONAL_CA_CERT_BUNDLE` at runtime.
 
 ### There is no catalog mode to choose
 
@@ -299,10 +354,11 @@ curl -s -o /dev/null -w '%{http_code}\n' \
 
 `200` → set `auth_token_env: ""`. `401`/`404` → keep the PAT and export it.
 
-**Careful:** when `auth_token_env` names a variable and `mode` is `online`,
-preflight fails if that variable is unset. That is deliberate — it stops a
-tokenless run silently degrading to snapshots and looking like a live check — but
-it means naming a var "just in case" blocks every run until a token exists.
+**Careful:** whenever `auth_token_env` names a variable, preflight fails if that
+variable is unset — there is no mode in which the check is skipped. That is
+deliberate: it stops a tokenless run silently degrading to snapshots and looking
+like a live check. But it also means naming a var "just in case" blocks every run
+until a token exists. Set `""` if your instance reads anonymously.
 
 ---
 

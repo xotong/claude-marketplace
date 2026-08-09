@@ -104,6 +104,17 @@ The one thing worth internalising:
 > no report, that becomes a HIGH-severity coverage finding and fails the gate. "No
 > findings" and "didn't scan" are deliberately not the same outcome.
 
+One caveat worth knowing before you act on the dependency numbers:
+
+> **Local dependency findings come from Trivy, not from GitLab.** GitLab matches your
+> SBOM against its own advisory database server-side, behind an API that only accepts a
+> real CI job token — no local runner (this skill, `glci`, `gitlab-ci-local`,
+> `gitlab-runner exec`) can reproduce it. So the skill matches the SBOM offline with the
+> Trivy bundled in the container-scanning image. Treat those findings and their fix
+> versions as an early triage signal; they will **not** match the post-push Vulnerability
+> Report exactly, in content or in count. Every other category is byte-for-byte the CI
+> scanner.
+
 Findings carry a `verification_status`:
 
 | Status | Meaning |
@@ -167,14 +178,20 @@ Valid `--only` categories: `sast`, `dependency_scanning`, `secret_detection`,
 
 ## Troubleshooting
 
-### "No scanner image env vars are set"
-Preflight found no configured scanners. You almost certainly haven't set
-`APPSEC_PROFILE`, or you set it to a profile name that isn't in
-`config/scanner-preferences.yaml`. Check the profile list:
+### "requested profile 'x' not found"
+`APPSEC_PROFILE` names a profile that isn't in `config/scanner-preferences.yaml`. The
+error lists the valid ones; you can also read them off the file:
 
 ```bash
-grep -A1 "^profiles:" config/scanner-preferences.yaml
+sed -n '/^profiles:/,$p' config/scanner-preferences.yaml | grep -E '^  [a-z_]+:$'
 ```
+
+### "the component's image is not available from this registry"
+Your admin's config leaves `image:` to be derived from the CI component, and the tag the
+component asks for isn't in your registry yet. The message names the exact ref — send it
+to your platform team to mirror. The scan **stops** here rather than skipping the
+scanner, because a skipped scanner would read as a clean result for a category that
+never ran.
 
 ### "Cannot connect to the Docker daemon"
 Docker isn't running, or your user isn't in the `docker` group.
@@ -189,8 +206,11 @@ On WSL2, enable Docker Desktop's integration for your distro under
 
 ### The catalogue fetch failed but the scan continued
 That's intended. `catalog.sh` falls back to the vendored snapshots in
-`reference/catalog/` and says so. Scans keep working with no network. Only version
-resolution and drift warnings are affected.
+`reference/catalog/` and says `[offline-fallback]`. Scans keep working with no network:
+the snapshots carry the same `template.yml` the live read would have returned, so
+version resolution, drift checks **and the scanner image** all still resolve — from a
+snapshot rather than from your instance. If those snapshots were vendored somewhere
+else, that is your admin's problem to fix (MIGRATION.md "Re-vendor"), not yours.
 
 ### SAST was skipped
 Fortify needs a recognisable project. It looks for `pom.xml`, `build.gradle`,
@@ -234,9 +254,12 @@ registry credentials are separate (`settings.container_registry.*`).
 
 ## What this skill deliberately does not do
 
-- **DAST.** Needs a deployed target and a runner — that isn't a local pre-push check.
+- **DAST or API security.** Both catalogue components need a deployed, running,
+  authenticated target — a URL plus login selectors, or a mandatory `target-url` — which
+  a working-tree scan cannot provide. Deliberately declined, not missing: see
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#catalogue-components-this-skill-does-not-cover).
   Use the [`appsec-dast-sim`](../appsec-dast-sim/README.md) skill for design-time
-  analysis, or the catalogue's `dast` / `api-security` components in CI.
+  analysis, and those components in CI after a deploy job.
 - **Push, or upload results anywhere.** Everything stays in `.appsec-results/`. The
   Fortify component's SRM upload path is not part of the local runner.
 - **Block your commit.** It reports; you decide. Findings you don't fix are meant to be

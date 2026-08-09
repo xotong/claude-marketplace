@@ -17,7 +17,7 @@ The scanners are the four components of the private GitLab CI/CD Catalog at
 | Category | Catalog component | Shipped version | Runner | What runs locally |
 |---|---|---|---|---|
 | SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.0) | `fortify-sast.sh` | `fortify-sca` image from the catalogue's `docker-images` project; maven, gradle, python, javascript, go |
-| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.1.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output |
+| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.1.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output; then `sbom-vuln-scan.sh` matches that SBOM offline with Trivy — **Trivy's advisories, not GitLab's** |
 | Secret Detection | `…/secret-detection/secret-detection` | `~latest` (1.0.0) | `secret-detection.sh` | GitLab-native Gitleaks-based analyzer |
 | Container Scanning | `…/container-scanning/container-scanning` | `~latest` (1.1.0) | `gitlab-container-scanning.sh` | GTCS; registry image or locally built archive |
 
@@ -25,9 +25,26 @@ The scanners are the four components of the private GitLab CI/CD Catalog at
 `<project-path>/<template-name>`; every component repo ships `templates/<name>.yml`,
 `README.md`, and an agent-oriented `AGENTS.md`.)
 
-DAST is deliberately **not** part of this skill — it needs a deployed target and a GitLab
-runner, which doesn't fit a shift-left local scan. Use the `appsec-dast-sim` skill for
-design-time DAST simulation, or the catalogue's `dast` / `api-security` components in CI.
+### Catalogue components this skill does not cover
+
+The catalogue publishes four more components. Two are open questions, two are settled:
+
+| Component | Status |
+|---|---|
+| `sgx` (Semgrep Extended SAST) | not covered; no decision recorded |
+| `srm-report-upload` | not covered — it uploads results to SRM, and this skill is scan-only by design (nothing leaves `.appsec-results/`) |
+| `dast` | **declined** |
+| `api-security` | **declined** |
+
+`dast` and `api-security` are declined for the same reason, recorded here so it is not
+re-derived from scratch: both require a **deployed, running, authenticated target**.
+`api-security` makes `target-url` a mandatory input; `dast` needs a URL plus either
+login selectors or a Playwright script. A pre-push scan of a working tree has none of
+those — there is nothing running to point them at, and inventing a target would produce
+either an error or a scan of something that is not this change. The design-time intent
+is already covered by the `appsec-dast-sim` skill in this plugin, which reads the code
+instead of probing a deployment. Both components remain the right tool **in CI**, after
+a deploy job.
 
 ## How a scan runs
 
@@ -41,8 +58,8 @@ flowchart TD
     S15 --> RT["detect-runtime.sh — docker or podman"]
     RT --> S2["Step 2 — preflight.sh environment checks"]
     S2 --> S25["Step 2.5 — catalog.sh resolve + check-drift per component<br/>(version-aware: ~latest or exact pin)"]
-    S25 --> S3["Step 3 — run-scan.sh (single command)<br/>Fortify + DS + Secrets parallel · GTCS sequential · resolve-jq.sh · container-target.sh"]
-    S3 --> NP["normalize.py → findings.triaged.json<br/>verification_status per finding · coverage findings · severity gate"]
+    S25 --> S3["Step 3 — run-scan.sh (single command)<br/>resolve-image.sh per category · Fortify + DS + Secrets parallel<br/>SBOM → offline Trivy match · GTCS sequential · container-target.sh"]
+    S3 --> NP["normalize.py → findings.triaged.json<br/>(check-remediation.py between two passes when a mirror is configured)<br/>verification_status + remediation_status · coverage findings · severity gate"]
     NP --> Q{"exit 0?"}
     Q -->|"yes"| DONE["all clear"]
     Q -->|"no"| S4["Step 4 — review findings.triaged.json<br/>severity · scanner · location · verification_status · triage_reason"]
@@ -58,20 +75,39 @@ logic ships with the skill, not baked into images.
 ## Component resolution (Step 2.5)
 
 `load-prefs.sh` emits `ENABLED_COMPONENTS` as space-separated
-**`component|version|runner|image`** tuples. For each tuple, `catalog.sh` resolves the
-component against the active profile's `gitlab_instance` — live on every run — and
-caches `template.yml`, `README.md`, and `AGENTS.md` per resolved tag. The catalog is
-**advisory**: the image that actually runs is always the admin-pinned `image:` from
-config; resolution exists to surface the component's usage docs and to warn when the
-pinned world drifts from the catalog.
+**`component|version|runner|image|category`** tuples (`image` is usually empty; the
+category is last so the three fields every consumer already read kept their
+positions). For each tuple, `catalog.sh` resolves the component against the active
+profile's `gitlab_instance` — live on every run — and caches `template.yml`,
+`README.md`, and `AGENTS.md` per resolved tag.
 
-Drift is checked two ways. **Image drift** compares the component's effective job image
-(resolving `$[[ inputs.X ]]` against declared defaults) with the configured `image:`.
+**The component decides which image runs.** Under the default
+`image_policy: follow-component`, `run-scan.sh` asks `catalog.sh template-image` for
+the component's effective job image at the resolved tag and hands it to
+`resolve-image.sh`, which applies one rule: the component is the authority on the
+analyzer *version* it was tested against, and the admin config is the authority on
+*where images are pulled from*. So with no `image:` the template's ref is used whole;
+with an `image:` the configured registry/path is kept and only the template's tag
+crosses over — taking the template's ref wholesale would send an airgapped run to
+`registry.gitlab.com`. The candidate is pulled once, which is both the availability
+check and the warm-up for the scan. A miss falls back to `image:` when there is one,
+and stops the scan when there is not: guessing a registry runs an unknown image, and
+skipping the scanner reports a clean category that never ran. `pinned` uses `image:`
+verbatim with no adoption and no pull. Full matrix:
+[`config/PREFERENCES.md`](../config/PREFERENCES.md#image--optional-and-this-is-the-only-description-of-it).
+
+Drift is still checked two ways. **Image drift** compares the component's effective
+job image (resolving `$[[ inputs.X ]]` against declared defaults) with a configured
+`image:` — silent when none is declared, which is now the shipped state.
 **Contract drift** diffs the component's declared inputs, permitted `options:` and
 report artifacts against the checked-in `scanners/<runner>.contract`, so a new input or
 option cannot land unnoticed — regenerate with `catalog.sh contract`. `template.yml` is
 the only machine source of truth; `AGENTS.md` is cached for guidance but its prose lags
 the template.
+
+Deriving the image means the vendored snapshots are load-bearing, not just a fallback:
+snapshots vendored from gitlab.com name gitlab.com's registry. Re-vendor from your own
+instance before rollout — [`MIGRATION.md`](../MIGRATION.md) "Re-vendor".
 
 ```mermaid
 sequenceDiagram
@@ -118,25 +154,29 @@ touch. Full schema and switching guide: [`config/PREFERENCES.md`](../config/PREF
 | `settings.jq.*` | host jq preferred; optional `install_url`; degrades to UNKNOWN severity summary |
 | `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
 | `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — severity threshold for the gate. Incomplete coverage fails the gate at every level except `none`, which is report-only |
-| `settings.image_policy` | `follow-component` (default) \| `pinned`. Under `follow-component` the effective image takes its **registry/path** from the category's `image:` and its **tag** from the component template at the resolved tag, so component upgrades are adopted without config edits and without pulling from a public registry. The candidate is pulled as an availability check; a mirror that lacks the tag falls back to `image:` with an actionable warning. See `scripts/resolve-image.sh` |
+| `settings.image_policy` | `follow-component` (default) \| `pinned` — see "Component resolution" above and `scripts/resolve-image.sh` |
+| `settings.ca_bundle` | host path to an internal CA PEM, mounted into every scanner and exported inside it as `ADDITIONAL_CA_CERT_BUNDLE`. Empty = nothing mounted |
+| `settings.pip_index_url` / `settings.maven_settings` | where the DS analyzer resolves packages from while building the SBOM; its own defaults (public PyPI, `./settings.xml`) hang on an airgapped host. Exported as `APPSEC_PIP_INDEX_URL` and `MAVEN_ARGS="-s …"` |
+| `settings.package_registries.*` | URL templates probed before the fix loop to decide whether a suggested upgrade is obtainable here. All empty = probe disabled |
+| `settings.container_registry.base_repo` | ref template asking whether a Dockerfile `FROM` image is in the registry; `absent` ⇒ `blocked_registry_gap` |
+| `settings.container_registry.hardened_repo` | ref template, **suggestion only** — a hardened image is a different image, so it never sets a status and the fix loop never applies it |
 | `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT for the **GitLab API only** — unrelated to image pulls. Ships `GITLAB_READ_TOKEN` because the lobster-thermidor catalogue is private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Settable per profile (next to `gitlab_instance`) so gitlab.com can require a PAT while an internal instance reads anonymously. Preflight requires the named var whenever one is named. Setup: [MIGRATION.md step 0](../MIGRATION.md) |
 | `settings.container_registry.*` | env var *names* for **image registry** credentials used by GTCS. Leave the vars unset for an anonymous-pull registry |
 
 Two profiles (`APPSEC_PROFILE` overrides `default_profile`):
 
 - **`catalog`** (default) — `https://gitlab.com`, the four lobster-thermidor components,
-  images from the catalogue's registries.
+  images derived from those components' templates.
 - **`company`** — internal-mirror placeholder: same component names on the internal
-  GitLab instance, images from the internal JFrog. This is the airgap-safe profile.
+  GitLab instance. This is the airgap-safe profile.
 
-Each category block is five keys:
+Each category block is three keys; `image:` and `runner:` are optional overrides
+neither shipped profile uses:
 
 ```yaml
 sast:
   component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
   version: "~latest"       # or an exact tag, e.g. "25.2.0"
-  image: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review
-  runner: fortify-sast.sh
   enabled: true
 ```
 
@@ -145,10 +185,8 @@ sast:
 - **`~latest`** (shipped default) — resolve the highest stable tag on every run.
 - **exact tag** — reproducible resolution; `catalog.sh` prints
   `ADVISORY: <component> pinned <X>, newer stable <Y> available` when the catalog moves,
-  so pins never rot silently.
-
-`image:` stays independently pinned — bump it when a DRIFT/ADVISORY line says the
-component moved and you have mirrored the new image.
+  so pins never rot silently. It also pins the image, because the image is derived from
+  the template at that tag.
 
 ## Findings model
 
@@ -160,19 +198,84 @@ component moved and you have mirrored the new image.
 
 **`verification_status` values:** `confirmed_true_positive` | `likely_false_positive` | `not_fixable_locally` | `needs_human_review`
 
+**`remediation_status` values:** `fixable_candidate` | `blocked_registry_gap` | `blocked_external_dependency` | `needs_user_decision` | `parser_or_report_fix_required` | `unassessed`
+
 **FP-fails-gate:** `likely_false_positive` findings still count toward the severity gate — they must be dismissed in GitLab's Vulnerability Report, not silently dropped. **Coverage findings:** a selected scanner that produces no report generates a HIGH-severity coverage finding (HAS_MISSING_REPORT semantics — the result is NOT an all-clear). The model may override a `verification_status` with explicit reasoning.
+
+The summary prints two counters. `TOTAL C+H` is every critical and high finding;
+`ACTIONABLE C+H` excludes the ones nothing local can act on (`blocked_registry_gap`,
+`blocked_external_dependency`). The fix loop's progress guard runs on **ACTIONABLE**:
+counting blocked findings would make an iteration that fixed everything fixable look
+like no progress, and abort a loop that was working.
+
+### Dependency scanning has a hard local ceiling
+
+Run locally, GitLab Dependency Scanning emits a CycloneDX SBOM and nothing else. The
+matching happens server-side behind an API that accepts only a real `CI_JOB_TOKEN`, so
+**no** local runner can produce GitLab-matched dependency vulnerabilities — not this
+skill, not `glci`, not `gitlab-ci-local`, not `gitlab-runner exec`. This is recorded
+here so it is not re-investigated: the blocker is the token, not the runner.
+
+An SBOM alone normalizes to zero findings, which reads as "scanned, clean". So
+`scanners/sbom-vuln-scan.sh` runs the Trivy bundled in the *container-scanning* image
+(the DS image ships no scanner) against that image's baked advisory DB — no network,
+`--skip-db-update`, one report per SBOM. **Those findings are Trivy's, not GitLab's.**
+Different advisory source, so they will not match the post-push Vulnerability Report in
+content or in count; the skill's promise of CI fidelity holds for the other three
+categories, and this one must always be presented as the pre-push triage signal it is.
+It exists because triage and the fix loop need a real `fixed_version` to work with.
+If the pass cannot run, the category is recorded as a coverage skip — never as clean.
+
+### Remediation reachability (before the fix loop)
+
+`check-remediation.py` runs between two `normalize.py` passes and asks whether a
+proposed fix is obtainable in this estate, writing `registry-availability.json` that
+the second pass folds into `remediation_status`:
+
+- **Packages** — `resolve-package.sh` probes the `package_registries` URL template for
+  each `(ecosystem, package, fixed_version)`. `absent` ⇒ `blocked_registry_gap`.
+- **Base images** — `container-target.sh` parses the Dockerfile's `FROM` lines into
+  `base-images.json`; `resolve-base-image.sh` asks `container_registry.base_repo`
+  whether each is carried. `absent` ⇒ the container findings become
+  `blocked_registry_gap` too, since their only fix is a rebuild on a newer base.
+- **Hardened images** — probed against `hardened_repo` into separate keys that no
+  status decision reads. Suggestion only.
+
+`unknown` — unreachable registry, auth failure, 5xx, no template, no runtime — changes
+nothing, ever. Unreachable is not evidence of absence, and a wrong `absent` invents
+mirroring work for the platform team. Blocked findings are skipped by the fix loop
+(they cannot succeed) and batched into TRIAGE.md §3b as one mirroring request.
+
+The whole probe is gated on `package_registries` containing at least one URL, so an
+estate that configures only `base_repo` gets no probing.
 
 For the internet → airgapped platform migration runbook, see [`MIGRATION.md`](../MIGRATION.md).
 
 ## Network and airgap policy
 
-- `scripts/catalog.sh` is the **only** network path in the skill, and it only talks to
-  the active profile's `gitlab_instance`. No WebFetch, no other hosts.
-- Fully offline operation: automatic fallback to vendored snapshots on any network failure
-  falls back to the vendored snapshots under
-  `reference/catalog/lobster-thermidor/devops/ci-catalogue/<name>/<name>/<tag>/`.
-- Scanner images are admin-pinned refs; in airgapped environments they point at the
-  internal mirror (see the mirror table in the repo-root README).
+Every network call is to a host named in `scanner-preferences.yaml` or in the component
+template it resolved. No WebFetch, no discovery, no other hosts:
+
+| Path | Talks to |
+|---|---|
+| `scripts/catalog.sh` | the active profile's `gitlab_instance` (catalog metadata only) |
+| `$RUNTIME pull` in `run-scan.sh` / `resolve-image.sh` | the scanner image registry |
+| `scripts/resolve-package.sh` | `settings.package_registries.*` templates |
+| `scripts/resolve-base-image.sh` | `settings.container_registry.base_repo` / `hardened_repo` |
+| `resolve-jq.sh` / `resolve-python.sh` | `settings.jq.install_url` / `settings.python.install_url` |
+
+Everything else is offline by construction: catalog resolution falls back to the
+vendored snapshots under
+`reference/catalog/lobster-thermidor/devops/ci-catalogue/<name>/<name>/<tag>/`, the
+container archive scan and the SBOM match both use advisory DBs baked into the analyzer
+image, and every probe degrades to `unknown` rather than reaching further.
+
+Airgap plumbing lives in `settings:` — `ca_bundle` (mounted, exported as
+`ADDITIONAL_CA_CERT_BUNDLE`), `pip_index_url` and `maven_settings` (so the DS analyzer
+resolves from the internal mirror instead of hanging on public PyPI). Each is a **host**
+path or URL that `run-scan.sh` mounts before use; handing a host path straight to a
+container points the tool at a file that is not there, and that failure reads like a
+broken mirror rather than a missing mount.
 
 ## Findings, fix loop, and triage
 
@@ -219,15 +322,19 @@ appsec-scan/
 ├── MIGRATION.md           internet → airgapped platform runbook
 ├── scripts/               host-side helpers — bash 3.2 / POSIX awk safe
 │   ├── load-prefs.sh      YAML → eval-ready env; the model never parses YAML
-│   ├── catalog.sh         resolve / check-drift / contract / self-test
+│   ├── catalog.sh         resolve / check-drift / contract / template-image / self-test
 │   ├── detect-runtime.sh  docker | podman
 │   ├── resolve-jq.sh      jq from PATH or configured URL, else degrade
 │   ├── resolve-python.sh  python3 from PATH or configured URL, else degrade
-│   ├── container-target.sh  what GTCS scans: registry | archive | none
+│   ├── resolve-image.sh   which image runs: component template + policy + image:
+│   ├── container-target.sh  what GTCS scans: registry | archive | none; writes base-images.json
 │   ├── resolve-components.sh  Step 2.5: resolve every enabled component + drift table
 │   ├── revendor.sh        refresh reference/catalog/ + contracts from a live instance
 │   ├── run-scan.sh        scan orchestrator: invokes all scanners, calls normalize.py
 │   ├── fix-branch.sh      fix-loop guard: --init and --check-progress
+│   ├── resolve-package.sh    is this package version in our mirror? available|absent|unknown
+│   ├── resolve-base-image.sh is this base image in our registry? same three verdicts
+│   ├── check-remediation.py  drives both probes → registry-availability.json
 │   └── normalize.py       raw reports → findings.triaged.json (verification statuses)
 ├── scanners/              run INSIDE Linux analyzer containers (mounted at /runner.sh)
 │   ├── preflight.sh
@@ -235,6 +342,7 @@ appsec-scan/
 │   ├── *.contract         per-runner snapshot of the component's declared inputs and
 │   │                      reports; check-drift diffs the live component against it
 │   ├── gitlab-dependency-scanning.sh
+│   ├── sbom-vuln-scan.sh  offline Trivy match of the DS SBOM (Trivy's advisories, not GitLab's)
 │   ├── secret-detection.sh
 │   └── gitlab-container-scanning.sh
 ├── reference/catalog/…    vendored component snapshots (template.yml + README.md + AGENTS.md)
@@ -265,11 +373,13 @@ The editable source is [`architecture.drawio`](architecture.drawio)
 
 1. Edit the category's `version:` in `config/scanner-preferences.yaml` (exact tag or
    back to `~latest`).
-2. If the component's default image moved (DRIFT/ADVISORY line), mirror the new image
-   and bump the category's `image:`.
-3. Refresh the vendored snapshot — UPDATE-GUIDE.md "Refresh catalog snapshots":
-   `catalog.sh resolve <instance> <component> <version> <cache>` then copy
-   `template.yml`, `README.md`, `AGENTS.md` into `reference/catalog/…/<tag>/`.
+2. Mirror the image the new tag declares — `catalog.sh template-image <component>
+   <cache>` prints it. Under `follow-component` that ref is adopted automatically; the
+   run pulls it first and names it if your registry does not carry it yet. Bump
+   `image:` only for a category that declares one.
+3. Refresh the vendored snapshot — `bash scripts/revendor.sh <instance> [token_env]`
+   (UPDATE-GUIDE.md Scenario 6). This is not optional now that the image is derived
+   from the snapshot's `template.yml`.
 4. Regenerate the runner's `.contract` (UPDATE-GUIDE.md Scenario 6) — otherwise the
    next run reports CONTRACT-DRIFT, or worse, a new input lands unnoticed.
 5. Update the runner's `# Last synced :` header if its logic was reviewed against the

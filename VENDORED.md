@@ -105,7 +105,7 @@ The following skills were authored by the Platform Team and are not vendored fro
 
 | Skill | Added on | Notes |
 |---|---|---|
-| `appsec-scan` | 2026-05-20 | Container-based CI-mirror: 4 components from lobster-thermidor/devops/ci-catalogue (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning). Refactored to v3.0.0 on 2026-07-15 (removed Parasoft, Pylint, ESLint, Scantist, Trivy, GitLab Semgrep SAST). Vendored catalog snapshots: see section below. |
+| `appsec-scan` | 2026-05-20 | Container-based CI-mirror: 4 components from lobster-thermidor/devops/ci-catalogue (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning). Refactored to v3.0.0 on 2026-07-15 (removed Parasoft, Pylint, ESLint, Scantist, Trivy, GitLab Semgrep SAST). **v3.3.0 (2026-08-08)** makes `image:`/`runner:` optional and derives the scanner image from the component template — the vendored snapshots below are now load-bearing, not just an offline fallback. Vendored catalog snapshots: see section below. |
 | `appsec-dast-sim` | 2026-05-20 | LLM-based DAST following WSTG v4.2; no containers required; works at design time |
 | `lint-and-validate` | 2026-05-15 | Pre-commit gate: auto-fix formatters + linters + type checkers |
 | `api-design-principles` | 2026-05-15 | REST/GraphQL design enforcement, RFC 7807, versioning, pagination |
@@ -128,6 +128,21 @@ The `appsec-scan` skill vendors offline fallback snapshots of 4 GitLab CI/CD Cat
 Each snapshot includes `template.yml`, `README.md`, and `AGENTS.md`. Prior tag directories are kept; the resolver picks the highest. Refresh snapshots quarterly per UPDATE-GUIDE.md Scenario 6, and regenerate `plugins/appsec/skills/appsec-scan/scanners/*.contract` at the same time so component input/report drift keeps being detected.
 
 **Note:** `fortify-sast@25.2.0` was re-fetched on 2026-07-25. The earlier copy had been taken partly from HEAD and predated the component's registry move — it still named `…/ci-catalogue/fortify-sast/` for scanner images, whereas the tag now declares `…/ci-catalogue/docker-images/`. The `fortify-sast` project has no container registry of its own; all images live in the `docker-images` project.
+
+**Since v3.3.0 these snapshots decide which image runs**, not just what the offline fallback says: with `image:` omitted (how both profiles now ship), `catalog.sh template-image` reads the scanner image out of `template.yml`. A snapshot vendored from gitlab.com therefore names gitlab.com's registry — an airgapped estate must re-vendor from its own instance (`scripts/revendor.sh`) before rollout. `revendor.sh` refuses to vendor a component that resolved `[offline-fallback]`, so a stale snapshot cannot confirm itself.
+
+### appsec-scan: catalogue components deliberately NOT covered
+
+Four more components exist in `lobster-thermidor/devops/ci-catalogue`. Recording the status here so it is not re-derived each time someone notices the gap:
+
+| Component | Status | Reason |
+|---|---|---|
+| `dast` | **Declined** | Needs a deployed, running, authenticated target — a URL plus login selectors or a Playwright script. A pre-push scan of a working tree has nothing to point it at. |
+| `api-security` | **Declined** | Same blocker, harder: `target-url` is a mandatory input. |
+| `sgx` (Semgrep Extended SAST) | Not covered | No decision recorded — open if a team asks for it. |
+| `srm-report-upload` | Not covered | Uploads results to SRM. appsec-scan is scan-only by design: nothing leaves `.appsec-results/`. The `fortify-sast` component includes it for its own CI upload job. |
+
+The design-time intent behind `dast` / `api-security` is already served by the `appsec-dast-sim` skill, which reads the codebase instead of probing a deployment. Both remain the right tool **in CI**, after a deploy job. See [`plugins/appsec/skills/appsec-scan/docs/ARCHITECTURE.md`](plugins/appsec/skills/appsec-scan/docs/ARCHITECTURE.md#catalogue-components-this-skill-does-not-cover).
 
 ---
 

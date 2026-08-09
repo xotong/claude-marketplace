@@ -169,10 +169,25 @@ class SkillDocTokenBudgetTest(unittest.TestCase):
         # TRIAGE.md needs the batched mirroring table. Both are load-bearing --
         # without the skip the loop spends its 5-iteration budget on upgrades the
         # mirror cannot serve.
+        #
+        # Raised again from 320/17000 in 2026-08 for §3b's base-image table and
+        # the hardened-image suggestion block. The warning about what a hardened
+        # image actually is (different libc, no shell, non-root UID) is the whole
+        # point of that block -- without it a reader treats a suggestion as an
+        # upgrade and swaps a base image that cannot run the build.
+        #
+        # Raised from 17400 in 2026-08 for the Step 3 branching rule. `fail_on:
+        # none` is documented as always exit 0, so at that threshold the exit
+        # code carries NO coverage information: branching on it alone let the
+        # skill report "done" over a scanner that never ran. Reading
+        # coverage_complete is the only thing standing between that config and a
+        # false all-clear, so the rule has to be in the file the model reads.
+        # Paid for by deduplicating three restatements of "not an all-clear"
+        # down to one; the remaining budget is deliberately tight.
         lines = SKILL_TEXT.splitlines()
 
-        self.assertLessEqual(len(lines), 320)
-        self.assertLessEqual(len(SKILL_TEXT), 17000)
+        self.assertLessEqual(len(lines), 330)
+        self.assertLessEqual(len(SKILL_TEXT), 17600)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):

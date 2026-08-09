@@ -5,6 +5,143 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.3.0] — 2026-08-08
+
+### Changed — BREAKING
+
+- **`image:` and `runner:` are now optional, and the component decides the image.**
+  `settings.image_policy: follow-component` (the new default) resolves the analyzer
+  image from the component template at the resolved tag via `scripts/resolve-image.sh`:
+  with no `image:` the template's ref is used whole; with one, `image:` supplies the
+  registry and path and the template supplies the tag, so a component bump reaches an
+  airgapped estate without editing config and without ever pulling from a public
+  registry. `image_policy: pinned` keeps the old verbatim behaviour. `runner:` defaults
+  to the category's shipped runner. Both shipped profiles now declare only
+  `component` + `version` + `enabled`
+- Migration: nothing breaks for a config that still declares `image:` — under
+  `follow-component` it becomes the registry/path and the fallback when a tag is not
+  mirrored. To keep byte-identical refs, set `settings.image_policy: pinned`. **Deriving
+  the image makes the vendored snapshots load-bearing:** snapshots taken from gitlab.com
+  name gitlab.com's registry, so re-vendor from your own instance before rollout
+  (`scripts/revendor.sh`, MIGRATION.md "Re-vendor")
+- The candidate image is pulled once as an availability check, which also warms the
+  cache the scan is about to use. A mirror that lacks the tag falls back to `image:`
+  with the exact ref to mirror; with nothing to fall back to, the scan **stops** — a
+  scanner whose image cannot be determined must never be silently skipped
+- `ENABLED_COMPONENTS` tuples gained a fifth field: `component|version|runner|image|category`
+- The fix loop's progress guard now compares `ACTIONABLE C+H`, not `TOTAL C+H`
+
+### Added
+
+- `catalog.sh template-image <component> <cache>` — prints the component's effective job
+  image, expanding `$[[ inputs.x ]]`, `$VAR` and `${VAR}` against the template's own
+  `spec.inputs` defaults and `variables:` blocks (dependency-scanning builds its ref that
+  way). Prints nothing rather than guessing when a variable is undeclared
+- **Offline dependency vulnerability matching** (`scanners/sbom-vuln-scan.sh`). Locally,
+  Dependency Scanning emits only an SBOM — GitLab matches it server-side behind an API
+  that accepts nothing but a real `CI_JOB_TOKEN`, so no local runner (this skill, `glci`,
+  `gitlab-ci-local`, `gitlab-runner exec`) can reproduce those results. An SBOM alone
+  normalizes to zero findings and reads as "scanned, clean", so the SBOM is now matched
+  against the advisory DB baked into the container-scanning image using its bundled
+  Trivy. **Those findings are Trivy's, not GitLab's** — a different advisory source that
+  will not match the post-push Vulnerability Report in content or count. Documented
+  everywhere it surfaces as a pre-push triage signal, never as a CI prediction. If the
+  pass cannot run, dependency scanning is recorded as a coverage skip, not as clean
+- **Remediation reachability probe before the fix loop** (`scripts/check-remediation.py`,
+  `resolve-package.sh`, `settings.package_registries`). Each suggested upgrade is checked
+  against the internal mirror; `absent` ⇒ `remediation_status: blocked_registry_gap`,
+  which the fix loop skips and TRIAGE.md §3b batches into one mirroring request. `unknown`
+  (unreachable, auth failure, 5xx, no template) changes nothing — a registry we could not
+  reach is not evidence a package is missing
+- **Base-image availability probe** (`scripts/resolve-base-image.sh`,
+  `settings.container_registry.base_repo`). `container-target.sh` now parses the
+  Dockerfile's `FROM` lines into `base-images.json` — resolving `ARG` defaults, build
+  stages and `scratch` — and each base image is probed. `absent` routes container findings
+  to `blocked_registry_gap` with the image to mirror, instead of the generic "no fixed
+  version" dead end
+- `settings.container_registry.hardened_repo` — **suggestion only**. Verdicts are filed
+  under keys no status decision reads, and the fix loop must never apply one: a hardened
+  image is a different image (libc, no shell, non-root UID), so a human decides
+- Airgap plumbing in `settings:` — `ca_bundle` (mounted read-only, exported inside each
+  scanner as `ADDITIONAL_CA_CERT_BUNDLE`), `pip_index_url` and `maven_settings`, because
+  the dependency analyzer's own defaults (public PyPI, `./settings.xml`) hang on an
+  airgapped host and report a broken SBOM rather than a resolution failure
+- `CS_DOCKERFILE_PATH` is exported in registry mode when a Dockerfile is present. The
+  component declares that input; nothing set it locally, so GTCS's own base-image
+  remediation never ran
+- `ACTIONABLE C+H` in the summary — critical+high minus what nothing local can act on
+- Fortify **go** support: the `go)` arm mirrors the component's go job (`go mod download`
+  then `sourceanalyzer -debug-verbose`), `run-scan.sh` detects `go.mod`, and
+  `FORTIFY_LANGUAGE=go` is documented in SKILL.md's description and prerequisites — the
+  model could not select a language SKILL.md never named
+- SAST findings now carry `evidence.solution`, joined from the FVDL `<Description
+  classID>` blocks. Fortify keeps its guidance there, not on the vulnerability elements,
+  so every SAST finding previously reached the developer with no remediation text
+- Step 0 scan-scope routing in SKILL.md: keyword → `SCAN_SCOPE`, an `AskUserQuestion`
+  picker labelled in plain language when the request is ambiguous, and `--only` wired
+  through. A scoped run still expects full coverage, so it can never read as an all-clear
+- `ci/check-appsec-drift.py` + a `check-appsec-drift` CI job: compares every runner
+  against the vendored snapshots fully offline (no token, no network) and **blocks on
+  `CONTRACT-DRIFT`**. Image and 90-day staleness DRIFT stay advisory
+- Trivy ecosystem mapping (`node-pkg` → npm, `jar` → maven, …) so a probe knows which
+  registry to ask
+
+### Fixed
+
+- **`run-scan.sh` resolved images from a hardcoded component table.** An admin who
+  repointed `component:` still had the image derived from the OLD component, and silently:
+  the vendored snapshot for the hardcoded path yields
+  `registry.gitlab.com/security-products/container-scanning:8.6.31`, which pulls fine on
+  an internet-connected host — so the scan ran the PUBLIC analyzer instead of the
+  configured internal mirror with nothing saying so. Component paths now come from
+  `ENABLED_COMPONENTS`
+- **`--dry-run` was dead on both shipped profiles.** With no `image:` it tried to pull the
+  candidate for real, which a dry run must not do; resolution now runs in `no-pull` mode
+- **Two silent false-PASSED paths in `load-prefs.sh`.** A comment on the same line as a
+  key (`enabled: true  # on`) and a CRLF line ending both made `enabled: true` parse as
+  something else, dropping the scanner from the run with no warning — the same false
+  all-clear class as 3.2.0's four
+- **Phantom HIGH findings from our own bookkeeping.** `registry-availability.json` and
+  `base-images.json` live in `.appsec-results/`, so `normalize.py` parsed them as scanner
+  reports, failed, and raised an "unsupported report schema" HIGH that failed the gate on
+  its own
+- Redaction mangled `evidence.manifest` and `evidence.package`, destroying the ecosystem
+  signal the mirror probe needs — an unavailable upgrade could never be marked blocked.
+  Those two are tool-derived, never scanner-captured, and now join `why` as protected
+- Container findings could never reach the base-image gap: `blocked_external_dependency`
+  swallowed every one of them first, because container findings routinely arrive with no
+  `fixed_version`. The more specific — and only actionable — verdict now wins
+- Trivy reports written for a dependency SBOM were categorised as container scanning and
+  given an `image` location; they now take their category from the report name and a
+  `package` location
+- `container-target.sh` only looked for a Dockerfile when `CS_IMAGE` was unset, so
+  registry-mode runs never produced `base-images.json`
+- `resolve-package.sh`: expanding a possibly-empty array under `set -u` aborted on bash
+  3.2 (macOS), and Go module paths were not `!`-escaped for GOPROXY, so every uppercase
+  module probed as absent
+- The CI drift gate silently checked **zero** components once `runner:` became optional:
+  it skipped every category whose config omitted one, so a green pipeline meant nothing.
+  It now applies the same default-runner mapping `load-prefs.sh` uses, with a regression
+  test that parses that Bash function and compares the two maps
+
+### Documentation
+
+- Every document reconciled against actual behaviour. `image:` now has exactly one
+  description (PREFERENCES.md "Per-category settings"); SKILL.md, PREFERENCES.md and
+  ARCHITECTURE.md no longer claim the pinned image runs and the catalog is advisory
+- MIGRATION.md step 1 derives the refs to mirror from `catalog.sh template-image` instead
+  of from a profile that no longer declares any; the `mode: online` precondition removed
+  (that setting went in 3.2.0); step 4 gained the airgap and probe settings
+- UPDATE-GUIDE.md: Scenario 3 rewritten (a retag usually needs no config change), the
+  `go` worked example marked done, budget numbers corrected to 330 lines / 17,400
+  characters, and two commands that fail as written fixed (`RUN_GITLAB_SAST_SMOKE`, and
+  `sh /runner.sh` for a `#!/usr/bin/env sh` runner)
+- `CI_PROJECT_URL` dropped from SKILL.md's prerequisites — nothing reads it
+- Recorded in ARCHITECTURE.md: the four catalogue components this skill does not cover,
+  and why `dast` and `api-security` are **declined** rather than pending (both need a
+  deployed, running, authenticated target that a working-tree scan cannot provide;
+  `appsec-dast-sim` covers the design-time intent)
+
 ## [3.2.0] — 2026-07-25
 
 ### Added
