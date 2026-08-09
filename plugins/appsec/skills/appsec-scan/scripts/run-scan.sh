@@ -6,6 +6,7 @@ DRY_RUN=false
 RAN_CATEGORIES=
 EXECUTED_CATEGORIES=
 DS_RAN=false
+DS_FAILED=false
 SKIPPED_IMAGE_SCANNERS=
 
 info() { printf 'INFO: %s\n' "$*" >&2; }
@@ -268,6 +269,77 @@ GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-}"
 CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
 
+# --- airgap plumbing (settings.ca_bundle / maven_settings / pip_index_url) ----
+# These are HOST paths and a HOST url. Passing a host path straight into a
+# container points the tool at a file that is not there, and the failure reads
+# like a broken mirror or a network outage rather than a missing mount — the
+# expensive kind of misdiagnosis. So each one is mounted first, and the value
+# handed to the scanner is the IN-CONTAINER path.
+# Empty config value (the shipped default) = nothing mounted, nothing exported.
+host_path() {
+  # docker/podman -v refuses a relative source; config paths may be relative.
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *)  printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+
+CA_ARGS=()
+if [ -n "${CA_BUNDLE:-}" ]; then
+  ca_host_path=$(host_path "$CA_BUNDLE")
+  if [ -r "$ca_host_path" ]; then
+    CA_ARGS=(-v "$ca_host_path:/appsec/ca-bundle.pem:ro"
+             -e ADDITIONAL_CA_CERT_BUNDLE=/appsec/ca-bundle.pem)
+  else
+    warning "settings.ca_bundle points at $CA_BUNDLE, which is not readable here;"
+    warning "  scanners will run without it and TLS to internal hosts may fail."
+  fi
+fi
+
+# MAVEN_SETTINGS keeps its legacy meaning (a path the container can already see)
+# whenever the value does not name a readable file on this host.
+MAVEN_MOUNT_ARGS=()
+MAVEN_SETTINGS_PATH="${MAVEN_SETTINGS:-}"
+if [ -n "$MAVEN_SETTINGS_PATH" ]; then
+  maven_host_path=$(host_path "$MAVEN_SETTINGS_PATH")
+  if [ -r "$maven_host_path" ]; then
+    MAVEN_MOUNT_ARGS=(-v "$maven_host_path:/appsec/maven-settings.xml:ro")
+    MAVEN_SETTINGS_PATH=/appsec/maven-settings.xml
+  fi
+fi
+
+# Dependency-resolution inputs the analyzer reads from the environment. The
+# component's own defaults (pypi.org, ./settings.xml) only work with public
+# internet, so an airgapped run hangs on PyPI and reports a broken SBOM.
+DS_AIRGAP_ARGS=()
+if [ -n "${APPSEC_PIP_INDEX_URL:-}" ]; then
+  DS_AIRGAP_ARGS=(-e PIP_INDEX_URL="$APPSEC_PIP_INDEX_URL")
+fi
+if [ -n "$MAVEN_SETTINGS_PATH" ]; then
+  # Same shape the component exports: MAVEN_ARGS="-s <settings path>".
+  DS_AIRGAP_ARGS+=(-e MAVEN_ARGS="-s $MAVEN_SETTINGS_PATH")
+fi
+
+# Workspace-relative path of the Dockerfile, for CS_DOCKERFILE_PATH.
+# ponytail: this repeats container-target.sh's discovery order because that
+# script only prints "mode|value"; when it may be edited, have it report the
+# Dockerfile it found and delete this.
+find_dockerfile() {
+  if [ -n "${DOCKERFILE:-}" ] && [ -f "${DOCKERFILE}" ]; then
+    printf '%s' "${DOCKERFILE}"
+  elif [ -f ./Dockerfile ]; then
+    printf 'Dockerfile'
+  else
+    find . -maxdepth 3 \
+      -type d \( -name '.git' -o -name 'node_modules' \) -prune -o \
+      -type f \( -name 'Dockerfile' -o -name '*.Dockerfile' \) -print 2>/dev/null |
+      while IFS= read -r match; do
+        printf '%s' "$match"
+        break
+      done
+  fi
+}
+
 mkdir -p .appsec-results
 # Self-ignoring output dir: the "add .appsec-results/ to .gitignore"
 # reminder enforces nothing, and this directory holds the raw secret
@@ -282,40 +354,141 @@ record_skip() {
   printf '%s\t%s\n' "$1" "$2" >>"$SKIPS_FILE"
 }
 
+# clear_stale_reports <category>: delete the PREVIOUS run's reports for a
+# category this run is going to attempt (see the single caller below).
+#
+# Every scanner runner already rm's its own outputs — but from INSIDE the
+# container, so that cleanup never happens when the container fails to start
+# (bad image, no daemon, OOM, killed by the watchdog). Run N-1's clean report
+# then stayed on disk and normalize.py counted the category as scanned and
+# clean: a false all-clear for a scan that never ran. Doing the same rm on the
+# host closes that window with no new state or file format — the report's
+# presence keeps its plain meaning, "this run produced it".
+#
+# Only the category being re-run is cleared. A `--only <category>` rescan
+# deliberately relies on the other categories' reports persisting from the
+# previous full run, so a blanket wipe of .appsec-results would turn every
+# scoped rescan into three fresh coverage gaps — a false alarm on every clean
+# fix-loop iteration.
+clear_stale_reports() {
+  # A dry run plans; it must never delete the last real scan's results.
+  if $DRY_RUN; then return 0; fi
+  case "$1" in
+    sast)
+      rm -f .appsec-results/fortify-sast.fpr
+      ;;
+    dependency_scanning)
+      # dependency-sbom-scan-*.json is derived from these SBOMs and counts as
+      # dependency evidence too, so it goes with them.
+      rm -f .appsec-results/gl-sbom-*.cdx.json \
+            .appsec-results/gl-dependency-scanning-report.json \
+            .appsec-results/dependency-sbom-scan-*.json
+      ;;
+    secret_detection)
+      rm -f .appsec-results/gl-secret-detection-report.json
+      ;;
+    container_scanning)
+      # NOT gl-sbom-*.cdx.json: GTCS writes the image SBOM under the same glob
+      # dependency scanning uses, and container scanning runs after DS in a full
+      # scan — clearing it here would delete this run's dependency evidence.
+      rm -f .appsec-results/gl-container-scanning-report.json \
+            .appsec-results/container-scan-archive.json
+      ;;
+  esac
+}
+
 # Resolve every enabled category's image BEFORE the missing-image checks below,
 # so a category that legitimately omits image: (deriving it from the component)
 # is not mistaken for one whose image was left unset by accident.
 #
-# Skipped under --dry-run: resolution pulls to verify availability, and a dry run
-# must not touch the network.
-if ! $DRY_RUN; then
-  for spec in \
-    "FORTIFY_SAST_IMAGE sast lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast RUN_FORTIFY_SAST" \
-    "GITLAB_DS_IMAGE dependency_scanning lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning RUN_GITLAB_DS" \
-    "SECRET_DETECTION_IMAGE secret_detection lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection RUN_SECRET_DETECTION" \
-    "GITLAB_CS_IMAGE container_scanning lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning RUN_GITLAB_CS"; do
-    # shellcheck disable=SC2086
-    set -- $spec
-    var=$1; cat_name=$2; comp=$3; run_flag=$4
-    eval "flag_value=\${$run_flag:-false}"
-    [ "$flag_value" = true ] || continue
-    selected "$cat_name" || continue
-
-    eval "configured=\${$var:-}"
-    tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
-      "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
-
-    if effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
-        "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}"); then
-      [ -n "$effective" ] && eval "$var=\$effective"
-    else
-      error "[$cat_name] could not resolve a scanner image; refusing to continue"
-      error "  A scanner whose image cannot be determined must not be silently skipped —"
-      error "  that would report a clean scan for a category that never ran."
-      exit 2
-    fi
-  done
+# template-image reads only local cache or vendored snapshots. During --dry-run,
+# resolve-image adopts the same candidate without pulling it from the registry.
+image_pull_mode=pull
+if $DRY_RUN; then
+  image_pull_mode=no-pull
 fi
+
+category_image_var() {
+  case "$1" in
+    sast) printf 'FORTIFY_SAST_IMAGE' ;;
+    dependency_scanning) printf 'GITLAB_DS_IMAGE' ;;
+    secret_detection) printf 'SECRET_DETECTION_IMAGE' ;;
+    container_scanning) printf 'GITLAB_CS_IMAGE' ;;
+  esac
+}
+
+category_run_flag() {
+  case "$1" in
+    sast) printf 'RUN_FORTIFY_SAST' ;;
+    dependency_scanning) printf 'RUN_GITLAB_DS' ;;
+    secret_detection) printf 'RUN_SECRET_DETECTION' ;;
+    container_scanning) printf 'RUN_GITLAB_CS' ;;
+  esac
+}
+
+category_scanner_name() {
+  case "$1" in
+    sast) printf 'Fortify SCA' ;;
+    dependency_scanning) printf 'GitLab DS' ;;
+    secret_detection) printf 'Secret Detection' ;;
+    container_scanning) printf 'GitLab CS' ;;
+  esac
+}
+
+# The component path comes from ENABLED_COMPONENTS (the admin's config), never
+# from a literal table here. The table this replaced hardcoded
+# lobster-thermidor/... paths, so an admin who repointed component: still had
+# their image resolved from the OLD component — and silently: catalog.sh falls
+# back to reference/catalog/<hardcoded path>, whose vendored snapshot yields
+# registry.gitlab.com/security-products/container-scanning:8.6.31. On an
+# internet-connected instance that pull SUCCEEDS, so the scan runs the PUBLIC
+# analyzer instead of the configured internal mirror and nothing says so.
+#
+# Word-splitting the tuple list is intentional and safe: this file is bash and
+# load-prefs.sh emits space-separated tuples with no spaces inside one.
+for tuple in ${ENABLED_COMPONENTS:-}; do
+  # component|version|runner|image|category — take the ends, skip the middle.
+  comp=${tuple%%|*}
+  rest=${tuple#*|}   # version|runner|image|category
+  rest=${rest#*|}    # runner|image|category
+  rest=${rest#*|}    # image|category
+  cat_name=${rest#*|}
+
+  var=$(category_image_var "$cat_name")
+  run_flag=$(category_run_flag "$cat_name")
+  if [ -z "$var" ] || [ -z "$run_flag" ]; then
+    warning "ignoring component $comp: unknown category '$cat_name'"
+    continue
+  fi
+
+  eval "flag_value=\${$run_flag:-false}"
+  [ "$flag_value" = true ] || continue
+  # container_scanning's image is not only a scanner here — it is also the TOOL
+  # that matches the dependency SBOM against its bundled advisory DB. So
+  # `--only dependency_scanning`, which is exactly the rescan SKILL.md's fix loop
+  # runs after fixing a dependency, still needs it resolved. Without this the
+  # match degraded every time and the rescan reported the dependency findings
+  # gone rather than fixed.
+  if ! selected "$cat_name"; then
+    { [ "$cat_name" = container_scanning ] && selected dependency_scanning; } || continue
+  fi
+
+  eval "configured=\${$var:-}"
+  tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
+    "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
+
+  if effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
+      "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}" \
+      "$image_pull_mode"); then
+    [ -n "$effective" ] && eval "$var=\$effective"
+  else
+    record_missing_image "$(category_scanner_name "$cat_name")" "$var" "$cat_name"
+    error "[$cat_name] could not resolve a scanner image; refusing to continue"
+    error "  A scanner whose image cannot be determined must not be silently skipped —"
+    error "  that would report a clean scan for a category that never ran."
+    exit 2
+  fi
+done
 
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -z "$FORTIFY_SAST_IMAGE" ]; then
   record_missing_image "Fortify SCA" FORTIFY_SAST_IMAGE sast
@@ -397,6 +570,19 @@ mkdir -p .appsec-results
 grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
   info ".appsec-results/ is self-ignoring (it contains its own .gitignore); no change to your repo's .gitignore is needed"
 
+# This run OWNS the results of every category it is about to attempt, so their
+# previous reports go now — before any precondition below can bail out. Doing it
+# here, once, rather than inside each scanner's launch path means no branch can
+# forget it: the paths that bail early (no Dockerfile, no supported language, not
+# a Git worktree) are exactly the ones a stale report used to survive.
+for stale_category in sast dependency_scanning secret_detection container_scanning; do
+  selected "$stale_category" || continue
+  stale_flag=$(category_run_flag "$stale_category")
+  eval "stale_enabled=\${$stale_flag:-false}"
+  [ "$stale_enabled" = true ] || continue
+  clear_stale_reports "$stale_category"
+done
+
 # ponytail: RUN_* values are data; only the literal string true enables a scanner.
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE" ]; then
   if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
@@ -417,16 +603,18 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
     if run_cmd "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
       if $DRY_RUN; then
-        print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="${MAVEN_SETTINGS:-}" -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+        print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
       else
         "$RUNTIME" run --rm \
           -v "$PWD:/workspace" \
           -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
+          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+          ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
           -w /workspace \
           -e APP_NAME="$APP_NAME" \
           -e SOURCE_PATH="$SOURCE_PATH" \
           -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" \
-          -e MAVEN_SETTINGS="${MAVEN_SETTINGS:-}" \
+          -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
           -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" \
           -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" \
           "${FORTIFY_SAST_IMAGE}" \
@@ -449,15 +637,18 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
   info "[GitLab DS] Pulling ${GITLAB_DS_IMAGE}..."
   if run_cmd "$RUNTIME" pull "${GITLAB_DS_IMAGE}"; then
     if $DRY_RUN; then
-      print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-dependency-scanning.sh:/runner.sh:ro" -w /workspace -e CI_PROJECT_DIR=/workspace -e GITLAB_FEATURES=dependency_scanning "${GITLAB_DS_IMAGE}" sh /runner.sh
+      print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-dependency-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GITLAB_FEATURES=dependency_scanning ${DS_AIRGAP_ARGS[@]+"${DS_AIRGAP_ARGS[@]}"} "${GITLAB_DS_IMAGE}" sh /runner.sh
     else
       "$RUNTIME" run --rm \
         --entrypoint "" \
         -v "$PWD:/workspace" \
         -v "$SCANNERS_DIR/gitlab-dependency-scanning.sh:/runner.sh:ro" \
+        ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+        ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
         -w /workspace \
         -e CI_PROJECT_DIR="/workspace" \
         -e GITLAB_FEATURES="dependency_scanning" \
+        ${DS_AIRGAP_ARGS[@]+"${DS_AIRGAP_ARGS[@]}"} \
         "${GITLAB_DS_IMAGE}" \
         sh /runner.sh > .appsec-results/gitlab-ds.log 2>&1 &
       GITLAB_DS_PID=$!
@@ -476,12 +667,13 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
   info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
   if run_cmd "$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"; then
     if $DRY_RUN; then
-      print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" -w /workspace -e CI_PROJECT_DIR=/workspace -e GIT_DEPTH="${GIT_DEPTH:-50}" -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" "${SECRET_DETECTION_IMAGE}" sh /runner.sh
+      print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GIT_DEPTH="${GIT_DEPTH:-50}" -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" "${SECRET_DETECTION_IMAGE}" sh /runner.sh
     else
       "$RUNTIME" run --rm \
         --entrypoint "" \
         -v "$PWD:/workspace" \
         -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" \
+        ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
         -w /workspace \
         -e CI_PROJECT_DIR="/workspace" \
         -e GIT_DEPTH="${GIT_DEPTH:-50}" \
@@ -501,6 +693,16 @@ elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
   record_skip secret_detection "Secret detection needs a Git worktree (it scans history), and this directory is not one — or its image is unset. Run the scan from inside the repository, then re-run this skill."
 fi
 
+# A glob, not `ls`. These hosts have a stripped PATH, and an `ls` that cannot be
+# resolved answers "no SBOM" to both callers below: the first invents a
+# lock-file gap that is not there, the second skips the vulnerability match with
+# nothing recording that it was skipped. A glob has nothing to fail — when
+# nothing matches, the pattern stays literal and -e finds it absent.
+sbom_present() {
+  set -- .appsec-results/gl-sbom-*.cdx.json
+  [ -e "$1" ]
+}
+
 if ! $DRY_RUN; then
   info "Waiting for parallel scanners..."
   for pid_var in FORTIFY_SAST_PID GITLAB_DS_PID SECRET_DETECTION_PID; do
@@ -510,10 +712,31 @@ if ! $DRY_RUN; then
         info "[${pid_var/_PID/}] Done"
       else
         rc=$?
+        # A scanner that failed produced no result for its category, so record
+        # the gap. Warning alone is prose no caller parses: the category still
+        # counted as covered, and whatever report happened to be on disk (run
+        # N-1's, before clear_stale_reports) was read as this run's clean result.
+        case "$pid_var" in
+          FORTIFY_SAST_PID)
+            failed_category=sast
+            failed_log=.appsec-results/fortify-sast.log
+            ;;
+          GITLAB_DS_PID)
+            failed_category=dependency_scanning
+            failed_log=.appsec-results/gitlab-ds.log
+            DS_FAILED=true
+            ;;
+          *)
+            failed_category=secret_detection
+            failed_log=.appsec-results/secret-detection.log
+            ;;
+        esac
         if [ "$pid_var" = "GITLAB_DS_PID" ] && [ "$rc" -eq 2 ]; then
           warning "[GITLAB_DS] Local run unsupported by this analyzer — run Dependency Scanning in the CI pipeline"
+          record_skip dependency_scanning "This analyzer cannot run dependency scanning locally (exit 2), so no dependency was analysed here. Run Dependency Scanning in the CI pipeline for this category; details in $failed_log."
         else
-          warning "[${pid_var/_PID/}] Failed — check .appsec-results/ for logs"
+          warning "[${pid_var/_PID/}] Failed (exit $rc) — check $failed_log"
+          record_skip "$failed_category" "The $failed_category scanner exited $rc, so it did NOT complete and this category was not scanned. Read $failed_log for the cause (unusable image, container runtime, memory, timeout), fix it, then re-run this skill."
         fi
       fi
       watchdog_var="${pid_var%_PID}_WATCHDOG"
@@ -525,9 +748,49 @@ if ! $DRY_RUN; then
   # The analyzer exits 0 when it simply finds no lock file, so a non-zero rc is
   # not the signal — the absence of a report is. Name the real cause instead of
   # leaving the generic "expected a report and did not" text.
-  if [ -n "${GITLAB_DS_PID:-}" ] && ! ls .appsec-results/gl-sbom-*.cdx.json >/dev/null 2>&1 \
+  # Only when the analyzer actually finished. load_skip_reasons keeps the LAST
+  # skip per category, so on a crashed analyzer this line would overwrite the
+  # real reason and send the user hunting for a lock file they already have.
+  if [ -n "${GITLAB_DS_PID:-}" ] && [ "$DS_FAILED" = false ] && ! sbom_present \
      && [ ! -s .appsec-results/gl-dependency-scanning-report.json ]; then
     record_skip dependency_scanning "The dependency analyzer produced no SBOM: it needs a lock file (package-lock.json, poetry.lock, a pip-compile requirements lock, go.sum...), not a plain manifest. Add one and re-run this skill, or rely on the CI pipeline for this category. Details: .appsec-results/gitlab-ds.log"
+  fi
+fi
+
+# Dependency Scanning run locally emits an SBOM and NOTHING else: GitLab matches
+# it server-side, behind an API that accepts only a real CI_JOB_TOKEN. An SBOM
+# normalizes to zero findings, so on its own the category reads as "scanned,
+# clean" while nothing was ever compared against an advisory — and any finding
+# that does arrive carries no fixed_version, which is what the registry-gap
+# remediation and the fix loop run on. Trivy is bundled in the CONTAINER
+# SCANNING image (the DS image ships no scanner) with its advisory DB baked in,
+# so this pass needs no network.
+sbom_match_degraded() {
+  warning "[DS SBOM] $1"
+  warning "[DS SBOM] Dependency results stay SBOM-only — nothing was matched against advisories locally. That is NOT an all-clear for dependencies."
+  record_skip dependency_scanning "Dependency scanning produced an SBOM, but the local vulnerability match did not run ($1), so no dependency vulnerability was matched here and findings carry no fixed_version. The bundled Trivy lives in the container-scanning image: enable container_scanning in scanner-preferences.yaml (or re-run without --only dependency_scanning), then re-run this skill. Until then the GitLab Vulnerability Report after push is the only dependency result."
+}
+
+# No SBOM => nothing to match, and the skip above already named the real cause
+# (no lock file). Only an SBOM that exists but was never matched is a gap.
+if selected dependency_scanning && [ "$DS_RAN" = true ] && \
+   { $DRY_RUN || sbom_present; }; then
+  if [ -z "$GITLAB_CS_IMAGE" ]; then
+    sbom_match_degraded "no container-scanning image was resolved"
+  elif $DRY_RUN; then
+    print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/sbom-vuln-scan.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace "${GITLAB_CS_IMAGE}" sh /runner.sh
+  else
+    info "[DS SBOM] Matching the SBOM against the advisory DB bundled in ${GITLAB_CS_IMAGE}..."
+    if ! run_container_scan .appsec-results/sbom-vuln-scan.log "$RUNTIME" run --rm --entrypoint "" \
+      -v "$PWD:/workspace" \
+      -v "$SCANNERS_DIR/sbom-vuln-scan.sh:/runner.sh:ro" \
+      ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+      -w /workspace \
+      -e CI_PROJECT_DIR="/workspace" \
+      "${GITLAB_CS_IMAGE}" \
+      sh /runner.sh; then
+      sbom_match_degraded "it failed — see .appsec-results/sbom-vuln-scan.log"
+    fi
   fi
 fi
 
@@ -551,16 +814,27 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       mark_attempted container_scanning
       mark_executed container_scanning
       info "[GitLab CS] Scanning registry image $CS_VALUE..."
+      # GTCS turns a base-image finding into a concrete "upgrade FROM to X"
+      # remediation, but only when CS_DOCKERFILE_PATH names the Dockerfile
+      # (the component declares the input and defaults it to "Dockerfile").
+      # Nothing here ever set it, so that remediation never ran locally.
+      CS_DOCKERFILE_ARGS=()
+      cs_dockerfile=$(find_dockerfile || true)
+      if [ -n "$cs_dockerfile" ]; then
+        CS_DOCKERFILE_ARGS=(-e CS_DOCKERFILE_PATH="$cs_dockerfile")
+      fi
       if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
         if $DRY_RUN; then
-          print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
+          print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
         elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
           -v "$PWD:/workspace" \
           -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
+          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
           -w /workspace \
           -e CI_PROJECT_DIR="/workspace" \
           -e CS_SCAN_MODE="registry" \
           -e CS_IMAGE="$CS_VALUE" \
+          ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} \
           -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" \
           -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" \
           "${GITLAB_CS_IMAGE}" \
@@ -568,6 +842,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           GITLAB_CS_PID="ran"
         else
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
+          record_skip container_scanning "Container scanning failed while scanning $CS_VALUE, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (registry credentials, image reference, container runtime, timeout), fix it, then re-run this skill."
         fi
       else
         warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
@@ -580,10 +855,11 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       info "[GitLab CS] Scanning locally-built image (offline, bundled Trivy)..."
       if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
         if $DRY_RUN; then
-          print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
+          print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
         elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
           -v "$PWD:/workspace" \
           -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
+          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
           -w /workspace \
           -e CI_PROJECT_DIR="/workspace" \
           -e CS_SCAN_MODE="archive" \
@@ -593,6 +869,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           GITLAB_CS_PID="ran"
         else
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
+          record_skip container_scanning "Container scanning failed on the locally-built image archive, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (image build, container runtime, memory, timeout), fix it, then re-run this skill."
         fi
       else
         warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
@@ -601,6 +878,9 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       ;;
     error)
       warning "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
+      # No target means no scan. Unrecorded, this branch left container_scanning
+      # counted as covered — clean if any older report was still on disk.
+      record_skip container_scanning "The container-scanning target could not be prepared (the image could not be built or saved), so container scanning did NOT run. Fix the build/save error reported above, then re-run this skill."
       ;;
     *)
       info "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
@@ -704,5 +984,43 @@ if [ -n "$JQ_BIN" ]; then
 else
   warning "jq is also unavailable; legacy finding counts are UNKNOWN."
 fi
-[ -z "$SKIPPED_IMAGE_SCANNERS" ] || exit 2
-exit 0
+
+# Without normalize.py nothing was assessed: no triage, no gate, no coverage
+# record. This used to `exit 0` and write no scan-coverage.json at all, so a CI
+# step reading the exit code got a clean pass with nothing machine-readable to
+# contradict it — the warnings above are prose no caller parses. Write the
+# record the normalizer would have written, with every expected category
+# unassessed, AND exit non-zero. Either alone is missable.
+case "${CI_GATE_FAIL_ON:-high}" in
+  critical|high|medium|none) gate_threshold=${CI_GATE_FAIL_ON:-high} ;;
+  *) gate_threshold=high ;;
+esac
+# Category names are the fixed identifiers from mark_attempted, so no escaping.
+missing_json=
+rest=$RAN_CATEGORIES
+while [ -n "$rest" ]; do
+  case "$rest" in
+    *,*) item=${rest%%,*}; rest=${rest#*,} ;;
+    *)   item=$rest; rest= ;;
+  esac
+  [ -n "$item" ] || continue
+  if [ -n "$missing_json" ]; then
+    missing_json="$missing_json,\"$item\""
+  else
+    missing_json="\"$item\""
+  fi
+done
+# scanners_run stays empty: no report was read, so nothing is accounted for.
+# Claiming these as run would let a later scoped rescan union them in as covered.
+cat > .appsec-results/scan-coverage.json <<EOF
+{
+  "scanners_run": [],
+  "missing_report": [$missing_json],
+  "gate_threshold": "$gate_threshold",
+  "gate_passed": false,
+  "coverage_complete": false,
+  "reason": "python3 unavailable: findings were never normalized, triaged or gated"
+}
+EOF
+error "findings were never assessed (python3 unavailable) — this run is NOT a pass"
+exit 2
