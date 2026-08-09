@@ -133,8 +133,8 @@ sequenceDiagram
         CS-->>M: component@tag [offline-fallback]
     end
     M->>CS: check-drift component cache runner
-    CS-->>M: DRIFT (runner &gt;90 days stale, configured image != template image)
-    CS-->>M: CONTRACT-DRIFT (component inputs/reports != scanners/&lt;runner&gt;.contract)
+    CS-->>M: DRIFT (runner over 90 days stale, configured image differs from template)
+    CS-->>M: CONTRACT-DRIFT (component inputs/reports differ from the runner contract)
 ```
 
 Auth uses the `read_api` PAT in the env var named by `settings.catalog.auth_token_env`
