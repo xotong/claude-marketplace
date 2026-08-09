@@ -44,6 +44,15 @@ CATALOG_SH = SKILL_DIR / "scripts" / "catalog.sh"
 # Deliberately absent so catalog.sh falls back to reference/catalog/ and stays offline.
 OFFLINE_CACHE = "/nonexistent-appsec-drift-cache"
 
+# Keep aligned with default_runner_for() in scripts/load-prefs.sh. The regression
+# test parses that Bash function and compares the complete mapping.
+DEFAULT_RUNNERS = {
+    "sast": "fortify-sast.sh",
+    "dependency_scanning": "gitlab-dependency-scanning.sh",
+    "secret_detection": "secret-detection.sh",
+    "container_scanning": "gitlab-container-scanning.sh",
+}
+
 
 def load_targets() -> list[dict]:
     """Flatten every enabled category across every profile into check targets."""
@@ -56,7 +65,7 @@ def load_targets() -> list[dict]:
             if not cfg.get("enabled", False):
                 continue
             component = cfg.get("component")
-            runner = cfg.get("runner")
+            runner = cfg.get("runner") or DEFAULT_RUNNERS.get(category)
             if not component or not runner:
                 continue
             targets.append(
