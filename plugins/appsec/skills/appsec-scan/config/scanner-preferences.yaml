@@ -79,6 +79,26 @@ settings:
   # analyzer reaches for public PyPI, hangs, and reports a broken SBOM rather
   # than saying it could not resolve anything.
   #
+  # NOT the same thing as package_registries below, even when both point at the
+  # same JFrog. These two are read DURING the scan and answer "where do I fetch
+  # from while resolving?". package_registries is read AFTER it and answers "does
+  # the mirror stock the fixed version?". Different stage, different question, and
+  # in Artifactory usually different URLs — a simple index here, a per-version
+  # endpoint there.
+  #
+  # Why only pip and maven, with no npm or go equivalent: the component exposes no
+  # such input, because those two ecosystems need no resolution. The component's
+  # own comment says its resolution jobs exist "for projects without a lockfile" —
+  # a package-lock.json or go.sum already pins exact versions with integrity
+  # hashes, so the analyzer reads them off disk and never contacts a registry. A
+  # requirements.txt can say `flask>=2.0` and a pom.xml is a graph that must be
+  # walked; those two need somewhere to resolve FROM. An npm_index_url here would
+  # be config with nothing to forward it to.
+  #
+  # maven_settings is Maven's equivalent of pip_index_url, named after the
+  # mechanism rather than symmetrically: Maven takes repositories through a
+  # settings.xml file, not a URL flag.
+  #
   # Empty (the shipped default) = leave the analyzer's own default alone.
   pip_index_url: ""   # e.g. https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/
   # Host path to a Maven settings.xml naming the internal mirror. Bind-mounted
@@ -89,6 +109,10 @@ settings:
   # Package registries used to CHECK whether a suggested upgrade is actually
   # obtainable here, before the fix loop tries it. Leave every value empty to skip
   # the check entirely (nothing is probed, no status changes).
+  #
+  # Read AFTER the scan, unlike pip_index_url / maven_settings above, which are
+  # read during it — see the note there for why the two overlap and why npm and go
+  # appear here but have no resolution setting.
   #
   # These are URL TEMPLATES, not base URLs: Artifactory's API shape differs per
   # ecosystem and per deployment, so the exact URL is declared here rather than
