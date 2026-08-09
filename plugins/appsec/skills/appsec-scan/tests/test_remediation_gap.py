@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -138,12 +140,179 @@ class ResolvePackageVerdictTest(unittest.TestCase):
         )
         self.assertEqual(verdict, "unknown")
 
+    def test_no_token_curl_failure_is_unknown_with_zero_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_curl = Path(tmp) / "curl"
+            fake_curl.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+            fake_curl.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp}{os.pathsep}{env['PATH']}"
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(RESOLVE_PACKAGE),
+                    "npm",
+                    "lodash",
+                    "4.17.21",
+                    "https://registry.example/{package}/{version}",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout.strip(), "unknown")
+
+    def test_go_module_path_uses_goproxy_case_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_curl = Path(tmp) / "curl"
+            url_log = Path(tmp) / "url.log"
+            fake_curl.write_text(
+                "#!/bin/sh\n"
+                "last=\n"
+                "for arg do\n"
+                "  last=$arg\n"
+                "done\n"
+                "printf '%s\\n' \"$last\" > \"$CURL_URL_LOG\"\n"
+                "printf '200'\n",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp}{os.pathsep}{env['PATH']}"
+            env["CURL_URL_LOG"] = str(url_log)
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    str(RESOLVE_PACKAGE),
+                    "go",
+                    "github.com/Sirupsen/logrus",
+                    "1.9.3",
+                    "https://proxy.example/{module}/@v/{version}.info",
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
+
+            self.assertEqual(proc.stdout.strip(), "available")
+            self.assertEqual(
+                url_log.read_text(encoding="utf-8").strip(),
+                "https://proxy.example/github.com/!sirupsen/logrus/@v/1.9.3.info",
+            )
+
     def test_maven_without_coordinates_is_unknown(self) -> None:
         """group:artifact is required to lay out a maven path; do not guess."""
         self.assertEqual(
             self._run("maven", "nogroup", "1.0", "https://x/{group_path}/{artifact}/"),
             "unknown",
         )
+
+
+class ResolvePackageStrippedPathTest(unittest.TestCase):
+    """The probe must hold its contract on a host that carries curl and little else.
+
+    An airgapped dev box is not guaranteed coreutils. Every case below used to
+    abort with 127 and print no verdict at all -- except the listing case, which
+    answered `absent` on the strength of a `grep` that never ran, manufacturing a
+    mirroring request for a package the registry had actually served.
+    """
+
+    # Only builtins: this stub also runs under the stripped PATH.
+    CURL_STUB = (
+        "#!/bin/sh\n"
+        "out=\n"
+        "url=\n"
+        "while [ $# -gt 0 ]; do\n"
+        "  case $1 in -o) out=$2; shift ;; esac\n"
+        "  url=$1\n"
+        "  shift\n"
+        "done\n"
+        '[ -n "$out" ] && printf \'%s\\n\' "${CURL_BODY:-}" > "$out"\n'
+        '[ -n "${CURL_URL_LOG:-}" ] && printf \'%s\\n\' "$url" > "$CURL_URL_LOG"\n'
+        "printf '200'\n"
+    )
+
+    def _run(self, args, tmp, body=""):
+        bin_dir = Path(tmp) / "bin"
+        bin_dir.mkdir()
+        curl = bin_dir / "curl"
+        curl.write_text(self.CURL_STUB, encoding="utf-8")
+        curl.chmod(0o755)
+        # mktemp is the one tool the script cannot do without: curl needs a real
+        # file to write the response body into. Nothing else may be required.
+        (bin_dir / "mktemp").symlink_to(shutil.which("mktemp"))
+        url_log = Path(tmp) / "url.log"
+
+        proc = subprocess.run(
+            [shutil.which("bash") or "/bin/bash", str(RESOLVE_PACKAGE), *args],
+            capture_output=True,
+            text=True,
+            env={
+                "PATH": str(bin_dir),
+                "CURL_URL_LOG": str(url_log),
+                "CURL_BODY": body,
+            },
+        )
+        logged = url_log.read_text(encoding="utf-8").strip() if url_log.exists() else ""
+        return proc, logged
+
+    def test_maven_group_path_needs_no_tr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, url = self._run(
+                ["maven", "com.foo.bar:baz", "1.0", "http://x/{group_path}/{artifact}/{version}/"],
+                tmp,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "available")
+        self.assertEqual(url, "http://x/com/foo/bar/baz/1.0/")
+
+    def test_go_case_encoding_needs_no_sed_or_tr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc, url = self._run(
+                ["go", "github.com/Sirupsen/logrus", "1.9.3", "http://p/{module}/@v/{version}.info"],
+                tmp,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(url, "http://p/github.com/!sirupsen/logrus/@v/1.9.3.info")
+
+    def test_listing_body_match_needs_no_grep(self) -> None:
+        # No {version} in the template, so the verdict rests on the body.
+        with tempfile.TemporaryDirectory() as tmp:
+            hit, _ = self._run(
+                ["npm", "lodash", "4.17.21", "http://x/simple/{package}/"],
+                tmp,
+                body="lodash-4.17.21.tgz",
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            miss, _ = self._run(
+                ["npm", "lodash", "9.9.9", "http://x/simple/{package}/"],
+                tmp,
+                body="lodash-4.17.21.tgz",
+            )
+        self.assertEqual((hit.returncode, hit.stdout.strip()), (0, "available"), hit.stderr)
+        self.assertEqual((miss.returncode, miss.stdout.strip()), (0, "absent"), miss.stderr)
+
+    def test_no_curl_at_all_is_unknown_with_zero_exit(self) -> None:
+        proc = subprocess.run(
+            [
+                shutil.which("bash") or "/bin/bash",
+                str(RESOLVE_PACKAGE),
+                "npm",
+                "lodash",
+                "4.17.21",
+                "http://x/{package}/{version}",
+            ],
+            capture_output=True,
+            text=True,
+            env={"PATH": "/nonexistent"},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), "unknown")
 
 
 class CheckRemediationOutputTest(unittest.TestCase):
@@ -179,10 +348,6 @@ class CheckRemediationOutputTest(unittest.TestCase):
         self.assertEqual(
             json.loads((self.results / "registry-availability.json").read_text()), {}
         )
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FortifyRemediationTest(unittest.TestCase):
@@ -234,3 +399,7 @@ class FortifyRemediationTest(unittest.TestCase):
             [json.loads(json.dumps(finding))], {"npm|x|1": "absent"}
         )[0]
         self.assertNotEqual(triaged["remediation_status"], "blocked_registry_gap")
+
+
+if __name__ == "__main__":
+    unittest.main()

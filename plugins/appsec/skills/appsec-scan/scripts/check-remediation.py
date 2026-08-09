@@ -13,25 +13,41 @@ each finding's remediation_status:
     absent    -> blocked_registry_gap   route to TRIAGE.md as a mirroring request
     unknown   -> left alone             a registry we could not reach is not evidence
 
-Container-scanning findings are deliberately NOT probed. Their packages are OS
-packages (apk/deb/rpm) inside a base image; the remediation is rebuilding on a
-newer base image, not fetching a library from a language registry. Probing npm for
-`openssl` would produce a confidently wrong answer.
+Container-scanning findings are deliberately NOT probed against a PACKAGE
+registry. Their packages are OS packages (apk/deb/rpm) inside a base image; the
+remediation is rebuilding on a newer base image, not fetching a library from a
+language registry. Probing npm for `openssl` would produce a confidently wrong
+`absent`.
+
+Base images get their own probe instead, beside the package one and never
+widening it: container-target.sh already parsed the Dockerfile's FROM lines into
+base-images.json, so this asks the container registry whether each of those is
+obtainable at all. Telling an airgapped developer to rebuild on an image their
+registry does not carry is the same dead end the package probe exists to prevent.
+Verdicts land in the same map under `image|<image>|<tag>` keys, which cannot
+collide with `<ecosystem>|<package>|<version>`.
+
+`hardened_repo` results are recorded under `hardened|...` and are SUGGESTION
+ONLY: a hardened image is a different image, not a newer tag, so nothing reads
+those keys when deciding a finding's status.
 
 Usage:
     check-remediation.py <results_dir> [--registries <json>] [--token-env <name>]
+                         [--base-repo <template>] [--hardened-repo <template>]
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 RESOLVE_PACKAGE = SCRIPTS_DIR / "resolve-package.sh"
+RESOLVE_BASE_IMAGE = SCRIPTS_DIR / "resolve-base-image.sh"
 
 # Dependency manifests are the most reliable ecosystem signal available: the
 # scanner reports the file the dependency was declared in.
@@ -55,10 +71,30 @@ MANIFEST_ECOSYSTEMS = {
 }
 
 
+def write_availability(path: Path, value: dict) -> None:
+    """Temp file + os.replace, so readers see the whole map or the old one.
+
+    Same pattern as normalize.py's write_json, kept local rather than imported:
+    this probe must still run when normalize.py cannot be imported. A plain
+    write_text truncates first, so an interruption (Ctrl-C between the two
+    normalize passes, a killed run) left registry-availability.json empty --
+    and normalize.py then reads no verdict for any package, silently degrading
+    every remediation_status to unknown. The `.tmp` name is deliberate: it does
+    not end in .json, so a leftover temp file is never parsed as a report.
+    """
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def infer_ecosystem(finding: dict) -> str | None:
-    # evidence.manifest is authoritative: _gitlab_location collapses dependency
-    # findings to {"package": name}, so location.file is usually absent here.
     evidence = finding.get("evidence") or {}
+    ecosystem = str(evidence.get("ecosystem") or "").strip().lower()
+    if ecosystem:
+        return ecosystem
+    # evidence.manifest is the fallback for GitLab reports: _gitlab_location
+    # collapses dependency findings to {"package": name}, so location.file is
+    # usually absent there.
     location = finding.get("location") or {}
     manifest = evidence.get("manifest") or location.get("file")
     path = str(manifest or "").replace("\\", "/")
@@ -91,6 +127,53 @@ def probe(ecosystem: str, package: str, version: str, template: str, token_env: 
     return verdict if verdict in {"available", "absent", "unknown"} else "unknown"
 
 
+def read_base_images(results_dir: Path) -> list:
+    """Unique (image, tag) pairs container-target.sh parsed out of the Dockerfile.
+
+    A missing file means container-target.sh never ran (container scanning off);
+    `[]` means it looked and found none. Both mean nothing to probe.
+    """
+    try:
+        data = json.loads((results_dir / "base-images.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    pairs = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        image = str(entry.get("image") or "").strip()
+        tag = str(entry.get("tag") or "").strip()
+        # Multi-stage Dockerfiles repeat the same base; probe each one once.
+        if image and tag and (image, tag) not in pairs:
+            pairs.append((image, tag))
+    return pairs
+
+
+def probe_base_image(image: str, tag: str, template: str) -> str:
+    """One registry question per base image; every failure mode is 'unknown'.
+
+    The runtime is left to resolve-base-image.sh, which reads CONTAINER_RUNTIME
+    from the environment load-prefs.sh already exported.
+    """
+    if not RESOLVE_BASE_IMAGE.is_file():
+        return "unknown"
+    try:
+        proc = subprocess.run(
+            ["bash", str(RESOLVE_BASE_IMAGE), image, tag, template],
+            capture_output=True,
+            text=True,
+            # Generous: the helper falls back to a real pull when the runtime has
+            # no `manifest inspect`. A timeout kill still yields 'unknown'.
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    verdict = (proc.stdout or "").strip()
+    return verdict if verdict in {"available", "absent", "unknown"} else "unknown"
+
+
 def collect_targets(findings: list) -> dict:
     """Unique (ecosystem, package, version) triples worth asking about."""
     targets: dict = {}
@@ -110,16 +193,41 @@ def collect_targets(findings: list) -> dict:
     return targets
 
 
+def probe_fixed_versions(
+    ecosystem: str, package: str, versions: str, template: str, token_env: str
+) -> str:
+    """Probe every scanner-supplied fix and conservatively combine the verdicts."""
+    candidates = [candidate.strip() for candidate in str(versions).split(",")]
+    candidates = [candidate for candidate in candidates if candidate]
+    if not candidates:
+        return "unknown"
+    verdicts = [
+        probe(ecosystem, package, candidate, template, token_env)
+        for candidate in candidates
+    ]
+    if "available" in verdicts:
+        return "available"
+    if all(verdict == "absent" for verdict in verdicts):
+        return "absent"
+    return "unknown"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("results_dir")
     parser.add_argument("--registries", default="", help="JSON: {ecosystem: url_template}")
     parser.add_argument("--token-env", default="", help="env var NAME holding a registry token")
+    # Defaulted from the environment load-prefs.sh already exports, so the probe
+    # is correct whether or not the caller spells the flags out.
+    parser.add_argument("--base-repo", default=os.environ.get("BASE_IMAGE_REPO", ""))
+    parser.add_argument("--hardened-repo", default=os.environ.get("HARDENED_IMAGE_REPO", ""))
     args = parser.parse_args(argv)
 
     results_dir = Path(args.results_dir)
     triaged_path = results_dir / "findings.triaged.json"
     out_path = results_dir / "registry-availability.json"
+    base_repo = args.base_repo.strip()
+    hardened_repo = args.hardened_repo.strip()
 
     try:
         registries = json.loads(args.registries) if args.registries.strip() else {}
@@ -127,27 +235,24 @@ def main(argv=None) -> int:
         print("[remediation] registries config is not valid JSON; skipping probe", file=sys.stderr)
         registries = {}
 
-    if not isinstance(registries, dict) or not any(str(v).strip() for v in registries.values()):
-        # No mirrors declared: stay silent and leave every status untouched.
-        out_path.write_text(json.dumps({}, indent=2) + "\n", encoding="utf-8")
+    package_mirrors = isinstance(registries, dict) and any(
+        str(value).strip() for value in registries.values()
+    )
+    if not package_mirrors and not base_repo and not hardened_repo:
+        # Nothing declared anywhere: stay silent and leave every status untouched.
+        write_availability(out_path, {})
         return 0
 
     try:
         findings = json.loads(triaged_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
-        out_path.write_text(json.dumps({}, indent=2) + "\n", encoding="utf-8")
-        return 0
+        findings = []
     if not isinstance(findings, list):
-        out_path.write_text(json.dumps({}, indent=2) + "\n", encoding="utf-8")
-        return 0
-
-    targets = collect_targets(findings)
-    if not targets:
-        out_path.write_text(json.dumps({}, indent=2) + "\n", encoding="utf-8")
-        return 0
+        findings = []
 
     availability: dict = {}
     counts = {"available": 0, "absent": 0, "unknown": 0}
+    targets = collect_targets(findings) if package_mirrors else {}
     for key, (ecosystem, package, version) in sorted(targets.items()):
         template = str(registries.get(ecosystem) or "").strip()
         if not template:
@@ -155,22 +260,48 @@ def main(argv=None) -> int:
             availability[key] = "unknown"
             counts["unknown"] += 1
             continue
-        verdict = probe(ecosystem, package, version, template, args.token_env)
+        verdict = probe_fixed_versions(
+            ecosystem, package, version, template, args.token_env
+        )
         availability[key] = verdict
         counts[verdict] += 1
 
-    out_path.write_text(json.dumps(availability, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    base_images = read_base_images(results_dir) if (base_repo or hardened_repo) else []
+    base_counts = {"available": 0, "absent": 0, "unknown": 0}
+    for image, tag in base_images:
+        if base_repo:
+            verdict = probe_base_image(image, tag, base_repo)
+            availability[f"image|{image}|{tag}"] = verdict
+            base_counts[verdict] += 1
+        if hardened_repo:
+            # Separate key prefix on purpose: normalize.py reads only `image|`
+            # when deciding a status, so a hardened hit can never silently
+            # re-classify a finding into or out of a mirroring request.
+            availability[f"hardened|{image}|{tag}"] = probe_base_image(
+                image, tag, hardened_repo
+            )
 
-    print(
-        f"[remediation] checked {len(targets)} upgrade(s) against the mirror: "
-        f"{counts['available']} available, {counts['absent']} missing, "
-        f"{counts['unknown']} undetermined",
-        file=sys.stderr,
-    )
-    if counts["absent"]:
+    write_availability(out_path, availability)
+
+    if targets:
         print(
-            "[remediation] missing upgrades will be reported as blocked_registry_gap "
-            "and listed in TRIAGE.md for mirroring — the fix loop will not attempt them.",
+            f"[remediation] checked {len(targets)} upgrade(s) against the mirror: "
+            f"{counts['available']} available, {counts['absent']} missing, "
+            f"{counts['unknown']} undetermined",
+            file=sys.stderr,
+        )
+    if base_repo and base_images:
+        print(
+            f"[remediation] checked {len(base_images)} base image(s) against the "
+            f"container registry: {base_counts['available']} available, "
+            f"{base_counts['absent']} missing, {base_counts['unknown']} undetermined",
+            file=sys.stderr,
+        )
+    if counts["absent"] or base_counts["absent"]:
+        print(
+            "[remediation] missing upgrades and base images will be reported as "
+            "blocked_registry_gap and listed in TRIAGE.md for mirroring — the fix "
+            "loop will not attempt them.",
             file=sys.stderr,
         )
     return 0

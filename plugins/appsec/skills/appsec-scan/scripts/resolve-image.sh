@@ -20,7 +20,8 @@
 #
 # Policy `pinned`: always use the configured image. No pull, no adoption.
 #
-# Usage:  resolve-image.sh <configured_image> <template_image> [runtime] [policy]
+# Usage:  resolve-image.sh <configured_image> <template_image> [runtime] [policy] [pull_mode]
+#         pull_mode is `pull` (default) or `no-pull` for dry-run resolution.
 # Prints: the effective image ref on stdout; diagnostics on stderr.
 # =============================================================================
 set -euo pipefail
@@ -29,6 +30,15 @@ CONFIGURED=${1:-}
 TEMPLATE=${2:-}
 RUNTIME=${3:-${RUNTIME:-docker}}
 POLICY=${4:-${IMAGE_POLICY:-follow-component}}
+PULL_MODE=${5:-pull}
+
+case "$PULL_MODE" in
+  pull|no-pull) ;;
+  *)
+    echo "ERROR: unknown image pull mode: ${PULL_MODE}" >&2
+    exit 2
+    ;;
+esac
 
 emit() { printf '%s\n' "$1"; }
 
@@ -53,7 +63,7 @@ if [ -z "$CONFIGURED" ]; then
   # there is nothing to fall back to, so an unavailable image is fatal here
   # rather than a warning — the alternative is a docker-run failure several
   # steps later with a far less useful message.
-  if "$RUNTIME" pull -q "$TEMPLATE" >/dev/null 2>&1; then
+  if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$TEMPLATE" >/dev/null 2>&1; then
     emit "$TEMPLATE"
     exit 0
   fi
@@ -91,9 +101,15 @@ split_tag() {
   esac
 }
 
-configured_repo=$(split_tag "$CONFIGURED" | cut -f1)
-configured_tag=$(split_tag "$CONFIGURED" | cut -f2)
-template_tag=$(split_tag "$TEMPLATE" | cut -f2)
+# Split the tab-separated pair in bash rather than with `cut`: coreutils is not
+# guaranteed on a minimal airgapped host, and run-scan.sh treats a non-zero exit
+# here as fatal -- a missing `cut` refused to scan at all instead of resolving
+# an image.
+configured_pair=$(split_tag "$CONFIGURED")
+configured_repo=${configured_pair%%$'\t'*}
+configured_tag=${configured_pair#*$'\t'}
+template_pair=$(split_tag "$TEMPLATE")
+template_tag=${template_pair#*$'\t'}
 
 # An untagged template ref, or one that already matches, needs no work.
 if [ -z "$template_tag" ] || [ "$template_tag" = "$configured_tag" ]; then
@@ -106,7 +122,7 @@ candidate="${configured_repo}:${template_tag}"
 echo "[image] component template declares ${template_tag}; configured ${configured_tag:-<untagged>}" >&2
 echo "[image] trying ${candidate}" >&2
 
-if "$RUNTIME" pull -q "$candidate" >/dev/null 2>&1; then
+if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$candidate" >/dev/null 2>&1; then
   echo "[image] using ${candidate} (component-tracked)" >&2
   emit "$candidate"
   exit 0

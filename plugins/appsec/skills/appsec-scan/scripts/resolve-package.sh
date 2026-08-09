@@ -46,7 +46,14 @@ case "$ECOSYSTEM" in
   maven)
     case "$PACKAGE" in
       *:*)
-        group_path=$(printf '%s' "${PACKAGE%%:*}" | tr '.' '/')
+        # Pure bash, no `tr`: a minimal airgapped userland need not carry
+        # coreutils, and under `set -e` the missing binary exited 127 with no
+        # verdict on stdout at all, where the contract promises `unknown`.
+        # The replacement must come from a variable -- bash 3.2 renders both
+        # ${g//./\/} and ${g//./"/"} literally, backslash and quotes included.
+        _slash=/
+        group_path="${PACKAGE%%:*}"
+        group_path="${group_path//./$_slash}"
         artifact="${PACKAGE##*:}"
         ;;
       *) verdict unknown ;;  # not a coordinate we can lay out; do not guess
@@ -55,11 +62,30 @@ case "$ECOSYSTEM" in
 esac
 
 url=$TEMPLATE
+module=$PACKAGE
+if [ "$ECOSYSTEM" = "go" ]; then
+  # GOPROXY escapes each uppercase ASCII letter as ! followed by its lowercase
+  # form. Keep every other placeholder unchanged: this rule belongs only to Go
+  # module paths substituted into {module}.
+  #
+  # Done in pure bash rather than sed|tr for the same reason as group_path
+  # above: no coreutils on the host used to mean exit 127 and no verdict. One
+  # global substitution per letter is safe in any order -- neither `!` nor a
+  # lowercase letter is ever an uppercase letter, so nothing is re-escaped.
+  # `${var,,}` is bash 4 only; this skill must run on macOS bash 3.2.
+  _upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+  _lower=abcdefghijklmnopqrstuvwxyz
+  _i=0
+  while [ "$_i" -lt 26 ]; do
+    module=${module//${_upper:$_i:1}/!${_lower:$_i:1}}
+    _i=$(( _i + 1 ))
+  done
+fi
 url=${url//\{package\}/$PACKAGE}
 url=${url//\{version\}/$VERSION}
 url=${url//\{group_path\}/$group_path}
 url=${url//\{artifact\}/$artifact}
-url=${url//\{module\}/$PACKAGE}
+url=${url//\{module\}/$module}
 
 # Token via curl --config so it never appears in argv or process listings,
 # matching how catalog.sh handles the catalogue PAT.
@@ -68,31 +94,40 @@ body_file=""
 # Must return 0 unconditionally. As an EXIT trap its status becomes the script's
 # exit status, and the common case here is anonymous read with no token file to
 # remove -- a bare `[ -n "$curl_cfg" ] && rm` would then exit 1 on every probe.
+# `|| :` because `rm` itself may be missing on a minimal userland: an EXIT trap
+# that dies with 127 turns a printed `unknown` into a crashing probe, which is
+# exactly what this script promises never to do.
 cleanup() {
-  [ -n "$curl_cfg" ] && rm -f "$curl_cfg"
-  [ -n "$body_file" ] && rm -f "$body_file"
+  [ -n "$curl_cfg" ] && rm -f "$curl_cfg" 2>/dev/null || :
+  [ -n "$body_file" ] && rm -f "$body_file" 2>/dev/null || :
   return 0
 }
 trap cleanup EXIT
 
-auth_args=()
 if [ -n "$TOKEN_ENV" ]; then
   token_value=$(printenv "$TOKEN_ENV" 2>/dev/null || true)
   if [ -n "$token_value" ]; then
     curl_cfg=$(mktemp) || verdict unknown
     printf 'header = "Authorization: Bearer %s"\n' "$token_value" >"$curl_cfg"
-    auth_args=(--config "$curl_cfg")
   fi
 fi
 
 body_file=$(mktemp) || verdict unknown
 
-status=$(curl -sSL \
-  --max-time "${PACKAGE_PROBE_TIMEOUT:-10}" \
-  -o "$body_file" \
-  -w '%{http_code}' \
-  "${auth_args[@]}" \
-  "$url" 2>/dev/null || printf '000')
+if [ -n "$curl_cfg" ]; then
+  status=$(curl -sSL \
+    --max-time "${PACKAGE_PROBE_TIMEOUT:-10}" \
+    -o "$body_file" \
+    -w '%{http_code}' \
+    --config "$curl_cfg" \
+    "$url" 2>/dev/null || printf '000')
+else
+  status=$(curl -sSL \
+    --max-time "${PACKAGE_PROBE_TIMEOUT:-10}" \
+    -o "$body_file" \
+    -w '%{http_code}' \
+    "$url" 2>/dev/null || printf '000')
+fi
 
 case "$status" in
   200)
@@ -102,12 +137,17 @@ case "$status" in
     case "$TEMPLATE" in
       *'{version}'*) verdict available ;;
       *)
+        # $(<file) is a bash builtin and the match is a quoted case pattern, so
+        # no `grep` is needed. A missing grep used to report `absent` here --
+        # a false mirroring request built on a tool that never ran.
         if [ -z "$VERSION" ]; then
           verdict unknown
-        elif grep -qF -- "$VERSION" "$body_file"; then
-          verdict available
         else
-          verdict absent
+          body=$(<"$body_file")
+          case $body in
+            *"$VERSION"*) verdict available ;;
+            *)            verdict absent ;;
+          esac
         fi
         ;;
     esac
