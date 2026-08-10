@@ -28,13 +28,35 @@ GATE_LEVELS = {
 OUTPUT_FILES = {
     "findings.normalized.json",
     "findings.triaged.json",
+    # Our own bookkeeping, not scanner reports. Anything left off this list is
+    # parsed as a report and, if its schema is neither parseable nor recognisably
+    # clean, becomes a phantom HIGH "unsupported report schema" finding that
+    # fails the gate on its own.
+    "base-images.json",
+    "registry-availability.json",
     "scan-coverage.json",
 }
 REPORT_CATEGORIES = {
     "fortify-sast.fpr": "sast",
+    # Older analyzers emit this instead of (or beside) the SBOM, and run-scan.sh
+    # moves it into the results dir and clears it on a scoped rescan, so it is a
+    # real supported input. While it was unregistered it counted as evidence for
+    # no category at all: a valid clean report sitting on disk reported
+    # dependency_scanning as APPSEC-REPORT-MISSING and failed the gate.
+    "gl-dependency-scanning-report.json": "dependency_scanning",
     "gl-secret-detection-report.json": "secret_detection",
     "gl-container-scanning-report.json": "container_scanning",
     "container-scan-archive.json": "container_scanning",
+}
+TRIVY_ECOSYSTEMS = {
+    "node-pkg": "npm",
+    "python-pkg": "pypi",
+    "gobinary": "go",
+    "gomod": "go",
+    "jar": "maven",
+    "pom": "maven",
+    "gradle": "maven",
+    "gemspec": "rubygems",
 }
 TEST_PATH_RE = re.compile(
     r"(?:^|/)(?:test|tests|vendor|node_modules|dist|build)(?:/|$)", re.IGNORECASE
@@ -56,9 +78,22 @@ def read_json_loose(path):
     return json.loads(text or "null")
 
 def write_json(path, value):
-    with Path(path).open("w", encoding="utf-8") as stream:
+    """Write via a sibling temp file + os.replace, so readers see all or nothing.
+
+    Truncating in place meant an interrupted run could leave
+    findings.triaged.json empty or half-written -- and that is the file the
+    --only coverage union reads back to recover an earlier run's gaps, so a
+    partial write became a false all-clear.
+    """
+    path = Path(path)
+    # ponytail: same-directory fixed suffix, which is all os.replace atomicity
+    # needs. Two normalize runs against one results dir would race; per-pid
+    # names if that ever becomes a real invocation pattern.
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
         json.dump(value, stream, indent=2, sort_keys=True)
         stream.write("\n")
+    os.replace(temporary, path)
 
 def fingerprint(parts):
     raw = "|".join(str(part or "") for part in parts)
@@ -175,8 +210,19 @@ def new_finding(
     }
 
 def _report_category(path):
+    """Category a file counts as evidence for, or None if it is not a report.
+
+    Two producers write one report per input, so their names are variable and
+    cannot be REPORT_CATEGORIES keys: GitLab DS writes gl-sbom-<name>.cdx.json,
+    and sbom-vuln-scan.sh writes dependency-sbom-scan-<name>.json beside it.
+    While the latter was unregistered a clean Trivy SBOM report satisfied no
+    category, so the GOOD outcome (no vulnerabilities) reported
+    dependency_scanning as APPSEC-REPORT-MISSING and failed the gate.
+    """
     name = Path(path).name.lower()
     if name.startswith("gl-sbom-") and name.endswith(".cdx.json"):
+        return "dependency_scanning"
+    if name.startswith("dependency-sbom-scan") and name.endswith(".json"):
         return "dependency_scanning"
     return REPORT_CATEGORIES.get(name)
 
@@ -211,8 +257,16 @@ def _gitlab_location(vulnerability, category, path):
 def parse_generic_json(path, data, category=None):
     path = Path(path)
     findings = []
-    if isinstance(data, dict) and isinstance(data.get("vulnerabilities"), list):
-        category = category or _fallback_category(path)
+    # A CycloneDX SBOM is an inventory, not a findings report: its optional
+    # `vulnerabilities` array uses a different schema (ratings/bom-ref, no
+    # `severity`), which this branch would turn into UNKNOWN-severity findings
+    # that fail the gate on an otherwise clean scan.
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("vulnerabilities"), list)
+        and data.get("bomFormat") != "CycloneDX"
+    ):
+        category = category or _report_category(path) or _fallback_category(path)
         scanner_data = ((data.get("scan") or {}).get("scanner") or {})
         scanner = scanner_data.get("id") or scanner_data.get("name") or path.stem
         for vulnerability in data["vulnerabilities"]:
@@ -236,6 +290,12 @@ def parse_generic_json(path, data, category=None):
             package_name = package.get("name") or raw_location.get("package")
             if package_name:
                 evidence["package"] = package_name
+            # The dependency manifest is the ecosystem signal (package-lock.json ->
+            # npm, pom.xml -> maven). It has to be kept here because _gitlab_location
+            # collapses dependency findings to {"package": name} and drops the file.
+            manifest = raw_location.get("file") or raw_location.get("path")
+            if manifest:
+                evidence["manifest"] = manifest
             if dependency.get("version"):
                 evidence["installed_version"] = dependency.get("version")
             fixed = vulnerability.get("fixed_version")
@@ -256,10 +316,12 @@ def parse_generic_json(path, data, category=None):
             )
 
     if isinstance(data, dict) and isinstance(data.get("Results"), list):
+        trivy_category = category or _report_category(path) or _fallback_category(path)
         for result in data["Results"]:
             if not isinstance(result, dict):
                 continue
             target = result.get("Target") or str(path)
+            ecosystem = TRIVY_ECOSYSTEMS.get(str(result.get("Type") or "").lower())
             for vulnerability in result.get("Vulnerabilities") or []:
                 if not isinstance(vulnerability, dict):
                     continue
@@ -271,6 +333,8 @@ def parse_generic_json(path, data, category=None):
                     "description": vulnerability.get("Description"),
                     "raw_report": str(path),
                 }
+                if ecosystem:
+                    evidence["ecosystem"] = ecosystem
                 findings.append(
                     new_finding(
                         "trivy",
@@ -278,9 +342,13 @@ def parse_generic_json(path, data, category=None):
                         or vulnerability.get("VulnerabilityID")
                         or "Container vulnerability",
                         vulnerability.get("Severity"),
-                        {"image": target} if target else {"package": package},
+                        (
+                            {"package": package}
+                            if trivy_category == "dependency_scanning"
+                            else {"image": target}
+                        ),
                         evidence,
-                        category="container_scanning",
+                        category=trivy_category,
                         rule_id=vulnerability.get("VulnerabilityID"),
                     )
                 )
@@ -302,6 +370,15 @@ def is_supported_clean_json(data, path=None):
         isinstance(data.get("vulnerabilities"), list)
         or isinstance(data.get("Results"), list)
         or isinstance(data.get("results"), list)
+        # Trivy tags Results `json:",omitempty"`, so a scan that detected no
+        # packages omits the key entirely or writes null -- a dependency-free
+        # dependency-sbom-scan-*.json, or container-scan-archive.json for a
+        # distroless/scratch image. Both are the GOOD outcome and both became a
+        # phantom HIGH unsupported_report that failed the gate on a clean scan.
+        # Keyed on SchemaVersion so this stays narrow: a document that is Trivy-
+        # shaped in no way at all is still unsupported, because a report we
+        # cannot parse may be hiding findings.
+        or ("SchemaVersion" in data and data.get("Results") is None)
     )
 
 def strip_ns(tag):
@@ -339,9 +416,33 @@ def first_text(element, names):
             return node.text.strip()
     return None
 
+def _fvdl_recommendations(root):
+    """Map Fortify classID -> remediation text.
+
+    FVDL keeps guidance in top-level <Description classID="..."> blocks, not on the
+    <Vulnerability> elements, so it has to be collected separately and joined on
+    ClassID. Without this every SAST finding reached the developer with no
+    remediation at all, which is the one category where they most need it.
+    """
+    guidance = {}
+    for node in root.iter():
+        if strip_ns(node.tag).lower() != "description":
+            continue
+        class_id = node.get("classID") or node.get("classid")
+        if not class_id:
+            continue
+        text = first_text(node, ["Recommendations", "Abstract", "Explanation"])
+        if not text:
+            continue
+        collapsed = " ".join(str(text).split())
+        if collapsed:
+            guidance[class_id] = collapsed[:1200]
+    return guidance
+
 def parse_fvdl_root(root, path):
     path = Path(path)
     findings = []
+    recommendations = _fvdl_recommendations(root)
     for vulnerability in root.iter():
         if strip_ns(vulnerability.tag).lower() != "vulnerability":
             continue
@@ -360,13 +461,17 @@ def parse_fvdl_root(root, path):
             ["LineStart", "FunctionDeclarationSourceLocation/Line", "Line"],
         )
         rule_id = first_text(class_info, ["ClassID", "RuleID"])
+        evidence = {"raw_report": str(path)}
+        guidance = recommendations.get(rule_id) if rule_id else None
+        if guidance:
+            evidence["solution"] = guidance
         findings.append(
             new_finding(
                 "fortify",
                 name or "Fortify vulnerability",
                 severity or "HIGH",
                 {"file": file_name or str(path), "line": line},
-                {"raw_report": str(path)},
+                evidence,
                 category="sast",
                 rule_id=rule_id,
             )
@@ -429,6 +534,12 @@ def unsupported_report_finding(path):
         rule_id="unsupported_report",
     )
 
+# Every rule_id parse_failure_finding can emit. Kept as one name because these
+# also drive coverage: see unreadable_categories.
+PARSE_FAILURE_RULES = frozenset(
+    {"APPSEC-REPORT-PARSE-FAILED", "APPSEC-REPORT-UNPARSEABLE"}
+)
+
 def parse_failure_finding(path, error):
     rule_id = "APPSEC-REPORT-PARSE-FAILED"
     if _report_category(path) and Path(path).suffix.lower() == ".json":
@@ -455,30 +566,17 @@ def normalize_reports(results_dir):
         try:
             if name == "fortify-sast.fpr":
                 findings.extend(parse_fpr(path))
-            elif name in {
-                "gl-secret-detection-report.json",
-                "gl-container-scanning-report.json",
-            }:
-                data = read_json_loose(path)
-                parsed = parse_generic_json(path, data, REPORT_CATEGORIES[name])
-                findings.extend(parsed)
-                if not parsed and not is_supported_clean_json(data, path):
-                    findings.append(unsupported_report_finding(path))
-            elif name == "container-scan-archive.json":
-                data = read_json_loose(path)
-                parsed = parse_generic_json(path, data, "container_scanning")
-                findings.extend(parsed)
-                if not parsed and not is_supported_clean_json(data, path):
-                    findings.append(unsupported_report_finding(path))
-            elif name.startswith("gl-sbom-") and name.endswith(".cdx.json"):
-                data = read_json_loose(path)
-                if not is_supported_clean_json(data, path):
-                    findings.append(unsupported_report_finding(path))
             elif name.endswith(".json"):
                 data = read_json_loose(path)
-                parsed = parse_generic_json(path, data, _fallback_category(path))
+                parsed = parse_generic_json(path, data, _report_category(path))
                 findings.extend(parsed)
-                if not parsed:
+                # ONE guarded path for every JSON file, so no future report name
+                # can land on a branch that forgot the guard. Zero findings is
+                # the GOOD outcome, not an unsupported schema: this branch used
+                # to be the unguarded one, and it turned a clean Trivy SBOM
+                # report -- and before that our own registry-availability.json --
+                # into a phantom HIGH that failed the gate on a clean scan.
+                if not parsed and not is_supported_clean_json(data, path):
                     findings.append(unsupported_report_finding(path))
             elif name.endswith(".xml") or name.endswith(".fvdl"):
                 parsed = parse_generic_xml(path)
@@ -489,7 +587,118 @@ def normalize_reports(results_dir):
             findings.append(parse_failure_finding(path, error))
     return findings
 
-def triage_findings(findings):
+def unreadable_categories(findings):
+    """Categories whose report normalize_reports could not read at all.
+
+    A scanner whose output we cannot parse did not successfully scan, so this is
+    a COVERAGE fact and must not be filtered through the gate threshold. As a
+    finding it is only a HIGH, so a truncated fortify-sast.fpr used to report
+    Gate verdict: PASSED, exit 0 and coverage_complete: true on a critical-only
+    gate -- the exact false all-clear this tool exists to prevent.
+
+    Unreadable covers an unsupported schema too, but only for a REGISTERED
+    report name -- a report whose schema we do not recognise may be hiding every
+    finding it holds. Stray files are excluded on purpose: _fallback_category
+    guesses "sast" for anything it cannot place, so a notes.json someone dropped
+    in the results dir would report SAST as unscanned.
+    """
+    unreadable = set()
+    for item in findings or []:
+        category = item.get("category")
+        rule_id = item.get("rule_id")
+        registered = _report_category((item.get("location") or {}).get("file") or "")
+        if category and (
+            rule_id in PARSE_FAILURE_RULES
+            or (rule_id == "unsupported_report" and registered)
+        ):
+            unreadable.add(category)
+    return unreadable
+
+# Mirrors check-remediation.py's inference. Kept here too so normalize.py stays a
+# pure function of its inputs — it reads the availability map, never the network.
+_MANIFEST_ECOSYSTEMS = {
+    "package-lock.json": "npm",
+    "package.json": "npm",
+    "yarn.lock": "npm",
+    "npm-shrinkwrap.json": "npm",
+    "pnpm-lock.yaml": "npm",
+    "pom.xml": "maven",
+    "build.gradle": "maven",
+    "build.gradle.kts": "maven",
+    "gradle.lockfile": "maven",
+    "requirements.txt": "pypi",
+    "pyproject.toml": "pypi",
+    "Pipfile.lock": "pypi",
+    "poetry.lock": "pypi",
+    "go.mod": "go",
+    "go.sum": "go",
+    "Gemfile.lock": "rubygems",
+}
+
+def _registry_gap(finding, availability):
+    """True only when the mirror explicitly answered 'absent'.
+
+    'unknown' must never route here: a registry we could not reach is not proof
+    the package is missing, and mislabelling it would send the developer chasing
+    a mirroring request for something that is already available.
+    """
+    if not availability:
+        return False
+    if finding.get("category") != "dependency_scanning":
+        return False
+    evidence = finding.get("evidence") or {}
+    package = evidence.get("package")
+    fixed = evidence.get("fixed_version")
+    if not package or not fixed:
+        return False
+    ecosystem = str(evidence.get("ecosystem") or "").strip().lower() or None
+    if not ecosystem:
+        manifest = evidence.get("manifest") or (finding.get("location") or {}).get(
+            "file"
+        )
+        path = str(manifest or "").replace("\\", "/")
+        ecosystem = (
+            _MANIFEST_ECOSYSTEMS.get(path.rsplit("/", 1)[-1]) if path else None
+        )
+    if not ecosystem:
+        return False
+    return availability.get(f"{ecosystem}|{package}|{fixed}") == "absent"
+
+def _absent_base_image(availability):
+    """Name the first base image the container registry said it does not carry.
+
+    Only `image|` keys are read. check-remediation.py files hardened-image
+    verdicts under `hardened|` precisely so they can never reach this decision:
+    a hardened image is a different image, not a newer tag, and swapping to one
+    is a human call about libc, shell and UID -- not an availability fact.
+
+    'unknown' is ignored here for the same reason it is in _registry_gap: a
+    registry we could not reach is not proof the image is missing.
+
+    ponytail: the base images belong to the whole build, not to one finding, so
+    this reports the first gap rather than mapping each finding to its layer.
+    Layer-to-image attribution would need the scanner's layer digests; add it
+    when a report actually carries them.
+    """
+    for key in sorted(availability or {}):
+        parts = key.split("|")
+        if len(parts) == 3 and parts[0] == "image" and availability[key] == "absent":
+            return "{}:{}".format(parts[1], parts[2])
+    return None
+
+def load_availability(path):
+    """Read the registry-availability map; any problem degrades to 'no data'."""
+    if not path:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+def triage_findings(findings, availability=None):
+    availability = availability or {}
+    base_gap = _absent_base_image(availability)
     for finding in findings:
         location = finding.get("location") or {}
         evidence = finding.get("evidence") or {}
@@ -503,6 +712,7 @@ def triage_findings(findings):
             finding["triage_reason"] = "Scanner severity requires human review."
         elif rule_id in {
             "APPSEC-REPORT-MISSING",
+            "APPSEC-REPORT-INCOMPLETE",
             "APPSEC-REPORT-PARSE-FAILED",
             "APPSEC-REPORT-UNPARSEABLE",
             "unsupported_report",
@@ -512,12 +722,38 @@ def triage_findings(findings):
             finding["triage_reason"] = (
                 "Scanner coverage is incomplete until the report is supplied or supported."
             )
+        elif category == "container_scanning" and base_gap:
+            # Deliberately ABOVE the blocked_external_dependency branch. Container
+            # findings routinely arrive with no fixed_version, so that branch used
+            # to swallow every one of them and this gap was unreachable. The mirror
+            # gap is the more specific answer and the only actionable one: there IS
+            # something to ask the platform team for.
+            finding["verification_status"] = "not_fixable_locally"
+            finding["remediation_status"] = "blocked_registry_gap"
+            finding["triage_reason"] = (
+                "The fix is a rebuild on a newer base image, but {} is not in the "
+                "configured container registry; ask for it to be mirrored before "
+                "this can be fixed here.".format(base_gap)
+            )
         elif category in {"dependency_scanning", "container_scanning"} and not evidence.get(
             "fixed_version"
         ):
             finding["verification_status"] = "not_fixable_locally"
             finding["remediation_status"] = "blocked_external_dependency"
             finding["triage_reason"] = "The scanner did not report a fixed version."
+        elif _registry_gap(finding, availability):
+            # The scanner named a fixed version, but the internal mirror does not
+            # carry it. Distinct from blocked_external_dependency: there IS a known
+            # fix, it just cannot be fetched here yet. The fix loop must not spend
+            # an iteration on it, and TRIAGE.md turns it into a mirroring request.
+            finding["verification_status"] = "not_fixable_locally"
+            finding["remediation_status"] = "blocked_registry_gap"
+            finding["triage_reason"] = (
+                "Upgrade to {} is available upstream but not in the configured "
+                "registry mirror; request it before this can be fixed here.".format(
+                    evidence.get("fixed_version")
+                )
+            )
         elif TEST_PATH_RE.search(path):
             finding["verification_status"] = "likely_false_positive"
             finding["remediation_status"] = "needs_user_decision"
@@ -578,9 +814,19 @@ def _redact_structure(value, matched_only=False):
 def redact_secret_findings(findings, matched_only=False):
     for finding in findings:
         # Capture before the blanket pass below, which would otherwise redact
-        # this tool's own remediation text out from under us.
+        # this tool's own remediation text and structural registry metadata.
+        # Mangling a long manifest path removes the ecosystem signal the mirror
+        # probe needs, so an unavailable upgrade is never marked as blocked.
         _evidence = finding.get("evidence")
-        _why = _evidence.get("why") if isinstance(_evidence, dict) else None
+        _protected_evidence = (
+            {
+                key: _evidence[key]
+                for key in ("why", "manifest", "package")
+                if key in _evidence
+            }
+            if isinstance(_evidence, dict)
+            else {}
+        )
         for key, value in list(finding.items()):
             finding[key] = _redact_structure(value, True)
         finding_matched_only = (
@@ -589,14 +835,14 @@ def redact_secret_findings(findings, matched_only=False):
         for key in ("name", "title", "description"):
             if key in finding:
                 finding[key] = redact_value(finding.get(key), finding_matched_only)
-        # `why` is remediation text this tool wrote itself, never scanner data.
-        # Redacting it mangled the very image path the user needs to act on
-        # ("Could not pull registry.gitlab.***"), defeating the guidance.
+        # These values are derived by this tool, never scanner-captured secret
+        # material. `why` supplies remediation guidance; `manifest` and `package`
+        # identify which registry to probe. Everything else stays redacted.
         finding["evidence"] = _redact_structure(
             finding.get("evidence") or {}, finding_matched_only
         )
-        if _why is not None and isinstance(finding.get("evidence"), dict):
-            finding["evidence"]["why"] = _why
+        if isinstance(finding.get("evidence"), dict):
+            finding["evidence"].update(_protected_evidence)
         finding["location"] = _redact_structure(
             finding.get("location") or {}, True
         )
@@ -613,15 +859,47 @@ def load_skip_reasons(path):
     if not path:
         return reasons
     try:
-        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
-            category, _, reason = line.partition("\t")
-            if category in CATEGORIES and reason.strip():
-                reasons[category] = reason.strip()
-    except OSError:
-        pass
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        # Absent is genuinely "no skips": run-scan.sh truncates this file before
+        # any scanner starts, so the file exists for the whole of a real run.
+        # Every other OSError propagates and main() turns it into exit 2. A skips
+        # file we were told to read but could not is not evidence that nothing
+        # was skipped -- swallowing it erased every recorded gap and reported
+        # full coverage.
+        return reasons
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        category, _, reason = line.partition("\t")
+        category = category.strip()
+        if category not in CATEGORIES:
+            # The line is dropped, so say so. A typo in a future record_skip
+            # call would otherwise erase a coverage gap in complete silence.
+            print(
+                "WARNING: ignoring recorded skip for unrecognized category: "
+                + category,
+                file=sys.stderr,
+            )
+            continue
+        # Register the skip on the category alone. Whether a category counts as
+        # covered must never depend on whether the reason text survived: an
+        # empty, whitespace-only or tab-less line used to discard the skip
+        # itself, turning a recorded gap into an all-clear.
+        reasons[category] = reason.strip() or (
+            "The scanner did not complete and recorded no reason; treat this "
+            "category as unscanned."
+        )
     return reasons
 
-def coverage_findings(results_dir, scanners_run, existing_findings=None, skip_reasons=None):
+def coverage_findings(
+    results_dir,
+    scanners_run,
+    existing_findings=None,
+    skip_reasons=None,
+    unreadable=None,
+):
+    unreadable = set(unreadable or ())
     reports = {category: [] for category in CATEGORIES}
     for path in Path(results_dir).rglob("*"):
         # ponytail: cached tools and catalog payloads are not scanner evidence.
@@ -637,6 +915,13 @@ def coverage_findings(results_dir, scanners_run, existing_findings=None, skip_re
         if not paths or all(path.stat().st_size == 0 for path in paths):
             states[category] = "missing"
             continue
+        if category in unreadable:
+            # Checked for EVERY report shape, before the JSON scan below: that
+            # scan never sees a .fpr or an .xml, and it accepts one valid JSON
+            # while a truncated sibling is ignored. Either way a scanner whose
+            # output we cannot read scored as covered.
+            states[category] = "unparseable"
+            continue
         json_paths = [path for path in paths if path.suffix.lower() == ".json"]
         if json_paths:
             valid = False
@@ -647,23 +932,39 @@ def coverage_findings(results_dir, scanners_run, existing_findings=None, skip_re
                     text = _json_text(path)
                     if not text.strip():
                         continue
-                    json.loads(text)
+                    if json.loads(text) in (None, [], {}):
+                        # An empty document is not evidence a scanner ran. A
+                        # truncated gl-secret-detection-report.json parses fine
+                        # and satisfied secret_detection's coverage, so the
+                        # category read as scanned-and-clean with no finding at
+                        # all. Every real report carries at least one key
+                        # (vulnerabilities / Results / SchemaVersion /
+                        # bomFormat), so this cannot reject a genuine clean one.
+                        continue
                     valid = True
                     break
                 except (OSError, ValueError, json.JSONDecodeError):
                     pass
             if not valid:
                 states[category] = "unparseable"
-    missing = [category for category in scanners_run if category in states]
-    findings = []
     existing_findings = existing_findings or []
     skip_reasons = skip_reasons or {}
+    # A recorded skip is authoritative. run-scan.sh writes one only when a
+    # scanner did not run at all, or ran only partway, so a report file that
+    # happens to exist must never outvote it. gl-sbom-*.cdx.json parses fine, so
+    # an SBOM that was never matched against any advisory DB used to report
+    # dependency_scanning as scanned and clean with a PASSED gate. setdefault:
+    # "missing"/"unparseable" are the more precise verdicts, keep them.
+    for category in skip_reasons:
+        states.setdefault(category, "incomplete")
+    missing = [category for category in CATEGORIES if category in states]
+    findings = []
     for category, state in states.items():
-        rule_id = (
-            "APPSEC-REPORT-MISSING"
-            if state == "missing"
-            else "APPSEC-REPORT-UNPARSEABLE"
-        )
+        rule_id = {
+            "missing": "APPSEC-REPORT-MISSING",
+            "unparseable": "APPSEC-REPORT-UNPARSEABLE",
+            "incomplete": "APPSEC-REPORT-INCOMPLETE",
+        }[state]
         if any(
             item.get("category") == category and item.get("rule_id") == rule_id
             for item in existing_findings
@@ -700,9 +1001,14 @@ def _merge_category(path, new_findings, category):
     existing = _load_existing(path)
     return [item for item in existing if item.get("category") != category] + new_findings
 
-def print_summary(findings, gate, failed):
+def print_summary(findings, gate, failed, coverage_incomplete=False):
     widths = (28, 8, 8, 8, 8)
     header = ("Scanner", "Critical", "High", "Medium", "Low")
+    non_actionable_statuses = {
+        "blocked_registry_gap",
+        "blocked_external_dependency",
+    }
+    actionable_critical_high = 0
     print(
         f"{header[0]:<{widths[0]}}|{header[1]:>{widths[1]}}|"
         f"{header[2]:>{widths[2]}}|{header[3]:>{widths[3]}}|{header[4]:>{widths[4]}}"
@@ -720,6 +1026,12 @@ def print_summary(findings, gate, failed):
                     unknown += 1
                 else:
                     counts[severity] += 1
+                    if (
+                        severity in {"CRITICAL", "HIGH"}
+                        and finding.get("remediation_status")
+                        not in non_actionable_statuses
+                    ):
+                        actionable_critical_high += 1
         for severity in SEVERITIES:
             totals[severity] += counts[severity]
         label = scanner[: widths[0]]
@@ -731,7 +1043,23 @@ def print_summary(findings, gate, failed):
         if unknown:
             print(f"  UNKNOWN severity requiring review: {unknown}")
     print(f"TOTAL C+H: {totals['CRITICAL'] + totals['HIGH']}")
-    verdict = "FAILED" if failed else "PASSED"
+    print(f"ACTIONABLE C+H: {actionable_critical_high}")
+    # `gate: none` is report-only for FINDINGS and stays exactly that: the exit
+    # code and the findings verdict are unchanged. But whether a category ran at
+    # all is not a finding-severity question, and the verdict line is what a
+    # human skims -- a bare PASSED over a category that never ran is the false
+    # all-clear this tool exists to prevent. Only the wording changes.
+    if failed and coverage_incomplete:
+        # Both facts, because either alone misleads: a bare FAILED reads as
+        # "findings to fix" when a scanner never ran, and a bare INCOMPLETE
+        # COVERAGE hides that findings are failing the gate too.
+        verdict = "FAILED (INCOMPLETE COVERAGE)"
+    elif failed:
+        verdict = "FAILED"
+    elif coverage_incomplete:
+        verdict = "INCOMPLETE COVERAGE"
+    else:
+        verdict = "PASSED"
     print(f"Gate verdict: {verdict} (threshold: {gate})")
 
     secrets = [item for item in findings if item.get("category") == "secret_detection"]
@@ -766,16 +1094,17 @@ def build_parser():
     parser.add_argument("--only", choices=CATEGORIES)
     parser.add_argument("--ran", default=None)
     parser.add_argument("--skips", default=None)
+    parser.add_argument("--availability", default=None)
     return parser
 
-def _previous_scanners_run(results_dir):
+def _previous_coverage(results_dir, key):
     """What an earlier run already recorded, so a scoped rescan cannot forget it."""
     try:
         value = read_json_loose(Path(results_dir) / "scan-coverage.json")
     except (OSError, ValueError, json.JSONDecodeError):
         return []
     if isinstance(value, dict):
-        previous = value.get("scanners_run")
+        previous = value.get(key)
         if isinstance(previous, list):
             return [item for item in previous if item in CATEGORIES]
     return []
@@ -795,19 +1124,48 @@ def main(argv=None):
     try:
         results_dir.mkdir(parents=True, exist_ok=True)
         parsed = normalize_reports(results_dir)
+        normalized_path = results_dir / "findings.normalized.json"
+        triaged_path = results_dir / "findings.triaged.json"
+        # Taken BEFORE --only narrows the list: whether a scanner's report could
+        # be read is a fact about the run, not about the scoped category, and
+        # dropping it here let a scoped rescan report full coverage for a
+        # category whose report on disk was truncated.
+        unreadable = unreadable_categories(parsed)
         if args.only:
             parsed = [item for item in parsed if item.get("category") == args.only]
         skip_reasons = load_skip_reasons(args.skips)
+        # Dedupe coverage findings against what the OUTPUT will hold, not just
+        # this run's parsed findings: under --only the other categories are kept
+        # from the previous file, so every rescan appended one more copy of the
+        # same gap for a category it never touched.
+        #
+        # Read BOTH output files, because `missing` below is derived from both.
+        # Deduping against findings.normalized.json alone split the two apart: an
+        # interrupted run that left normalized.json on disk while losing
+        # triaged.json and scan-coverage.json suppressed the gap here AND had
+        # nothing left to re-derive it from — PASSED, exit 0,
+        # coverage_complete: true, for categories that never ran. Suppressing a
+        # gap is only safe when whatever suppressed it is also read back below.
+        already_reported = parsed + [
+            item
+            for item in (
+                _load_existing(normalized_path) + _load_existing(triaged_path)
+                if args.only
+                else []
+            )
+            if item.get("category") != args.only
+        ]
         coverage, missing = coverage_findings(
-            results_dir, scanners_run, parsed, skip_reasons
+            results_dir, scanners_run, already_reported, skip_reasons, unreadable
         )
         normalized_new = parsed + coverage
-        triaged_new = triage_findings(json.loads(json.dumps(normalized_new)))
+        availability = load_availability(args.availability)
+        triaged_new = triage_findings(
+            json.loads(json.dumps(normalized_new)), availability
+        )
         redact_secret_findings(normalized_new)
         redact_secret_findings(triaged_new)
 
-        normalized_path = results_dir / "findings.normalized.json"
-        triaged_path = results_dir / "findings.triaged.json"
         if args.only:
             normalized = _merge_category(normalized_path, normalized_new, args.only)
             triaged = _merge_category(triaged_path, triaged_new, args.only)
@@ -829,23 +1187,54 @@ def main(argv=None):
         # still had never run. Coverage is therefore derived from the MERGED
         # findings and unioned with what the previous run recorded.
         if args.only:
+            # Only a category re-examined THIS run and found good may clear a
+            # previously recorded gap. `missing` still names the bad ones here.
+            # ONLY the category re-examined this run. `scanners_run` is
+            # deliberately the full admin-enabled list even under --only, so
+            # subtracting it cleared a recorded gap for every category whose
+            # stale report file happened to still be on disk: `--only sast`
+            # all-cleared a dependency_scanning gap nothing had re-examined.
+            # Intersected with scanners_run, which still names the categories
+            # this invocation actually examined: `--only sast --ran
+            # secret_detection` examined no SAST at all, yet it cleared SAST's
+            # recorded gap on the strength of the flag alone.
+            cleared = ({args.only} & set(scanners_run)) - set(missing)
             scanners_run = sorted(
-                set(scanners_run) | set(_previous_scanners_run(results_dir))
+                set(scanners_run)
+                | set(_previous_coverage(results_dir, "scanners_run"))
             )
-            missing = sorted(
-                {
+            # Union of every surviving record, not merely rebuilt from one file:
+            # if findings.triaged.json is lost, truncated or rewritten, deriving
+            # the gaps from it alone reported coverage_complete: true for
+            # categories that had never run. normalized is read too because an
+            # interrupted run can leave the two out of step, and a gap recorded
+            # in either is still a gap.
+            def _gap_categories(items):
+                return {
                     item.get("category")
-                    for item in triaged
+                    for item in items
                     if str(item.get("rule_id") or "").startswith("APPSEC-REPORT-")
                     and item.get("category")
                 }
+
+            missing = sorted(
+                (_gap_categories(triaged) | _gap_categories(normalized))
+                | (set(_previous_coverage(results_dir, "missing_report")) - cleared)
             )
         write_json(normalized_path, normalized)
         write_json(triaged_path, triaged)
-        # Incomplete coverage is not a pass. A HIGH coverage finding already
-        # fails a `high` gate, but not a `critical`-only one — so state the rule
-        # explicitly instead of relying on severity arithmetic. `none` is
-        # report-only by definition and is respected.
+        # Incomplete coverage is not a pass at any threshold that gates at all. A
+        # HIGH coverage finding already fails a `high` gate, but not a
+        # `critical`-only one — so state the rule explicitly instead of relying
+        # on severity arithmetic.
+        #
+        # `none` is exempt because it is documented as "always exit 0,
+        # report-only" (config/PREFERENCES.md), and something unattended may be
+        # branching on that. Incomplete coverage is NOT silent there: the verdict
+        # line reads INCOMPLETE COVERAGE, the WARNING prints, and
+        # scan-coverage.json carries coverage_complete: false. SKILL.md Step 3
+        # requires reading that field rather than the exit code alone, so the
+        # skill can never report "done" over a scanner that never ran.
         if missing and gate != "none":
             failed = True
 
@@ -862,7 +1251,7 @@ def main(argv=None):
                 "coverage_complete": not missing,
             },
         )
-        print_summary(triaged, gate, failed)
+        print_summary(triaged, gate, failed, bool(missing))
         if args.only:
             print("NOTE: this was a scoped rescan of " + args.only + " only.")
             outstanding = [

@@ -1,6 +1,23 @@
 # AppSec Scan — Update Guide
 
+> **Who this is for:** maintainers reconciling the runner scripts with upstream CI
+> components. Developers running scans want [`README.md`](README.md); admins changing
+> config want [`config/PREFERENCES.md`](config/PREFERENCES.md).
+
 This guide explains how to keep `appsec-scan` in sync with your GitLab CI components.
+
+**CI enforces part of this for you.** `ci/check-appsec-drift.py` runs on every MR that
+touches `scanners/`, `reference/catalog/`, or `scanner-preferences.yaml`. It compares each
+runner against the vendored component snapshots, fully offline, and **fails the pipeline on
+`CONTRACT-DRIFT`** — a component input or report artifact that no longer matches the
+runner's `.contract`. Image pins and 90-day sync staleness are reported but do not block,
+because admins pin images independently of component versions.
+
+Run it yourself before pushing:
+
+```bash
+python3 ci/check-appsec-drift.py   # from the repo root
+```
 
 ---
 
@@ -17,12 +34,12 @@ skills/appsec-scan/
 │   └── catalog/
 │       └── lobster-thermidor/devops/ci-catalogue/
 │           ├── fortify-sast/fortify-sast/25.2.0/
-│           │   ├── template.yml
+│           │   ├── template.yml    ← also the source of the image that runs
 │           │   ├── README.md
 │           │   └── AGENTS.md       ← agent-oriented usage reference
-│           ├── dependency-scanning/dependency-scanning/1.0.0/
+│           ├── dependency-scanning/dependency-scanning/{1.0.0,1.1.0}/
 │           ├── secret-detection/secret-detection/1.0.0/
-│           └── container-scanning/container-scanning/1.0.0/
+│           └── container-scanning/container-scanning/{1.0.0,1.1.0}/
 ├── scripts/
 │   └── catalog.sh
 └── scanners/
@@ -75,18 +92,18 @@ sourceanalyzer -b "$APP_NAME" -debug-verbose -python-version 3 \
 
 ## Scenario 2 — New language added to Fortify SCA
 
-The upstream component added a new language variant. **This is not hypothetical:
-fortify-sast@25.2.0 already declares `go`**, and `scanners/fortify-sast.sh` has a
-`go)` arm that emits `NEEDS-MAPPING:` because the correct `sourceanalyzer`
-invocation for Go has not been mirrored yet. Completing that is the worked
-example below.
+The upstream component added a new language variant. **The worked example is
+`go`**, added to fortify-sast@25.2.0 and mirrored here in 3.3.0 — read the `go)`
+arm of `scanners/fortify-sast.sh` for the shape a completed mapping takes,
+including the comment quoting the component job it mirrors.
 
 You will normally learn about this from a `CONTRACT-DRIFT:` line naming a new
-`input.language.option=<lang>`.
+`input.language.option=<lang>`. Until the arm exists, the runner must emit
+`NEEDS-MAPPING:` rather than guessing an invocation.
 
 **Steps:**
 
-1. Open `scanners/fortify-sast.sh` and add (or replace the `NEEDS-MAPPING:`
+1. Open `scanners/fortify-sast.sh` and add (or replace a `NEEDS-MAPPING:`
    stub with) a real language branch in the `case "$FORTIFY_LANGUAGE" in` block,
    mirroring the component's script for that language.
 2. Open `scripts/run-scan.sh` and add the new project-type detection flag
@@ -107,16 +124,20 @@ No new scanner file is needed — Fortify SCA is a single multi-language runner.
 
 ## Scenario 3 — Scanner image name or tag changed
 
-The Platform Team renamed or retagged a scanner image.
+**Usually there is nothing to do.** Under the default
+`image_policy: follow-component`, the image comes from the component template at
+the resolved tag, so a retag reaches every developer as soon as the component
+publishes it (and the vendored snapshot is refreshed — Scenario 6). The run pulls
+the candidate first, and says exactly what to mirror if your registry lacks it.
 
-**Steps:**
+Act only when the *registry path* moved, or you must hold a tag your mirror has:
 
-1. Edit that category's `image:` in `config/scanner-preferences.yaml` — that
-   pinned ref is what runs. Nothing else to touch; `scripts/load-prefs.sh`
-   exports it at Step 1.5.
-2. If changing the Fortify image specifically, update `FORTIFY_SAST_IMAGE` in
-   the profile's category block and remind developers who override via env var
-   to update `~/.bashrc` / `~/.zshrc` accordingly.
+1. Set that category's `image:` in `config/scanner-preferences.yaml`. It supplies
+   the registry and path; the component still supplies the tag. Set
+   `settings.image_policy: pinned` as well if you need the ref used verbatim.
+2. Remind developers who override via `FORTIFY_SAST_IMAGE` (or the other three
+   image env vars) in `~/.bashrc` / `~/.zshrc` to update or drop it — an env var
+   still beats both config and component.
 3. No change needed to the scanner files — they use env vars, not hardcoded names.
 
 ---
@@ -207,8 +228,9 @@ from HEAD (the file was added upstream after the 25.2.0 tag was cut, on
 | New scanner category entirely | New `scanners/<name>.sh` + `scripts/run-scan.sh` invocation + `scripts/normalize.py` parser |
 | Scan orchestration logic changed | `scripts/run-scan.sh` |
 | Report parsing / triage / gate | `scripts/normalize.py` |
-| Scanner image renamed/retagged | `config/scanner-preferences.yaml` `image:` |
-| Component version pin changed | `config/scanner-preferences.yaml` `version:` + optional snapshot refresh |
+| Scanner image retagged upstream | nothing — the component supplies the tag (Scenario 3) |
+| Scanner image path moved to a different registry | `config/scanner-preferences.yaml` `image:` |
+| Component version pin changed | `config/scanner-preferences.yaml` `version:` + snapshot refresh (the pin also fixes the image) |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |
 | Scanner retired | Remove scanner file + remove from `run-scan.sh` + `normalize.py` |
 
@@ -216,9 +238,10 @@ from HEAD (the file was added upstream after the 25.2.0 tag was cut, on
 
 The Secret Detection scanner mirrors the GitLab CI/CD Catalog component:
 
-- Image: the active profile's `secret_detection.image:` (full ref), exported as
-  `SECRET_DETECTION_IMAGE` by `scripts/load-prefs.sh` in Step 1.5; a pre-set
-  `SECRET_DETECTION_IMAGE` env var overrides it for one run.
+- Image: derived from the component template at the resolved tag unless the
+  profile declares `secret_detection.image:`; either way it reaches the scan as
+  `SECRET_DETECTION_IMAGE`, and a pre-set `SECRET_DETECTION_IMAGE` env var
+  overrides both for one run.
 - Script block: `/analyzer run`
 - Report artifact: `gl-secret-detection-report.json`
 
@@ -259,7 +282,7 @@ docker run --rm \
   -e SOURCE_PATH="src" \
   -e FORTIFY_LANGUAGE="maven" \
   "${FORTIFY_SAST_IMAGE}" \
-  bash /runner.sh
+  sh /runner.sh
 
 # 4. Check the output
 ls -la .appsec-results/
@@ -270,8 +293,10 @@ APPSEC_PROFILE=catalog bash "$SKILL_DIR/scripts/run-scan.sh" --dry-run
 # 6. Test normalize.py with existing results (empty RAN list for unit test)
 python3 "$SKILL_DIR/scripts/normalize.py" .appsec-results --ran ""
 
-# 7. Budget check (CI enforces ≤275 lines / ≤13800 chars)
-wc -l "$SKILL_DIR/SKILL.md" && wc -c "$SKILL_DIR/SKILL.md"
+# 7. Budget check (tests/test_skill_doc.py enforces ≤330 lines / ≤17400 chars;
+#    it counts CHARACTERS, so `wc -c` over-reports every em dash by 2 bytes)
+python3 -c "import sys,pathlib;t=pathlib.Path(sys.argv[1]).read_text();print(len(t.splitlines()),'lines',len(t),'chars')" \
+  "$SKILL_DIR/SKILL.md"
 ```
 
 If the isolated run passes, run the full orchestrator to confirm end-to-end orchestration.
@@ -283,7 +308,7 @@ enabled (they need docker + internet, so repo CI skips them too):
 
 ```bash
 RUN_SECRET_DETECTION_SMOKE=1 python3 -m pytest tests/test_secret_detection.py -v
-RUN_FORTIFY_SAST_SMOKE=1     python3 -m pytest tests/test_skill_doc.py -v
+RUN_GITLAB_SAST_SMOKE=1      python3 -m pytest tests/test_skill_doc.py -v
 ```
 
 Run them before releasing changes to `scripts/run-scan.sh` (orchestration)
@@ -301,4 +326,4 @@ March, June, September, and December. Check for:
 - New `before_script` or `after_script` steps
 - Image tag updates
 
-Drift detection runs automatically at every scan via `scripts/catalog.sh check-drift`, in two forms: **image drift** (configured `image:` vs the component's effective job image) and **contract drift** (declared inputs, `options:` and report artifacts vs `scanners/<runner>.contract`). The quarterly task is refreshing snapshots, contracts and `Last synced` headers (Scenario 6).
+Drift detection runs automatically at every scan via `scripts/catalog.sh check-drift`, in two forms: **image drift** (a declared `image:` vs the component's effective job image — silent when no `image:` is declared, which is how both profiles ship) and **contract drift** (declared inputs, `options:` and report artifacts vs `scanners/<runner>.contract`). The quarterly task is refreshing snapshots, contracts and `Last synced` headers (Scenario 6).

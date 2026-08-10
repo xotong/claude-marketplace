@@ -3,11 +3,16 @@
 # Scanner      : GitLab Container Scanning (GTCS / bundled archive scanner)
 # Target       : Registry image (GTCS) or docker-save tarball (archive mode)
 # CI component : lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning@~latest
-# Last synced  : 2026-07-15
+# Last synced  : 2026-07-25
 # Image env var: GITLAB_CS_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Image note   : The pinned profile image: is what runs; the catalog-resolved
-#                template is advisory only (README + drift). The template default
-#                image is registry.gitlab.com/security-products/container-scanning:8.
+#                template is advisory only (README + drift). As of component
+#                1.1.0 the template default is
+#                registry.gitlab.com/security-products/container-scanning:8.6.31
+#                (1.0.0 pinned :8 — the tag bump is the only 1.0.0 -> 1.1.0 change).
+#                scanner-preferences.yaml pins :8 deliberately: a floating major
+#                tag keeps picking up analyzer patches. ci/check-appsec-drift.py
+#                reports that difference as advisory "version drift", not an error.
 # Scan modes   : CS_SCAN_MODE=registry uses gtcs / analyzer with CS_IMAGE
 #                CS_SCAN_MODE=archive uses the bundled offline scanner on CS_ARCHIVE tarball
 # Output       : gl-container-scanning-report.json / container-scan-archive.json
@@ -26,18 +31,29 @@ set -eu
 CI_PROJECT_DIR="${CI_PROJECT_DIR:-/workspace}"
 RESULTS="${CI_PROJECT_DIR}/.appsec-results"
 REPORT="${CI_PROJECT_DIR}/gl-container-scanning-report.json"
-SBOM_REPORT="${CI_PROJECT_DIR}/gl-sbom-report.cdx.json"
 ARCHIVE_REPORT="${RESULTS}/container-scan-archive.json"
 CS_SCAN_MODE="${CS_SCAN_MODE:-registry}"
+
+# GTCS names the CycloneDX SBOM after the scanned image — gl-sbom-<image>-<hash>.cdx.json —
+# not a fixed filename. The contract declares report.cyclonedx=**/gl-sbom-*.cdx.json, and
+# normalize.py / run-scan.sh both match that glob, so this script must move whatever matched
+# rather than a single hardcoded name.
+sbom_sweep() {
+  # $1 = directory to sweep. Emits nothing when no SBOM was produced.
+  for _sbom in "$1"/gl-sbom-*.cdx.json; do
+    [ -f "${_sbom}" ] || continue
+    printf '%s\n' "${_sbom}"
+  done
+}
 
 cd "${CI_PROJECT_DIR}"
 mkdir -p "${RESULTS}"
 rm -f "${REPORT}" \
-  "${SBOM_REPORT}" \
   "${ARCHIVE_REPORT}" \
   "${RESULTS}/gl-container-scanning-report.json" \
-  "${RESULTS}/gl-sbom-report.cdx.json" \
   "${RESULTS}/container-scan-archive.json"
+sbom_sweep "${CI_PROJECT_DIR}" | while IFS= read -r _stale; do rm -f "${_stale}"; done
+sbom_sweep "${RESULTS}"         | while IFS= read -r _stale; do rm -f "${_stale}"; done
 
 # Mounted worktrees may be owned by a different host UID than the container user.
 # GitLab analyzer images run git internally, so mark the workspace as safe when
@@ -69,9 +85,11 @@ case "${CS_SCAN_MODE}" in
 
     if [ -f "${REPORT}" ]; then
       mv "${REPORT}" "${RESULTS}/gl-container-scanning-report.json"
-      if [ -f "${SBOM_REPORT}" ]; then
-        mv "${SBOM_REPORT}" "${RESULTS}/gl-sbom-report.cdx.json"
-      fi
+      # Move every SBOM GTCS emitted, preserving its image-derived name so the
+      # cyclonedx glob in the contract keeps matching.
+      sbom_sweep "${CI_PROJECT_DIR}" | while IFS= read -r _found; do
+        mv "${_found}" "${RESULTS}/$(basename "${_found}")"
+      done
       exit 0
     fi
 

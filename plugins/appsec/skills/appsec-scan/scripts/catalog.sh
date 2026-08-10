@@ -11,6 +11,7 @@ usage() {
   echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
   echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none> [configured_image]" >&2
   echo "ERROR:    or: catalog.sh contract <component_path> <cache_dir>" >&2
+  echo "ERROR:    or: catalog.sh template-image <component_path> <cache_dir>" >&2
   echo "ERROR:    or: catalog.sh self-test" >&2
   exit 1
 }
@@ -267,16 +268,60 @@ template_image_ref() {
       }
       next
     }
+    # variables: blocks, at document level (keys indented 2) and inside a job
+    # (keys indented 4). dependency-scanning builds its image through these
+    # rather than through spec.inputs:
+    #   variables: {ANALYZER_IMAGE_PREFIX, ANALYZER_IMAGE_NAME, ANALYZER_IMAGE_VERSION}
+    #   job.variables.DS_ANALYZER_IMAGE: $PREFIX/$NAME:$VERSION
+    #   job.image: "$DS_ANALYZER_IMAGE"
+    # Without resolving them the ref is underivable and the category needs an
+    # explicit image: in config.
+    /^variables:[ \t]*$/  { in_vars = 1; vars_indent = 2; next }
+    /^  variables:[ \t]*$/ { in_vars = 1; vars_indent = 4; next }
+    in_vars {
+      if ($0 ~ /^[ \t]*$/) next
+      if ($0 ~ /^[ \t]*#/) next
+      indent = match($0, /[^ ]/) - 1
+      if (indent >= vars_indent) {
+        line = trim($0); idx = index(line, ":")
+        if (idx > 1) {
+          vk = substr(line, 1, idx - 1)
+          vv = unquote(trim(substr(line, idx + 1)))
+          if (!(vk in varmap)) varmap[vk] = vv
+        }
+        next
+      }
+      in_vars = 0
+    }
     image == "" && $0 ~ /^  image:[ \t]/ {
       v = $0; sub(/^  image:[ \t]*/, "", v); image = unquote(trim(v))
     }
     END {
       if (image == "") exit 0
-      while (match(image, /\$\[\[[ \t]*inputs\.[A-Za-z0-9_.-]+[ \t]*\]\]/)) {
-        k = substr(image, RSTART, RLENGTH)
-        sub(/^\$\[\[[ \t]*inputs\./, "", k); sub(/[ \t]*\]\]$/, "", k)
-        if (!(k in def)) exit 0
-        image = substr(image, 1, RSTART - 1) def[k] substr(image, RSTART + RLENGTH)
+      # Alternate between input and variable expansion: a variable value may
+      # itself contain $[[ inputs.x ]], and vice versa. Bounded so a self
+      # referential definition cannot spin.
+      for (pass = 0; pass < 20; pass++) {
+        if (match(image, /\$\[\[[ \t]*inputs\.[A-Za-z0-9_.-]+[ \t]*\]\]/)) {
+          k = substr(image, RSTART, RLENGTH)
+          sub(/^\$\[\[[ \t]*inputs\./, "", k); sub(/[ \t]*\]\]$/, "", k)
+          if (!(k in def)) exit 0
+          image = substr(image, 1, RSTART - 1) def[k] substr(image, RSTART + RLENGTH)
+          continue
+        }
+        if (match(image, /\$\{[A-Za-z_][A-Za-z0-9_]*\}/)) {
+          k = substr(image, RSTART + 2, RLENGTH - 3)
+          if (!(k in varmap)) exit 0
+          image = substr(image, 1, RSTART - 1) varmap[k] substr(image, RSTART + RLENGTH)
+          continue
+        }
+        if (match(image, /\$[A-Za-z_][A-Za-z0-9_]*/)) {
+          k = substr(image, RSTART + 1, RLENGTH - 1)
+          if (!(k in varmap)) exit 0
+          image = substr(image, 1, RSTART - 1) varmap[k] substr(image, RSTART + RLENGTH)
+          continue
+        }
+        break
       }
       if (image ~ /\$/) exit 0
       print image
@@ -377,6 +422,21 @@ date_to_epoch() {
   else
     printf '0\n'
   fi
+}
+
+# Print the component template's effective job image at the resolved tag, or
+# nothing when the template builds it from a shell variable the template does not
+# declare (e.g. dependency-scanning's $DS_ANALYZER_IMAGE). Prints nothing rather
+# than guessing — callers treat empty as "keep what the admin configured".
+template_image_cmd() {
+  local component_path cache_dir base_dir tag
+  component_path=$1
+  cache_dir=$2
+  base_dir="${cache_dir%/}/${component_path}"
+  [ -d "$base_dir" ] || base_dir="$(skill_dir)/reference/catalog/${component_path}"
+  tag=$(fallback_tag_dir "$base_dir" || true)
+  [ -n "$tag" ] || return 0
+  template_image_ref "$base_dir/$tag/template.yml"
 }
 
 check_drift_cmd() {
@@ -604,6 +664,10 @@ main() {
     check-drift)
       [ $# -eq 4 ] || [ $# -eq 5 ] || usage
       check_drift_cmd "$2" "$3" "$4" "${5:-}"
+      ;;
+    template-image)
+      [ $# -eq 3 ] || usage
+      template_image_cmd "$2" "$3"
       ;;
     contract)
       [ $# -eq 3 ] || usage

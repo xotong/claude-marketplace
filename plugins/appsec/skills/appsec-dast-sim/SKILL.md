@@ -7,9 +7,19 @@ description: >
   middleware, input handling, session logic, business rules), generates specific test
   probes (curl commands, payload examples), and reports findings grouped by severity.
   Use when the user says: "DAST scan", "OWASP security review", "WSTG check",
-  "web security audit", "find injection vulnerabilities", "check auth security",
-  "security code review", "find XSS or SQLi", "check session handling",
-  "API security audit", "business logic vulnerabilities", "OWASP top 10 check".
+  "web security audit", "security code review", "OWASP top 10 check",
+  "audit my API", "is my API secure", "review my endpoints".
+  Also activate for a SINGLE WSTG area and cover only that one (Phase 0 routes):
+  Auth — "check auth security", "is my login secure", "authentication review";
+  Access control — "authorization check", "can users access other users' data",
+  "IDOR", "privilege escalation";
+  Sessions — "check session handling", "cookie security", "session fixation";
+  Injection — "find XSS or SQLi", "injection vulnerabilities", "SSRF", "XXE",
+  "command injection", "is my input validated";
+  Crypto — "crypto review", "am I hashing passwords properly", "TLS check";
+  Business logic — "business logic vulnerabilities", "can this flow be abused";
+  API — "API security audit", "GraphQL security", "REST security review";
+  Config — "security misconfiguration", "check my headers", "CORS review".
   Do NOT activate for general code review, unit testing, linting, or container scanning.
 ---
 
@@ -21,6 +31,41 @@ Web Security Testing Guide v4.2 checklist and produces actionable findings with 
 probes and remediation guidance.
 
 WSTG quick reference: `reference/wstg-v42-checklist.md` (vendored locally).
+
+---
+
+## Phase 0 — Decide which areas to review
+
+Set `WSTG_SCOPE` from the user's words before reading any code. Phase 1 always
+runs — you cannot review what you have not enumerated.
+
+| The user asked about | `WSTG_SCOPE` | Phases |
+|---|---|---|
+| login, auth, passwords, MFA, tokens | `AUTHN` | 3 |
+| permissions, IDOR, "other users' data", privilege escalation | `AUTHZ` | 4 |
+| sessions, cookies, logout, fixation | `SESS` | 5 |
+| XSS, SQLi, SSRF, XXE, command injection, input validation | `INPV` | 6 |
+| crypto, hashing, TLS, encryption at rest | `CRYP` | 8 |
+| business logic, workflow abuse, race conditions | `BUSL` | 9 |
+| REST, GraphQL, API security | `APIT` | 10 |
+| headers, CORS, TLS config, exposed admin panels | `CONF` | 2 |
+| errors, stack traces, information leakage | `ERRH` | 7 |
+| everything, full review, OWASP audit, bare invocation | `ALL` | 2–10 |
+| anything you are not sure about | **ask — below** |
+
+**When unsure, ask — never guess.** Use `AskUserQuestion` with `multiSelect: true`.
+Label by what a developer would recognise, not by WSTG code:
+
+- `Everything (recommended)` — the full OWASP WSTG v4.2 checklist
+- `Login and access control` — who can sign in, and what they can reach (AUTHN + AUTHZ)
+- `Untrusted input` — XSS, SQL injection, SSRF, command injection (INPV)
+- `Sessions and cookies` — how sessions are issued, stored, and revoked (SESS)
+- `API surface` — REST and GraphQL specifics (APIT)
+- `Configuration and secrets handling` — headers, CORS, crypto, error leakage (CONF + CRYP + ERRH)
+
+Run Phase 1, then only the phases the scope selects. In the Phase 11 coverage table,
+mark every phase you skipped as `SKIP (out of requested scope)` — never as `PASS`.
+A scoped review is not an OWASP pass; say so when you report.
 
 ---
 
@@ -601,7 +646,10 @@ WSTG-CONF-02    | Application platform config        | PASS / FAIL / SKIP
 ```
 
 Mark as SKIP when the codebase has no relevant surface (e.g. WSTG-APIT-01 skipped when
-no GraphQL endpoint found).
+no GraphQL endpoint found), and `SKIP (out of requested scope)` for every phase a
+Phase 0 scope excluded. Both are SKIP, never PASS — a test that did not run has not
+passed. When `WSTG_SCOPE` was anything other than `ALL`, open the report by naming
+what was reviewed and what was not, and state that this is not a full OWASP review.
 
 ---
 
