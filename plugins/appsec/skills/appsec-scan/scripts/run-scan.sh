@@ -486,6 +486,15 @@ if [ -z "${FORTIFY_VARIANT:-}" ]; then
     if [ -n "$FORTIFY_VARIANT" ]; then
       selected_jdk=$(printf '%s' "$FORTIFY_VARIANT" | sed -n 's/^jdk\([0-9][0-9]*\).*/\1/p')
       info "[Fortify SCA] Project targets Java ${detected_release}; selecting ${FORTIFY_VARIANT}"
+      # CI does not detect this — the component takes `variant` as an input and
+      # defaults it. So whenever we pick something other than that default, the
+      # pipeline is about to scan this project with a different JDK than we just
+      # did. Print the exact line to paste, while the developer is already here.
+      default_variant=$(grep '^input\.variant\.default=' "$variant_contract" 2>/dev/null |
+                          head -1 | sed 's/^[^=]*=//')
+      if [ -n "$default_variant" ] && [ "$default_variant" != "$FORTIFY_VARIANT" ]; then
+        info "[Fortify SCA] CI defaults to ${default_variant}. Add 'variant: ${FORTIFY_VARIANT}' to the ${sast_component:-fortify-sast} component inputs in .gitlab-ci.yml so the pipeline matches this scan."
+      fi
       # Nothing published is new enough. Say so: the build may fail on syntax the
       # analyzer's JDK does not accept, and that is a component gap, not a bug here.
       if [ -n "$selected_jdk" ] && [ "$selected_jdk" -lt "$detected_release" ] 2>/dev/null; then

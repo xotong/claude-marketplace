@@ -3,7 +3,7 @@
 # Scanner      : Fortify SAST
 # Target       : Source tree in analyzer workspace
 # CI component : lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast@~latest
-# Last synced  : 2026-07-25
+# Last synced  : 2026-08-12
 # Image env var: FORTIFY_SAST_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Languages    : maven, gradle, python, javascript, go
 # Output       : fortify-sast.fpr
@@ -43,23 +43,44 @@ sourceanalyzer -b "${APP_NAME}" -clean
 
 case "${FORTIFY_LANGUAGE}" in
   maven)
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -debug -verbose -b "${APP_NAME}" \
       mvn clean install -s "${MAVEN_SETTINGS:-settings.xml}" -DskipTests
     ;;
   gradle)
+    # The component runs $[[ inputs.source-path ]]/gradlew (template.yml:130), not
+    # ./gradlew. Those are different files whenever source-path is not "." — so
+    # running the wrong one means this scan and the CI job disagree about which
+    # build they even executed. Prefer CI's path; fall back to a root wrapper
+    # rather than refusing to scan, but name the CI consequence, because catching
+    # that here is the entire point of running this before pushing.
+    if [ -x "${SOURCE_PATH}/gradlew" ]; then
+      GRADLEW="${SOURCE_PATH}/gradlew"
+    elif [ -x ./gradlew ]; then
+      GRADLEW=./gradlew
+      echo "WARNING: CI runs ${SOURCE_PATH}/gradlew, which does not exist here." >&2
+      echo "WARNING:   Scanning with ./gradlew instead: this scan will pass and the CI job" >&2
+      echo "WARNING:   will fail. Move the wrapper into ${SOURCE_PATH}/, or set the" >&2
+      echo "WARNING:   component input source-path: . to match." >&2
+    else
+      echo "ERROR: no gradle wrapper at ${SOURCE_PATH}/gradlew or ./gradlew" >&2
+      echo "ERROR:   The component requires a working gradle wrapper in the repository." >&2
+      exit 2
+    fi
     sourceanalyzer -b "${APP_NAME}" \
-      ./gradlew -p "${SOURCE_PATH}" clean assemble \
+      "${GRADLEW}" -p "${SOURCE_PATH}" clean assemble \
       "-Partifactory_user=${ARTIFACTORY_USER:-}" \
       "-Partifactory_password=${ARTIFACTORY_PASSWORD:-}"
     sourceanalyzer -b "${APP_NAME}" "${SOURCE_PATH}"
     ;;
   python)
     sourceanalyzer -b "${APP_NAME}" \
+      -debug-verbose \
       -python-version 3 \
       "${SOURCE_PATH}"
     ;;
   javascript)
     sourceanalyzer -b "${APP_NAME}" \
+      -debug-verbose \
       -Dcom.fortify.sca.follow.imports=false \
       "${SOURCE_PATH}"
     ;;

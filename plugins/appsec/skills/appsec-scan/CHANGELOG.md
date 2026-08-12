@@ -35,9 +35,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   does not carry it, the scan warns and runs the component's default rather than
   failing. `.tool-versions`, `.sdkmanrc` and `.java-version` are deliberately not read;
   they pin a developer's toolchain, not the build's target
+- When the selected variant differs from the component's own default, the scan prints
+  the line to paste into `.gitlab-ci.yml` (`variant: jdk21-review`) so the pipeline
+  matches. CI does not detect the release — the component takes `variant` as an input
+  and defaults it — so without this the local scan is right and the pipeline quietly
+  is not
 
 ### Fixed
 
+- **The Gradle arm ran a different wrapper than CI.** The component invokes
+  `$[[ inputs.source-path ]]/gradlew` (`template.yml:130`); this runner invoked
+  `./gradlew`. Whenever `source-path` is not `.` those are different files, so a
+  repository with the wrapper in only one of the two places passed locally and failed
+  in CI — or the reverse — with a message that read like a broken build rather than a
+  path mismatch. The runner now prefers CI's path, and when only a root wrapper exists
+  it scans with that **and states that the CI job will fail**, which is the whole point
+  of running this before pushing. No wrapper at all is a hard error instead of a
+  confusing Gradle failure
+- Diagnostic flags realigned with the component: `-debug -verbose` on the maven arm,
+  `-debug-verbose` on python and javascript (go already had it). Log output only —
+  but a translation that fails without them is harder to diagnose than the CI job it
+  mirrors. `-python-path` is still deliberately **not** passed; see GitHub issue #12
 - **A configured JDK variant is no longer silently replaced by the component's default.**
   A Fortify tag carries the JDK the target compiles with (`25.2.0-jdk17-review` vs
   `-jdk21-review`), and `follow-component` adopted the template's tag whole — so an
