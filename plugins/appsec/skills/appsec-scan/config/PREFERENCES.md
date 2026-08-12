@@ -242,26 +242,41 @@ name a registry you can reach — which means vendoring snapshots **from your ow
 instance** (MIGRATION.md "Re-vendor"). Declare `image:` when your mirror path
 differs from the template's, or as the fallback for a tag you have not mirrored.
 
-**Selecting a JDK variant (Fortify).** A Fortify tag is `<version>-<variant>`, and the
-variant is the JDK your project compiles with — `jdk17-review` or `jdk21-review`. The
-component always declares `jdk17-review` as its default, so a Java 21 project needs the
-variant declared here:
+**The JDK variant (Fortify) is automatic — there is nothing to configure.** A Fortify tag
+is `<version>-<variant>`, where the variant is the JDK that compiles your code
+(`jdk17-review` | `jdk21-review`) and the component always defaults to `jdk17-review`.
+Each run reads the repository's own build files and picks for you:
 
-```yaml
-sast:
-  component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
-  version: ~latest
-  image: jfrog.internal/security/fortify-sca:25.2.0-jdk21-review
-  enabled: true
+```
+INFO: [Fortify SCA] Project targets Java 21; selecting jdk21-review
 ```
 
-Under `follow-component` the component still supplies the **version** — a bump to
-`25.2.1` resolves to `…:25.2.1-jdk21-review` — while your variant is preserved and the
-substitution is printed. You do not need `pinned` for this, and should not use it here:
-`image_policy` is global, so pinning to hold a variant would freeze version tracking for
-every category. Dependency scanning's `resolution_job_variant` (`openjdk17|openjdk21`)
-has the same shape but is not reachable locally — the skill runs the analyzer directly
-and never runs a resolution job.
+`scripts/detect-java-release.sh` reads `maven.compiler.release|source|target`,
+`java.version` and the compiler plugin's `<release>/<source>/<target>` from every
+`pom.xml`, and `JavaLanguageVersion.of(N)`, `jvmToolchain(N)` and
+`source|targetCompatibility` from every `build.gradle[.kts]`. It takes the **highest**
+release found anywhere — a JDK builds its own release and every earlier one, never a
+later one — and anything above 17 selects `jdk21-review`. Generated copies under
+`target/` and `build/` are ignored. `.tool-versions`, `.sdkmanrc` and `.java-version` are
+deliberately **not** read: they pin a developer's local toolchain, which is often newer
+than what the build targets, and guessing high breaks builds that guessing low does not.
+
+Precedence, highest first:
+
+| Source | When it wins |
+|---|---|
+| `FORTIFY_VARIANT=jdk21-review` in the environment | always — the escape hatch for a repository the detector reads wrongly |
+| detected from the build files | whenever a release is found |
+| the variant in your `image:` tag | no release could be detected |
+| the component's default (`jdk17-review`) | nothing else said anything |
+
+Detection is a preference, never a requirement: if your registry does not carry the
+selected variant, the scan **warns and runs the component's default** rather than
+failing. Non-Java projects are unaffected — no release is detected, so nothing changes.
+
+Dependency scanning's `resolution_job_variant` (`openjdk17|openjdk21`) has the same shape
+but is not reachable locally — the skill runs the analyzer directly and never runs a
+resolution job.
 
 An image that can be neither derived nor configured **stops the scan with a
 non-zero exit**. It is never guessed and the scanner is never skipped: a skipped

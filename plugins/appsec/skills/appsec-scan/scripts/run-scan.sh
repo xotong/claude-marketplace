@@ -444,6 +444,29 @@ category_scanner_name() {
 # internet-connected instance that pull SUCCEEDS, so the scan runs the PUBLIC
 # analyzer instead of the configured internal mirror and nothing says so.
 #
+# Which Fortify JDK variant this project needs. Detected here rather than left to
+# config because the component's default (jdk17-review) silently under-builds a
+# Java 21 project, and asking every admin to hand-pin an image per repository is
+# the kind of manual step that never happens. Same shape as FORTIFY_LANGUAGE
+# below: auto-detected, overridable by the environment.
+#
+# JDK 21 compiles releases up to 21; JDK 17 stops at 17. So the lowest JDK that
+# can build the repository is decided by the HIGHEST release declared in it, and
+# anything above 17 must go to the newer image. Not a Java project, or no release
+# declared anywhere: stay empty and leave every existing path untouched.
+if [ -z "${FORTIFY_VARIANT:-}" ]; then
+  detected_release=$(sh "$SCRIPTS_DIR/detect-java-release.sh" . 2>/dev/null || true)
+  if [ -n "$detected_release" ]; then
+    if [ "$detected_release" -gt 17 ] 2>/dev/null; then
+      FORTIFY_VARIANT=jdk21-review
+    else
+      FORTIFY_VARIANT=jdk17-review
+    fi
+    info "[Fortify SCA] Project targets Java ${detected_release}; selecting ${FORTIFY_VARIANT}"
+  fi
+fi
+FORTIFY_VARIANT="${FORTIFY_VARIANT:-}"
+
 # Word-splitting the tuple list is intentional and safe: this file is bash and
 # load-prefs.sh emits space-separated tuples with no spaces inside one.
 for tuple in ${ENABLED_COMPONENTS:-}; do
@@ -477,9 +500,14 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
   tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
     "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
 
+  # Only SAST's image carries a JDK variant; the other categories' tags do not,
+  # and resolve-image.sh would find nothing to substitute anyway.
+  preferred_variant=
+  [ "$cat_name" = sast ] && preferred_variant=$FORTIFY_VARIANT
+
   if effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
       "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}" \
-      "$image_pull_mode"); then
+      "$image_pull_mode" "$preferred_variant"); then
     [ -n "$effective" ] && eval "$var=\$effective"
   else
     record_missing_image "$(category_scanner_name "$cat_name")" "$var" "$cat_name"

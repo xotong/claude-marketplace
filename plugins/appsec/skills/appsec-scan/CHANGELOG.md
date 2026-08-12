@@ -7,6 +7,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The Fortify JDK variant is now detected from the codebase — no configuration.**
+  `scripts/detect-java-release.sh` reads the compile target out of every `pom.xml`
+  (`maven.compiler.release|source|target`, `java.version`, the compiler plugin's
+  `<release>/<source>/<target>`) and `build.gradle[.kts]`
+  (`JavaLanguageVersion.of(N)`, `jvmToolchain(N)`, `source|targetCompatibility` in all
+  of its spellings), takes the **highest** release found, and selects `jdk21-review`
+  above 17 or `jdk17-review` otherwise. Highest wins because a JDK compiles its own
+  release and every earlier one but never a later one, so the highest declaration
+  decides the lowest usable image; generated copies under `target/` and `build/` are
+  pruned so a stale artifact cannot outvote the source. Same shape as
+  `FORTIFY_LANGUAGE`: automatic, with `FORTIFY_VARIANT` as the environment override.
+  A detected variant outranks the variant in `image:` — it is evidence from the
+  repository rather than a line typed once — but it stays a preference: if the registry
+  does not carry it, the scan warns and runs the component's default rather than
+  failing. `.tool-versions`, `.sdkmanrc` and `.java-version` are deliberately not read;
+  they pin a developer's toolchain, not the build's target
+
 ### Fixed
 
 - **A configured JDK variant is no longer silently replaced by the component's default.**
