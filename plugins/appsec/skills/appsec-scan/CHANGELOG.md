@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **A configured JDK variant is no longer silently replaced by the component's default.**
+  A Fortify tag carries the JDK the target compiles with (`25.2.0-jdk17-review` vs
+  `-jdk21-review`), and `follow-component` adopted the template's tag whole — so an
+  admin who pinned `…:25.2.0-jdk21-review` for a Java 21 project got the component's
+  JDK 17 analyzer, with nothing said. `resolve-image.sh` now applies the existing rule
+  one field further right: the component owns the **version**, the admin owns the
+  registry, path **and variant**. `…:25.2.0-jdk21-review` against a template declaring
+  `25.2.1-jdk17-review` now resolves to `…:25.2.1-jdk21-review`, and the substitution is
+  announced on stderr. Tags without a version-shaped head (`latest`) or without a
+  suffix (`container-scanning:8.6.31`) are unaffected
+
 ## [3.3.0] — 2026-08-08
 
 ### Changed — BREAKING

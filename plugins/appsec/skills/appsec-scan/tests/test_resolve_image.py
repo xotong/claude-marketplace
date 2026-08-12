@@ -22,7 +22,9 @@ CS_COMPONENT = "lobster-thermidor/devops/ci-catalogue/container-scanning/contain
 DS_COMPONENT = "lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning"
 
 
-class ResolveImageTest(unittest.TestCase):
+class _ResolveHarness(unittest.TestCase):
+    """Shared stub-runtime plumbing. Holds no tests of its own."""
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -46,6 +48,8 @@ class ResolveImageTest(unittest.TestCase):
         proc = subprocess.run(argv, capture_output=True, text=True, check=True)
         return proc.stdout.strip()
 
+
+class ResolveImageTest(_ResolveHarness):
     def test_adopts_template_tag_but_keeps_configured_registry(self) -> None:
         """The whole point: new tag, our mirror. Never the template's registry."""
         result = self._resolve(
@@ -126,6 +130,90 @@ class ResolveImageTest(unittest.TestCase):
         self.assertEqual(
             self._resolve("", "jfrog.internal/security/x:1", self._runtime("d6", True)),
             "jfrog.internal/security/x:1",
+        )
+
+
+class VariantPreservationTest(_ResolveHarness):
+    """A tag's variant suffix describes the TARGET, so the admin owns it.
+
+    Fortify's variant is the JDK the project compiles with. The component always
+    declares jdk17-review as its default, so adopting the template's tag wholesale
+    scanned a Java 21 project with a JDK 17 analyzer -- and said nothing.
+    """
+
+    FORTIFY = "jfrog.internal/security/fortify-sca"
+    UPSTREAM = "registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca"
+
+    def test_configured_variant_survives_a_component_version_bump(self) -> None:
+        """The regression that motivated this: jdk21 must not become jdk17."""
+        result = self._resolve(
+            f"{self.FORTIFY}:25.2.0-jdk21-review",
+            f"{self.UPSTREAM}:25.2.1-jdk17-review",
+            self._runtime("dv1", True),
+        )
+        self.assertEqual(result, f"{self.FORTIFY}:25.2.1-jdk21-review")
+
+    def test_variant_survives_when_only_the_variant_differs(self) -> None:
+        """Same version, different variant: the configured image already is correct."""
+        configured = f"{self.FORTIFY}:25.2.0-jdk21-review"
+        self.assertEqual(
+            self._resolve(configured, f"{self.UPSTREAM}:25.2.0-jdk17-review",
+                          self._runtime("dv2", True)),
+            configured,
+        )
+
+    def test_agreeing_variants_still_adopt_the_version(self) -> None:
+        self.assertEqual(
+            self._resolve(
+                f"{self.FORTIFY}:25.2.0-jdk17-review",
+                f"{self.UPSTREAM}:25.2.1-jdk17-review",
+                self._runtime("dv3", True),
+            ),
+            f"{self.FORTIFY}:25.2.1-jdk17-review",
+        )
+
+    def test_plain_version_tags_are_unaffected(self) -> None:
+        """Regression guard: the container-scanning shape must not change."""
+        self.assertEqual(
+            self._resolve(
+                "jfrog.internal/security/container-scanning:8",
+                "registry.gitlab.com/security-products/container-scanning:8.6.31",
+                self._runtime("dv4", True),
+            ),
+            "jfrog.internal/security/container-scanning:8.6.31",
+        )
+
+    def test_non_version_tag_is_not_split(self) -> None:
+        """`latest` has no version head, so there is no variant to preserve."""
+        self.assertEqual(
+            self._resolve(f"{self.FORTIFY}:latest", f"{self.UPSTREAM}:25.2.1-jdk17-review",
+                          self._runtime("dv5", True)),
+            f"{self.FORTIFY}:25.2.1-jdk17-review",
+        )
+
+    def test_configured_without_a_variant_takes_the_template_tag(self) -> None:
+        """Nothing to preserve; the component's ref stands."""
+        self.assertEqual(
+            self._resolve(f"{self.FORTIFY}:25.2.0", f"{self.UPSTREAM}:25.2.1-jdk17-review",
+                          self._runtime("dv6", True)),
+            f"{self.FORTIFY}:25.2.1-jdk17-review",
+        )
+
+    def test_variant_preserved_with_a_registry_port(self) -> None:
+        self.assertEqual(
+            self._resolve("registry:5000/security/fortify-sca:25.2.0-jdk21-review",
+                          f"{self.UPSTREAM}:25.2.1-jdk17-review",
+                          self._runtime("dv7", True)),
+            "registry:5000/security/fortify-sca:25.2.1-jdk21-review",
+        )
+
+    def test_mirror_gap_on_the_variant_falls_back_to_configured(self) -> None:
+        """If the mirror lacks 25.2.1-jdk21-review, do not fail -- fall back."""
+        configured = f"{self.FORTIFY}:25.2.0-jdk21-review"
+        self.assertEqual(
+            self._resolve(configured, f"{self.UPSTREAM}:25.2.1-jdk17-review",
+                          self._runtime("dv8", False)),
+            configured,
         )
 
 

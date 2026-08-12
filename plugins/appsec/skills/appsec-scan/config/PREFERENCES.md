@@ -242,6 +242,27 @@ name a registry you can reach — which means vendoring snapshots **from your ow
 instance** (MIGRATION.md "Re-vendor"). Declare `image:` when your mirror path
 differs from the template's, or as the fallback for a tag you have not mirrored.
 
+**Selecting a JDK variant (Fortify).** A Fortify tag is `<version>-<variant>`, and the
+variant is the JDK your project compiles with — `jdk17-review` or `jdk21-review`. The
+component always declares `jdk17-review` as its default, so a Java 21 project needs the
+variant declared here:
+
+```yaml
+sast:
+  component: lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast
+  version: ~latest
+  image: jfrog.internal/security/fortify-sca:25.2.0-jdk21-review
+  enabled: true
+```
+
+Under `follow-component` the component still supplies the **version** — a bump to
+`25.2.1` resolves to `…:25.2.1-jdk21-review` — while your variant is preserved and the
+substitution is printed. You do not need `pinned` for this, and should not use it here:
+`image_policy` is global, so pinning to hold a variant would freeze version tracking for
+every category. Dependency scanning's `resolution_job_variant` (`openjdk17|openjdk21`)
+has the same shape but is not reachable locally — the skill runs the analyzer directly
+and never runs a resolution job.
+
 An image that can be neither derived nor configured **stops the scan with a
 non-zero exit**. It is never guessed and the scanner is never skipped: a skipped
 scanner reads as a clean result for a category that never ran.

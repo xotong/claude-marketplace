@@ -13,6 +13,15 @@
 #   template    registry.gitlab.com/security-products/container-scanning:8.6.31
 #   effective   jfrog.internal/security/container-scanning:8.6.31
 #
+# A tag may also carry a VARIANT after the version, which the admin owns for the
+# same reason as the registry: it describes the target, not the analyzer release.
+# Fortify's variant is the JDK the project compiles with, so adopting the tag
+# whole would scan a Java 21 project with the component's default JDK 17 image:
+#
+#   configured  jfrog.internal/security/fortify-sca:25.2.0-jdk21-review
+#   template    registry.gitlab.com/.../fortify-sca:25.2.1-jdk17-review
+#   effective   jfrog.internal/security/fortify-sca:25.2.1-jdk21-review
+#
 # The adopted image is verified by pulling it. That pull is not overhead — it is
 # the availability check AND it warms the cache the scan is about to use. If the
 # mirror does not carry that tag yet, we say so and fall back to the configured
@@ -117,7 +126,46 @@ if [ -z "$template_tag" ] || [ "$template_tag" = "$configured_tag" ]; then
   exit 0
 fi
 
-candidate="${configured_repo}:${template_tag}"
+# Split "25.2.0-jdk21-review" into version "25.2.0" and variant "jdk21-review".
+# A tag with no '-', or whose head is not version-shaped ("latest", "8"), has no
+# variant and is returned whole with an empty second field.
+split_variant() {
+  local tag=$1 head
+  case "$tag" in
+    [0-9]*-*) head=${tag%%-*} ;;
+    *) printf '%s\t\n' "$tag"; return ;;
+  esac
+  case "$head" in
+    *[!0-9.]*) printf '%s\t\n' "$tag"; return ;;
+  esac
+  printf '%s\t%s\n' "$head" "${tag#*-}"
+}
+
+# The variant is the admin's call, not the component's. A Fortify tag carries the
+# JDK used to compile the target (25.2.0-jdk17-review vs -jdk21-review), so taking
+# the template's tag wholesale silently downgrades a Java 21 project to a JDK 17
+# analyzer -- the component's default overriding an explicit local choice. Extend
+# the existing rule (component owns the VERSION, admin owns the rest) one field
+# right: adopt the template's version, keep the configured variant.
+configured_variant_pair=$(split_variant "$configured_tag")
+configured_variant=${configured_variant_pair#*$'\t'}
+template_variant_pair=$(split_variant "$template_tag")
+template_version=${template_variant_pair%%$'\t'*}
+template_variant=${template_variant_pair#*$'\t'}
+
+effective_tag=$template_tag
+if [ -n "$configured_variant" ] && [ -n "$template_variant" ] &&
+   [ "$configured_variant" != "$template_variant" ]; then
+  effective_tag="${template_version}-${configured_variant}"
+  echo "[image] keeping configured variant ${configured_variant} (component declares ${template_variant})" >&2
+  # Version matched too, so the configured ref already is the answer.
+  if [ "$effective_tag" = "$configured_tag" ]; then
+    emit "$CONFIGURED"
+    exit 0
+  fi
+fi
+
+candidate="${configured_repo}:${effective_tag}"
 
 echo "[image] component template declares ${template_tag}; configured ${configured_tag:-<untagged>}" >&2
 echo "[image] trying ${candidate}" >&2
