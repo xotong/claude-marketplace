@@ -16,11 +16,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (`JavaLanguageVersion.of(N)`, `jvmToolchain(N)`, `source|targetCompatibility` in all
   of its spellings) — every, not just `build.gradle`, so a `buildSrc` convention
   plugin counts, and a version referenced by name is resolved from
-  `gradle.properties` — takes the **highest** release found, and selects `jdk21-review`
-  above 17 or `jdk17-review` otherwise. Highest wins because a JDK compiles its own
-  release and every earlier one but never a later one, so the highest declaration
-  decides the lowest usable image; generated copies under `target/` and `build/` are
-  pruned so a stale artifact cannot outvote the source. Same shape as
+  `gradle.properties` — takes the **highest** release found, and
+  `scripts/select-jdk-variant.sh` maps it to the smallest variant the component
+  offers that can still compile it. The offered set is read from
+  `scanners/fortify-sast.contract` rather than hardcoded, so a future
+  `jdk25-review` is selected by regenerating the contract during a component bump,
+  with no code change; when nothing offered is new enough the highest runs and the
+  scan warns. Both halves of that follow from one property — a JDK compiles its own
+  release and every earlier one but never a later one — so the *highest* release
+  declared in the repository decides the *smallest* usable image. Generated copies
+  under `target/` and `build/` are pruned so a stale artifact cannot outvote the
+  source. Same shape as
   `FORTIFY_LANGUAGE`: automatic, with `FORTIFY_VARIANT` as the environment override.
   A detected variant outranks the variant in `image:` — it is evidence from the
   repository rather than a line typed once — but it stays a preference: if the registry

@@ -450,19 +450,28 @@ category_scanner_name() {
 # the kind of manual step that never happens. Same shape as FORTIFY_LANGUAGE
 # below: auto-detected, overridable by the environment.
 #
-# JDK 21 compiles releases up to 21; JDK 17 stops at 17. So the lowest JDK that
-# can build the repository is decided by the HIGHEST release declared in it, and
-# anything above 17 must go to the newer image. Not a Java project, or no release
-# declared anywhere: stay empty and leave every existing path untouched.
+# The release comes from the codebase; which variants exist comes from the
+# component's checked-in contract, never from a literal list here. That is the
+# half this skill kept getting wrong: fortify-sast.contract has recorded
+# input.variant.option=jdk21-review all along while nothing consumed it. Read it,
+# and a future jdk25-review starts being selected by the contract regeneration
+# that a component bump already requires.
+#
+# Not a Java project, or no release declared anywhere: stay empty and leave every
+# existing path untouched.
 if [ -z "${FORTIFY_VARIANT:-}" ]; then
   detected_release=$(sh "$SCRIPTS_DIR/detect-java-release.sh" . 2>/dev/null || true)
   if [ -n "$detected_release" ]; then
-    if [ "$detected_release" -gt 17 ] 2>/dev/null; then
-      FORTIFY_VARIANT=jdk21-review
-    else
-      FORTIFY_VARIANT=jdk17-review
+    FORTIFY_VARIANT=$(sh "$SCRIPTS_DIR/select-jdk-variant.sh" "$detected_release" 2>/dev/null || true)
+    if [ -n "$FORTIFY_VARIANT" ]; then
+      selected_jdk=$(printf '%s' "$FORTIFY_VARIANT" | sed -n 's/^jdk\([0-9][0-9]*\).*/\1/p')
+      info "[Fortify SCA] Project targets Java ${detected_release}; selecting ${FORTIFY_VARIANT}"
+      # Nothing published is new enough. Say so: the build may fail on syntax the
+      # analyzer's JDK does not accept, and that is a component gap, not a bug here.
+      if [ -n "$selected_jdk" ] && [ "$selected_jdk" -lt "$detected_release" ] 2>/dev/null; then
+        warning "[Fortify SCA] The component publishes no JDK ${detected_release} variant; ${FORTIFY_VARIANT} is the newest offered. Ask the component maintainers to publish one."
+      fi
     fi
-    info "[Fortify SCA] Project targets Java ${detected_release}; selecting ${FORTIFY_VARIANT}"
   fi
 fi
 FORTIFY_VARIANT="${FORTIFY_VARIANT:-}"

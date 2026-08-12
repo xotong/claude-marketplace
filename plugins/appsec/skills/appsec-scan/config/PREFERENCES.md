@@ -258,7 +258,12 @@ INFO: [Fortify SCA] Project targets Java 21; selecting jdk21-review
 `build.gradle`, so a `buildSrc` convention plugin is covered. A version referenced
 by name (`JavaLanguageVersion.of(javaVersion)`) is resolved from `gradle.properties`. It takes the **highest**
 release found anywhere — a JDK builds its own release and every earlier one, never a
-later one — and anything above 17 selects `jdk21-review`. Generated copies under
+later one — and `scripts/select-jdk-variant.sh` maps it to the **smallest offered
+variant that can still compile it**. Which variants exist is read from
+`scanners/fortify-sast.contract`, not hardcoded: when the component publishes
+`jdk25-review`, the contract regeneration that a component bump already requires is
+all it takes for Java 22+ projects to start using it. If nothing offered is new
+enough, the highest one runs and the scan says so. Generated copies under
 `target/` and `build/` are ignored. `.tool-versions`, `.sdkmanrc` and `.java-version` are
 deliberately **not** read: they pin a developer's local toolchain, which is often newer
 than what the build targets, and guessing high breaks builds that guessing low does not.
