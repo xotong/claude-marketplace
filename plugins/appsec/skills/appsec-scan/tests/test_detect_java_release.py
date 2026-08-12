@@ -90,6 +90,32 @@ class DetectJavaReleaseTest(unittest.TestCase):
         self._write("build.gradle", "sourceCompatibility JavaVersion.VERSION_1_8")
         self.assertEqual(self._detect(), "8")
 
+    def test_buildsrc_convention_plugin(self) -> None:
+        """Multi-module Gradle sets the toolchain once, in a convention plugin.
+
+        Matching only build.gradle[.kts] missed every project built this way.
+        """
+        self._write("build.gradle.kts", 'plugins { id("java-conventions") }')
+        self._write("buildSrc/src/main/kotlin/java-conventions.gradle.kts",
+                    "java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }")
+        self.assertEqual(self._detect(), "21")
+
+    def test_toolchain_version_held_in_gradle_properties(self) -> None:
+        self._write("build.gradle",
+                    "java { toolchain { languageVersion = JavaLanguageVersion.of(javaVersion) } }")
+        self._write("gradle.properties", "javaVersion=21\n")
+        self.assertEqual(self._detect(), "21")
+
+    def test_compatibility_version_held_in_gradle_properties(self) -> None:
+        self._write("build.gradle", "sourceCompatibility = jdkVersion")
+        self._write("gradle.properties", "jdkVersion=17\n")
+        self.assertEqual(self._detect(), "17")
+
+    def test_unresolvable_property_name_is_unknown_not_a_guess(self) -> None:
+        self._write("build.gradle",
+                    "java { toolchain { languageVersion = JavaLanguageVersion.of(mystery) } }")
+        self.assertEqual(self._detect(), "")
+
     # ---- Whole-repository behaviour --------------------------------------
 
     def test_multi_module_takes_the_highest(self) -> None:

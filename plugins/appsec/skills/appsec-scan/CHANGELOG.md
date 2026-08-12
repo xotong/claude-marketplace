@@ -12,9 +12,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The Fortify JDK variant is now detected from the codebase — no configuration.**
   `scripts/detect-java-release.sh` reads the compile target out of every `pom.xml`
   (`maven.compiler.release|source|target`, `java.version`, the compiler plugin's
-  `<release>/<source>/<target>`) and `build.gradle[.kts]`
+  `<release>/<source>/<target>`) and every `*.gradle[.kts]`
   (`JavaLanguageVersion.of(N)`, `jvmToolchain(N)`, `source|targetCompatibility` in all
-  of its spellings), takes the **highest** release found, and selects `jdk21-review`
+  of its spellings) — every, not just `build.gradle`, so a `buildSrc` convention
+  plugin counts, and a version referenced by name is resolved from
+  `gradle.properties` — takes the **highest** release found, and selects `jdk21-review`
   above 17 or `jdk17-review` otherwise. Highest wins because a JDK compiles its own
   release and every earlier one but never a later one, so the highest declaration
   decides the lowest usable image; generated copies under `target/` and `build/` are

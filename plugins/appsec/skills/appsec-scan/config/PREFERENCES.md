@@ -254,7 +254,9 @@ INFO: [Fortify SCA] Project targets Java 21; selecting jdk21-review
 `scripts/detect-java-release.sh` reads `maven.compiler.release|source|target`,
 `java.version` and the compiler plugin's `<release>/<source>/<target>` from every
 `pom.xml`, and `JavaLanguageVersion.of(N)`, `jvmToolchain(N)` and
-`source|targetCompatibility` from every `build.gradle[.kts]`. It takes the **highest**
+`source|targetCompatibility` from every `*.gradle[.kts]` — every, not just
+`build.gradle`, so a `buildSrc` convention plugin is covered. A version referenced
+by name (`JavaLanguageVersion.of(javaVersion)`) is resolved from `gradle.properties`. It takes the **highest**
 release found anywhere — a JDK builds its own release and every earlier one, never a
 later one — and anything above 17 selects `jdk21-review`. Generated copies under
 `target/` and `build/` are ignored. `.tool-versions`, `.sdkmanrc` and `.java-version` are

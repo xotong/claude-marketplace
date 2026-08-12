@@ -63,12 +63,37 @@ consider() {
 
 # Build directories hold generated copies of the very files we read; a stale
 # target/classes pom would otherwise outvote the real one.
+PRUNE='-name .git -o -name node_modules -o -name target -o -name build -o -name .gradle
+       -o -name .appsec-results -o -name .venv -o -name venv'
+
+# Any *.gradle[.kts], not just build.gradle: a multi-module Gradle build normally
+# sets the toolchain once in a buildSrc convention plugin
+# (buildSrc/src/main/kotlin/java-conventions.gradle.kts), and matching only
+# build.gradle missed every project built that way.
 find_build_files() {
+  # shellcheck disable=SC2086
   find "$ROOT" \
-    -type d \( -name .git -o -name node_modules -o -name target -o -name build \
-      -o -name .gradle -o -name .appsec-results -o -name .venv -o -name venv \) -prune \
-    -o -type f \( -name pom.xml -o -name build.gradle -o -name build.gradle.kts \) -print \
+    -type d \( $PRUNE \) -prune \
+    -o -type f \( -name pom.xml -o -name '*.gradle' -o -name '*.gradle.kts' \) -print \
     2>/dev/null
+}
+
+# Gradle commonly holds the version once in gradle.properties and references it by
+# name: JavaLanguageVersion.of(javaVersion). Resolve the name rather than give up,
+# but only for a name that is actually declared — never guess.
+lookup_property() {
+  key=${1##*.}   # drop a project./rootProject. qualifier
+  # shellcheck disable=SC2086
+  for props_file in $(find "$ROOT" -type d \( $PRUNE \) -prune \
+      -o -type f -name gradle.properties -print 2>/dev/null); do
+    value=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$props_file" 2>/dev/null |
+              head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')
+    if [ -n "$value" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
 }
 
 for build_file in $(find_build_files); do
@@ -94,6 +119,15 @@ for build_file in $(find_build_files); do
       for raw in $(grep -oE '(source|target)Compatibility[^0-9A-Za-z]*(JavaVersion\.)?[A-Za-z_]*[0-9][0-9_.]*' \
                      "$build_file" 2>/dev/null | sed -E 's/.*Compatibility[^0-9A-Za-z]*//; s/^JavaVersion\.//'); do
         consider "$raw"
+      done
+      # Same two forms again, but naming a property instead of a literal. A name
+      # that resolves to nothing is skipped, so JavaVersion.VERSION_21 (already
+      # handled above) falls through here harmlessly.
+      for name in $(grep -oE '((JavaLanguageVersion\.of|jvmToolchain)\(|(source|target)Compatibility[[:space:]]*=[[:space:]]*)[A-Za-z_][A-Za-z0-9_.]*' \
+                      "$build_file" 2>/dev/null |
+                      sed -E 's/.*\(//; s/.*Compatibility[[:space:]]*=[[:space:]]*//'); do
+        resolved=$(lookup_property "$name" 2>/dev/null) || continue
+        consider "$resolved"
       done
       ;;
   esac
