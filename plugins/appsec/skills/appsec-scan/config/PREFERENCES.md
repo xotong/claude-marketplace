@@ -115,6 +115,11 @@ settings:
   bind-mounted into the container; the Fortify maven build reads the same value.
   Exported as `APPSEC_PIP_INDEX_URL` (deliberately *not* `PIP_INDEX_URL`, which
   would repoint the developer's own `pip` in that terminal).
+- **build_credentials** — env var **names** holding Artifactory credentials for the
+  Fortify gradle build, defaulting to `ARTIFACTORY_USER` / `ARTIFACTORY_PASSWORD`
+  (what the CI component itself reads, so most estates need no entry). Change them
+  only if your environment already names its credentials differently — no secret is
+  ever written to this file.
 - **package_registries** — URL templates used to check, before the fix loop runs,
   whether a suggested upgrade is obtainable here. All empty (the shipped default)
   disables the check entirely. Placeholders: `{package}` `{version}` `{group_path}`

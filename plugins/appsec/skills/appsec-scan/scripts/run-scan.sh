@@ -266,6 +266,11 @@ FORTIFY_SAST_IMAGE="${FORTIFY_SAST_IMAGE:-}"
 GITLAB_DS_IMAGE="${GITLAB_DS_IMAGE:-}"
 SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-}"
 GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-}"
+# Credential variable NAMES, not values. The component reads $ARTIFACTORY_USER /
+# $ARTIFACTORY_PASSWORD, but an estate that already names them something else
+# should not have to rename its CI variables to run this locally.
+ARTIFACTORY_USER_ENV="${ARTIFACTORY_USER_ENV:-ARTIFACTORY_USER}"
+ARTIFACTORY_PASSWORD_ENV="${ARTIFACTORY_PASSWORD_ENV:-ARTIFACTORY_PASSWORD}"
 CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
 
@@ -467,11 +472,22 @@ if [ -z "${FORTIFY_VARIANT:-}" ]; then
     # here — the same way `version: ~latest` already rolls out a new component
     # version. The checked-in contract is the offline fallback, not the gate;
     # check-drift still reports the change either way.
-    variant_contract="$SCANNERS_DIR/fortify-sast.contract"
     sast_component=
+    sast_runner=
     for tuple in ${ENABLED_COMPONENTS:-}; do
-      case "$tuple" in *'|sast') sast_component=${tuple%%|*} ;; esac
+      case "$tuple" in
+        *'|sast')
+          sast_component=${tuple%%|*}
+          sast_rest=${tuple#*|}          # version|runner|image|category
+          sast_rest=${sast_rest#*|}      # runner|image|category
+          sast_runner=${sast_rest%%|*}
+          ;;
+      esac
     done
+    # Derived from the configured runner, never a literal filename: `runner:` is an
+    # admin override, and catalog.sh pairs a runner with its contract the same way.
+    variant_contract="$SCANNERS_DIR/${sast_runner:-fortify-sast.sh}"
+    variant_contract="${variant_contract%.sh}.contract"
     if [ -n "$sast_component" ]; then
       live_contract="${CATALOG_CACHE:-.appsec-results/catalog}/fortify-variant.contract"
       mkdir -p "$(dirname "$live_contract")" 2>/dev/null || true
@@ -493,7 +509,7 @@ if [ -z "${FORTIFY_VARIANT:-}" ]; then
       default_variant=$(grep '^input\.variant\.default=' "$variant_contract" 2>/dev/null |
                           head -1 | sed 's/^[^=]*=//')
       if [ -n "$default_variant" ] && [ "$default_variant" != "$FORTIFY_VARIANT" ]; then
-        info "[Fortify SCA] CI defaults to ${default_variant}. Add 'variant: ${FORTIFY_VARIANT}' to the ${sast_component:-fortify-sast} component inputs in .gitlab-ci.yml so the pipeline matches this scan."
+        info "[Fortify SCA] CI defaults to ${default_variant}. Add 'variant: ${FORTIFY_VARIANT}' to your SAST component inputs in .gitlab-ci.yml so the pipeline matches this scan."
       fi
       # Nothing published is new enough. Say so: the build may fail on syntax the
       # analyzer's JDK does not accept, and that is a component gap, not a bug here.
@@ -669,7 +685,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
     if run_cmd "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
       if $DRY_RUN; then
-        print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+        print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
       else
         "$RUNTIME" run --rm \
           -v "$PWD:/workspace" \
@@ -681,8 +697,8 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
           -e SOURCE_PATH="$SOURCE_PATH" \
           -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" \
           -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
-          -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" \
-          -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" \
+          -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
+          -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
           "${FORTIFY_SAST_IMAGE}" \
           sh /runner.sh > .appsec-results/fortify-sast.log 2>&1 &
         FORTIFY_SAST_PID=$!

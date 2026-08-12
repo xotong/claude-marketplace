@@ -14,6 +14,8 @@
 #   - settings.jq.install_url
 #   - settings.python.install_url
 #   - settings.catalog.auth_token_env
+#   - settings.build_credentials.artifactory_user_env
+#   - settings.build_credentials.artifactory_password_env
 #   - settings.container_registry.user_env
 #   - settings.container_registry.password_env
 #   - settings.container_registry.base_repo
@@ -217,6 +219,10 @@ function split_key_value(s,    idx) {
       settings["package_registries." key] = parse_scalar(value)
       next
     }
+    if (indent == 2 && key == "build_credentials" && strip_comment(value) == "") {
+      settings_block = "build_credentials"
+      next
+    }
     if (indent == 2 && key == "container_registry" && strip_comment(value) == "") {
       settings_block = "container_registry"
       next
@@ -235,6 +241,14 @@ function split_key_value(s,    idx) {
     }
     if (indent == 4 && settings_block == "catalog" && key == "auth_token_env") {
       settings["catalog.auth_token_env"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "build_credentials" && key == "artifactory_user_env") {
+      settings["build_credentials.artifactory_user_env"] = parse_scalar(value)
+      next
+    }
+    if (indent == 4 && settings_block == "build_credentials" && key == "artifactory_password_env") {
+      settings["build_credentials.artifactory_password_env"] = parse_scalar(value)
       next
     }
     if (indent == 4 && settings_block == "container_registry" && key == "user_env") {
@@ -357,6 +371,8 @@ END {
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
   print "SETTING\tpython.install_url\t" settings["python.install_url"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
+  print "SETTING\tbuild_credentials.artifactory_user_env\t" settings["build_credentials.artifactory_user_env"]
+  print "SETTING\tbuild_credentials.artifactory_password_env\t" settings["build_credentials.artifactory_password_env"]
   print "SETTING\tcontainer_registry.user_env\t" settings["container_registry.user_env"]
   print "SETTING\tcontainer_registry.password_env\t" settings["container_registry.password_env"]
   print "SETTING\tci_gate.fail_on\t" settings["ci_gate.fail_on"]
@@ -404,6 +420,10 @@ catalog_auth_env=
 ca_bundle=
 pip_index_url=
 maven_settings=
+# Default to the names the CI component itself uses, so an estate that already
+# sets those needs no config at all.
+artifactory_user_env=ARTIFACTORY_USER
+artifactory_password_env=ARTIFACTORY_PASSWORD
 cs_user_env=
 cs_pass_env=
 base_image_repo=
@@ -474,6 +494,8 @@ while IFS="$tab" read -r record field1 field2 field3; do
         ca_bundle) ca_bundle=$field2 ;;
         pip_index_url) pip_index_url=$field2 ;;
         maven_settings) maven_settings=$field2 ;;
+        build_credentials.artifactory_user_env) [ -z "$field2" ] || artifactory_user_env=$field2 ;;
+        build_credentials.artifactory_password_env) [ -z "$field2" ] || artifactory_password_env=$field2 ;;
         container_registry.user_env) cs_user_env=$field2 ;;
         container_registry.password_env) cs_pass_env=$field2 ;;
         container_registry.base_repo) base_image_repo=$field2 ;;
@@ -544,7 +566,7 @@ fi
 
 normalized_instance=${gitlab_instance%/}
 if [ "$appsec_airgap" = "true" ] && [ "$normalized_instance" = "https://gitlab.com" ]; then
-  warn "ERROR: settings.airgap=true and APPSEC_PROFILE='$active_profile' targets gitlab.com; use APPSEC_PROFILE=company for an airgap-safe profile."
+  warn "ERROR: settings.airgap=true and APPSEC_PROFILE='$active_profile' targets gitlab.com; select a profile whose gitlab_instance is your internal instance."
   exit 1
 fi
 
@@ -686,6 +708,8 @@ emit CA_BUNDLE "$ca_bundle"
 # and break every unrelated `pip install` in that terminal.
 emit APPSEC_PIP_INDEX_URL "$pip_index_url"
 emit MAVEN_SETTINGS "$maven_settings"
+emit ARTIFACTORY_USER_ENV "$artifactory_user_env"
+emit ARTIFACTORY_PASSWORD_ENV "$artifactory_password_env"
 emit CS_USER_ENV "$cs_user_env"
 emit CS_PASS_ENV "$cs_pass_env"
 emit BASE_IMAGE_REPO "$base_image_repo"

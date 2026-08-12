@@ -123,7 +123,10 @@ class LoadPrefsTest(unittest.TestCase):
         result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 1)
         self.assertIn("APPSEC_PROFILE='catalog'", result.stderr)
-        self.assertIn("APPSEC_PROFILE=company", result.stderr)
+        # Deliberately does NOT name a profile: profile names are per-estate, and
+        # advising one that does not exist there is worse than advising none.
+        self.assertIn("gitlab_instance", result.stderr)
+        self.assertNotIn("APPSEC_PROFILE=company", result.stderr)
 
     def test_disabled_sast_removes_flag_and_component_triple(self) -> None:
         original = PREFERENCES_PATH.read_text(encoding="utf-8")
@@ -438,6 +441,35 @@ class LoadPrefsTest(unittest.TestCase):
         self.assertEqual(values["CATALOG_AUTH_ENV"], "GITLAB_READ_TOKEN")
         self.assertEqual(values["CI_GATE_FAIL_ON"], "high")
 
+    def test_artifactory_credential_names_default_to_the_components(self) -> None:
+        """Env var NAMES, not values. Defaulting to what the CI component reads
+        means an estate that already sets those needs no config entry at all."""
+        result = self.run_loader(PREFERENCES_PATH)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.eval_output(
+            result.stdout, "ARTIFACTORY_USER_ENV", "ARTIFACTORY_PASSWORD_ENV"
+        )
+        self.assertEqual(values["ARTIFACTORY_USER_ENV"], "ARTIFACTORY_USER")
+        self.assertEqual(values["ARTIFACTORY_PASSWORD_ENV"], "ARTIFACTORY_PASSWORD")
+
+    def test_artifactory_credential_names_are_overridable(self) -> None:
+        """An estate that names its credentials differently must not have to
+        rename its CI variables to run this skill locally."""
+        temp_path = self.write_temp_config(
+            PREFERENCES_PATH.read_text(encoding="utf-8")
+            .replace("artifactory_user_env: ARTIFACTORY_USER",
+                     "artifactory_user_env: JF_USER")
+            .replace("artifactory_password_env: ARTIFACTORY_PASSWORD",
+                     "artifactory_password_env: JF_TOKEN")
+        )
+        self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
+        result = self.run_loader(temp_path)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        values = self.eval_output(
+            result.stdout, "ARTIFACTORY_USER_ENV", "ARTIFACTORY_PASSWORD_ENV"
+        )
+        self.assertEqual(values["ARTIFACTORY_USER_ENV"], "JF_USER")
+        self.assertEqual(values["ARTIFACTORY_PASSWORD_ENV"], "JF_TOKEN")
 
 if __name__ == "__main__":
     unittest.main()

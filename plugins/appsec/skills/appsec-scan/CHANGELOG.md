@@ -43,6 +43,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- **Portability pass for other environments.** Nothing that varies per estate is
+  hardcoded in executable code any more: Artifactory credentials are read through
+  configurable variable **names** (`settings.build_credentials.*`, defaulting to the
+  component's own `ARTIFACTORY_USER`/`ARTIFACTORY_PASSWORD`); the Fortify variant
+  contract path is derived from the configured `runner:` rather than the literal
+  `fortify-sast.contract`, so a `runner:` override no longer silently falls back to the
+  shipped contract; the airgap error no longer advises a profile name that may not exist
+  in your estate; the CI-variant hint no longer prints a catalogue path; and
+  `catalog.sh self-test` uses a neutral fixture path instead of one that reads like a
+  real catalogue layout
 - **The Gradle arm ran a different wrapper than CI.** The component invokes
   `$[[ inputs.source-path ]]/gradlew` (`template.yml:130`); this runner invoked
   `./gradlew`. Whenever `source-path` is not `.` those are different files, so a

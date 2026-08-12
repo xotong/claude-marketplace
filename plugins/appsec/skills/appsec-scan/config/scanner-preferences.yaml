@@ -144,6 +144,15 @@ settings:
   # Container scanning: names of env vars holding registry credentials, used both
   # when GTCS pulls a BYO image and when a local build must pull a FROM base from
   # the internal registry.
+  # Gradle builds pull dependencies from Artifactory, and the CI component reads
+  # $ARTIFACTORY_USER / $ARTIFACTORY_PASSWORD. These are env var NAMES, not values --
+  # nothing secret is ever written to this file. Change them only if your estate
+  # already names its credentials something else; the defaults match the component,
+  # so most environments need no entry here at all.
+  build_credentials:
+    artifactory_user_env: ARTIFACTORY_USER
+    artifactory_password_env: ARTIFACTORY_PASSWORD
+
   container_registry:
     user_env: CS_REGISTRY_USER
     password_env: CS_REGISTRY_PASSWORD

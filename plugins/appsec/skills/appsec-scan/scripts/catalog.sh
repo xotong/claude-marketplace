@@ -522,7 +522,8 @@ self_test_cmd() {
   root="$tmp/appsec-scan"
   script="$root/scripts/catalog.sh"
   cache="$tmp/cache"
-  component="lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection"
+  # Neutral fixture path: the self-test must not imply a real catalogue layout.
+  component="example-group/devops/catalogue/secret-detection/secret-detection"
 
   mkdir -p "$root/scripts" "$root/reference/catalog/$component/1.0.0" "$tmp/bin" "$cache"
   cp "$0" "$script"
