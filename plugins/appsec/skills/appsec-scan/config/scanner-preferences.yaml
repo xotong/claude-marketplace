@@ -1,6 +1,11 @@
 # appsec-scan scanner preferences — admin-owned (Platform Team via CODEOWNERS).
 # Schema + switching guide: see PREFERENCES.md in this directory.
 #
+# How component: and version: below turn into the image that actually runs -- and
+# why no image: is declared -- is documented in docs/ARCHITECTURE.md, section
+# "Component resolution (Step 2.5)". Read that before changing image_policy or
+# adding an image:.
+#
 # Runtime profile override: export APPSEC_PROFILE=<profile-name>
 # Everything the skill needs is declared here so a self-hosted model only has
 # to READ config, never guess endpoints. Edit the values; do not make the model

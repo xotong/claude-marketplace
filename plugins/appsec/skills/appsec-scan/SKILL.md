@@ -38,6 +38,7 @@ Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-
 |---|---|
 | `APPSEC_PROFILE` | Active profile (`default_profile` from config) |
 | `FORTIFY_LANGUAGE` | `maven`\|`gradle`\|`python`\|`javascript`\|`go`; auto-detected |
+| `FORTIFY_VARIANT` | Fortify JDK image variant (e.g. `jdk21-review`); auto-detected from the project's Java release. Set only to override |
 | `CS_IMAGE` | Container image:tag for Container Scanning (optional) |
 | `APP_NAME` | Application name (default: `basename $PWD`) |
 | `SOURCE_PATH` | Source dir for Fortify (default: `src`) |

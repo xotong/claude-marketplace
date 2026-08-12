@@ -144,6 +144,20 @@ FORTIFY_LANGUAGE=go /appsec-scan
 
 Supported: `maven`, `gradle`, `python`, `javascript`, `go`.
 
+**The Fortify JDK is picked for you.** For Java projects the scan reads the compile
+target out of your `pom.xml` or `*.gradle[.kts]` and selects the matching analyzer
+image, so a Java 21 project is not built by a JDK 17 analyzer:
+
+```
+INFO: [Fortify SCA] Project targets Java 21; selecting jdk21-review
+```
+
+Override only if that is wrong for your repo:
+
+```bash
+FORTIFY_VARIANT=jdk17-review /appsec-scan
+```
+
 **Point at a subdirectory** in a monorepo (defaults to `src`):
 
 ```bash

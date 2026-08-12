@@ -96,6 +96,17 @@ skipping the scanner reports a clean category that never ran. `pinned` uses `ima
 verbatim with no adoption and no pull. Full matrix:
 [`config/PREFERENCES.md`](../config/PREFERENCES.md#image--optional-and-this-is-the-only-description-of-it).
 
+**The JDK variant is chosen from the codebase, not from config.** For a Java project,
+`detect-java-release.sh` reads the compile target out of every `pom.xml` and
+`*.gradle[.kts]` and takes the highest release; `select-jdk-variant.sh` maps it to the
+smallest variant the component offers that can still compile it, reading the offered set
+from the component **as resolved that run** (checked-in `scanners/fortify-sast.contract`
+is the offline fallback). So publishing or retiring a variant upstream reaches developers
+with no change here, exactly as `version: ~latest` already does for versions. The result
+is passed to `resolve-image.sh` as a preference: it outranks the variant in `image:`, but
+if the registry does not carry it the scan warns and runs the component's default rather
+than failing. Override with `FORTIFY_VARIANT`.
+
 Drift is still checked two ways. **Image drift** compares the component's effective
 job image (resolving `$[[ inputs.X ]]` against declared defaults) with a configured
 `image:` — silent when none is declared, which is now the shipped state.
@@ -326,7 +337,9 @@ appsec-scan/
 │   ├── detect-runtime.sh  docker | podman
 │   ├── resolve-jq.sh      jq from PATH or configured URL, else degrade
 │   ├── resolve-python.sh  python3 from PATH or configured URL, else degrade
-│   ├── resolve-image.sh   which image runs: component template + policy + image:
+│   ├── resolve-image.sh   which image runs: component template + policy + image: + variant
+│   ├── detect-java-release.sh  highest Java release the repo targets (pom/gradle)
+│   ├── select-jdk-variant.sh   that release → the smallest JDK variant the component offers
 │   ├── container-target.sh  what GTCS scans: registry | archive | none; writes base-images.json
 │   ├── resolve-components.sh  Step 2.5: resolve every enabled component + drift table
 │   ├── revendor.sh        refresh reference/catalog/ + contracts from a live instance
