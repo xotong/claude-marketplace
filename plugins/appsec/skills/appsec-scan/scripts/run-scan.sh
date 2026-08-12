@@ -462,7 +462,27 @@ category_scanner_name() {
 if [ -z "${FORTIFY_VARIANT:-}" ]; then
   detected_release=$(sh "$SCRIPTS_DIR/detect-java-release.sh" . 2>/dev/null || true)
   if [ -n "$detected_release" ]; then
-    FORTIFY_VARIANT=$(sh "$SCRIPTS_DIR/select-jdk-variant.sh" "$detected_release" 2>/dev/null || true)
+    # Which variants exist is taken from the component as resolved THIS RUN, so a
+    # platform team publishing jdk25-review reaches every developer without an MR
+    # here — the same way `version: ~latest` already rolls out a new component
+    # version. The checked-in contract is the offline fallback, not the gate;
+    # check-drift still reports the change either way.
+    variant_contract="$SCANNERS_DIR/fortify-sast.contract"
+    sast_component=
+    for tuple in ${ENABLED_COMPONENTS:-}; do
+      case "$tuple" in *'|sast') sast_component=${tuple%%|*} ;; esac
+    done
+    if [ -n "$sast_component" ]; then
+      live_contract="${CATALOG_CACHE:-.appsec-results/catalog}/fortify-variant.contract"
+      mkdir -p "$(dirname "$live_contract")" 2>/dev/null || true
+      if bash "$SCRIPTS_DIR/catalog.sh" contract "$sast_component" \
+           "${CATALOG_CACHE:-.appsec-results/catalog}" >"$live_contract" 2>/dev/null &&
+         grep -q '^input\.variant\.option=' "$live_contract" 2>/dev/null; then
+        variant_contract=$live_contract
+      fi
+    fi
+    FORTIFY_VARIANT=$(sh "$SCRIPTS_DIR/select-jdk-variant.sh" "$detected_release" \
+                        "$variant_contract" 2>/dev/null || true)
     if [ -n "$FORTIFY_VARIANT" ]; then
       selected_jdk=$(printf '%s' "$FORTIFY_VARIANT" | sed -n 's/^jdk\([0-9][0-9]*\).*/\1/p')
       info "[Fortify SCA] Project targets Java ${detected_release}; selecting ${FORTIFY_VARIANT}"

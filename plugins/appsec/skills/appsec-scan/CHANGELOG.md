@@ -18,10 +18,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   plugin counts, and a version referenced by name is resolved from
   `gradle.properties` — takes the **highest** release found, and
   `scripts/select-jdk-variant.sh` maps it to the smallest variant the component
-  offers that can still compile it. The offered set is read from
-  `scanners/fortify-sast.contract` rather than hardcoded, so a future
-  `jdk25-review` is selected by regenerating the contract during a component bump,
-  with no code change; when nothing offered is new enough the highest runs and the
+  offers that can still compile it. The offered set is read from the component as
+  resolved that run, so a platform team publishing `jdk25-review` — or retiring
+  `jdk17-review` — reaches every developer with no MR against this repo, the same
+  way `version: ~latest` already rolls out a component version;
+  `scanners/fortify-sast.contract` is the offline fallback and `check-drift` still
+  reports the change. When nothing offered is new enough the highest runs and the
   scan warns. Both halves of that follow from one property — a JDK compiles its own
   release and every earlier one but never a later one — so the *highest* release
   declared in the repository decides the *smallest* usable image. Generated copies
