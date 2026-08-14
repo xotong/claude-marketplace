@@ -58,17 +58,15 @@ ref=${ref//\{tag\}/$TAG}
 # classifiers match Docker and Podman spelling/capitalisation without `tr`.
 shopt -s nocasematch
 
-is_auth_error() {
-  case "$1" in
-    *unauthorized* | \
-    *"pull access denied"* | \
-    *"denied: requested access"* | \
-    *"requested access to the resource is denied"* | \
-    *"no basic auth credentials"* | \
-    *"authentication required"*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+# is_auth_error lives in classify-error.sh: run-scan.sh and resolve-image.sh need
+# the same judgement, and three divergent copies of "what counts as an auth
+# failure" is exactly how one caller ends up calling a 401 a network outage.
+# Pure parameter expansion, no `dirname`: a minimal airgapped userland need not
+# carry coreutils, and these helpers are tested under a stripped PATH.
+_ce_dir=${BASH_SOURCE[0]%/*}
+if [ "$_ce_dir" = "${BASH_SOURCE[0]}" ]; then _ce_dir=.; fi
+# shellcheck source=scripts/classify-error.sh
+. "$_ce_dir/classify-error.sh"
 
 is_absent_error() {
   case "$1" in

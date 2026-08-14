@@ -159,11 +159,17 @@ schema reference: `config/PREFERENCES.md` next to it.
 `docker` **or** `podman`, `bash`, `git`, and coreutils. The skill detects the
 runtime first and stops with a clear message if none is found.
 
-**Everything else degrades gracefully — never a hard failure:** `jq` (severity
+**Missing tooling degrades gracefully — never a hard failure:** `jq` (severity
 summary; see below), `curl` (only for live catalog; falls back to vendored
 snapshots), `unzip` (only for Fortify FPR summaries), `glab`
 (only for the optional end-of-run MR offer). `python3` is **not** required at
 runtime.
+
+**Broken configuration does not.** A credential your registry or GitLab instance
+*refuses* stops the work it blocks, prints a `CONFIG-ERROR:` naming the setting
+to fix, and exits non-zero — no fallback, no alternative method tried. Only an
+unreachable host degrades. The two used to be indistinguishable, which meant a
+misconfigured mirror produced a scan that read like a result.
 
 ### Step 1 — Mirror the analyzer images to your registry
 
@@ -225,9 +231,9 @@ still runs.
 
 ### Step 4 — Catalog authentication
 
-The skill tries **anonymous** API reads against your GitLab first. If your
-instance disables them, create a `read_api` Personal Access Token, put it in an
-env var, and name that var in the config:
+Leave `auth_token_env` **empty** if your instance serves the ci-catalogue
+projects to unauthenticated API reads. If it does not, create a `read_api`
+Personal Access Token, put it in an env var, and name that var in the config:
 
 ```yaml
 settings:
@@ -235,9 +241,13 @@ settings:
     auth_token_env: GITLAB_READ_TOKEN     # the skill reads $GITLAB_READ_TOKEN
 ```
 
-If neither works, the skill continues on the vendored snapshots in
-`reference/catalog/` and tells the user exactly what to configure. Refresh those
-snapshots periodically per `UPDATE-GUIDE.md` (Scenario 6).
+Naming a variable makes it **required**: preflight fails fast if it is unset, and
+a token the instance rejects is a `CONFIG-ERROR:` that stops the scan. Neither
+falls through to the vendored snapshots, because a run that quietly used a
+snapshot would look exactly like a live check that passed. An instance that is
+merely *unreachable* does fall back to `reference/catalog/` — that is the airgap
+guarantee, and it is reported as `[offline-fallback]`. Refresh those snapshots
+periodically per `UPDATE-GUIDE.md` (Scenario 6).
 
 ### Step 5 — Container scanning
 

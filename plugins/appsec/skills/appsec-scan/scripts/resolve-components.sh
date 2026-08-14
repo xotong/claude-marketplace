@@ -32,6 +32,7 @@ mkdir -p "$CATALOG_CACHE"
 drift_lines=""
 rows=""
 count=0
+config_error=false
 
 # Word-splitting here is intentional and safe: this file is bash, and
 # load-prefs.sh emits a space-separated list of tuples with no spaces inside.
@@ -49,6 +50,12 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
 
   tag="${resolved##*@}"; tag="${tag%% *}"
   source_label="${resolved##*[}"; source_label="${source_label%]}"
+  # A refused token is not an outage: continuing on the snapshot here would look
+  # exactly like a live check that passed. catalog.sh already printed the
+  # CONFIG-ERROR line; this makes the step itself fail so it cannot be scrolled past.
+  case "$source_label" in
+    *unauthorized*) config_error=true ;;
+  esac
 
   if [ "$runner" != "none" ]; then
     component_drift=$(bash "$SCRIPTS_DIR/catalog.sh" check-drift \
@@ -79,4 +86,11 @@ printf '%s' "$rows"
 if [ -n "$drift_lines" ]; then
   echo
   printf '%s' "$drift_lines"
+fi
+
+# Printed the table first: the user still gets to see which components resolved
+# and how. Then fail, so a refused token cannot be mistaken for a live check.
+if [ "$config_error" = true ]; then
+  echo "ERROR: at least one component resolved [offline-fallback: unauthorized] — fix the catalogue token before scanning. Do not work around it." >&2
+  exit 1
 fi

@@ -8,6 +8,7 @@ EXECUTED_CATEGORIES=
 DS_RAN=false
 DS_FAILED=false
 SKIPPED_IMAGE_SCANNERS=
+CONFIG_ERRORS=
 
 info() { printf 'INFO: %s\n' "$*" >&2; }
 warning() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -43,6 +44,9 @@ esac
 SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 SKILL_DIR="${SKILL_DIR:-$(dirname "$SCRIPTS_DIR")}"
 SCANNERS_DIR="${SCANNERS_DIR:-$SKILL_DIR/scanners}"
+
+# shellcheck source=scripts/classify-error.sh
+. "$SCRIPTS_DIR/classify-error.sh"
 
 if [ -z "${RUN_FORTIFY_SAST+x}" ] && \
    [ -z "${RUN_GITLAB_DS+x}" ] && \
@@ -115,6 +119,74 @@ record_missing_image() {
   else
     SKIPPED_IMAGE_SCANNERS=$1
   fi
+}
+
+# record_config_error [category] <actionable reason>
+#
+# A configuration error is terminal for whatever it blocks: no retry, no other
+# image, no other endpoint will authenticate a credential the admin has not set,
+# and trying anyway just buries the cause under a scan that reads like a result.
+#
+# It rides record_skip so the coverage record needs no new shape -- the category
+# still lands in missing_report with coverage_complete false, still synthesises
+# its HIGH APPSEC-REPORT-* finding, and normalize.py carries this text verbatim
+# into evidence.why. What it adds is a non-zero exit that a passing gate (or
+# `fail_on: none`, which always exits 0) would otherwise swallow.
+#
+# The category is optional: a refused package registry is a run-level problem,
+# not a scanner that failed to produce a report.
+record_config_error() {
+  cfg_category=$1
+  cfg_reason=$2
+  printf 'CONFIG-ERROR: %s\n' "$cfg_reason" >&2
+  [ -z "$cfg_category" ] || record_skip "$cfg_category" "CONFIG-ERROR: $cfg_reason"
+  if [ -n "$CONFIG_ERRORS" ]; then
+    CONFIG_ERRORS="$CONFIG_ERRORS
+$cfg_reason"
+  else
+    CONFIG_ERRORS=$cfg_reason
+  fi
+}
+
+# pull_image <category> <label> <image> <consequence>
+#
+# Returns 0 on success; on failure records the skip itself and returns 1. Splits
+# the two causes that used to share one message and one outcome: a registry that
+# REFUSED us is a config error, while one we could not reach keeps the existing
+# advice and the existing graceful skip.
+pull_image() {
+  pull_category=$1
+  pull_label=$2
+  pull_ref=$3
+  pull_consequence=$4
+  pull_log=".appsec-results/pull-${pull_category}.log"
+  if run_cmd "$RUNTIME" pull "$pull_ref" 2>"$pull_log"; then
+    rm -f "$pull_log"
+    return 0
+  fi
+  if is_auth_error "$(cat "$pull_log" 2>/dev/null)"; then
+    record_config_error "$pull_category" "The registry refused our credentials for ${pull_ref}, so ${pull_consequence} Run '$RUNTIME login <registry-host>', or set the credentials named by settings.container_registry in scanner-preferences.yaml (${CS_USER_ENV:-CS_REGISTRY_USER} / ${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}). Details: $pull_log"
+    return 1
+  fi
+  warning "[$pull_label] Failed to pull ${pull_ref}; skipping scan"
+  record_skip "$pull_category" "Could not pull ${pull_ref}, so ${pull_consequence} Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill. Details: $pull_log"
+  return 1
+}
+
+# Printed after the normalizer's summary, so it is the last thing on screen, and
+# it exits 2 whatever the gate said. `fail_on: none` always exits 0 on findings —
+# without this override the whole "stop and report" contract would come down to a
+# warning somewhere up the scrollback.
+report_config_errors() {
+  [ -n "$CONFIG_ERRORS" ] || return 0
+  printf '\n' >&2
+  error "CONFIGURATION ERRORS — this run is NOT a valid scan"
+  printf '%s\n' "$CONFIG_ERRORS" | while IFS= read -r cfg_line; do
+    [ -n "$cfg_line" ] || continue
+    printf '  - %s\n' "$cfg_line" >&2
+  done
+  error "No workaround was attempted: only your admin config can fix these. Fix them and re-run this skill."
+  exit 2
 }
 
 is_sensitive_env_name() {
@@ -683,7 +755,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     mark_attempted sast
     mark_executed sast
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
-    if run_cmd "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
+    if pull_image sast "Fortify SCA" "${FORTIFY_SAST_IMAGE}" "SAST did NOT run and your source was never analysed."; then
       if $DRY_RUN; then
         print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
       else
@@ -705,9 +777,6 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
         start_watchdog "$FORTIFY_SAST_PID"
         FORTIFY_SAST_WATCHDOG=$WATCHDOG_PID
       fi
-    else
-      warning "[Fortify SCA] Failed to pull ${FORTIFY_SAST_IMAGE}; skipping scan"
-      record_skip sast "Could not pull ${FORTIFY_SAST_IMAGE}, so SAST did NOT run and your source was never analysed. Log in to the registry (docker login <registry-host>) or fix the image path in scanner-preferences.yaml, then re-run this skill."
     fi
   fi
 fi
@@ -717,7 +786,7 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
   mark_attempted dependency_scanning
   mark_executed dependency_scanning
   info "[GitLab DS] Pulling ${GITLAB_DS_IMAGE}..."
-  if run_cmd "$RUNTIME" pull "${GITLAB_DS_IMAGE}"; then
+  if pull_image dependency_scanning "GitLab DS" "${GITLAB_DS_IMAGE}" "dependency scanning did NOT run."; then
     if $DRY_RUN; then
       print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-dependency-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GITLAB_FEATURES=dependency_scanning ${DS_AIRGAP_ARGS[@]+"${DS_AIRGAP_ARGS[@]}"} "${GITLAB_DS_IMAGE}" sh /runner.sh
     else
@@ -737,9 +806,6 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
       start_watchdog "$GITLAB_DS_PID"
       GITLAB_DS_WATCHDOG=$WATCHDOG_PID
     fi
-  else
-    warning "[GitLab DS] Failed to pull ${GITLAB_DS_IMAGE}; skipping scan"
-    record_skip dependency_scanning "Could not pull ${GITLAB_DS_IMAGE}, so dependency scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
   fi
 fi
 
@@ -747,7 +813,7 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
   mark_attempted secret_detection
   mark_executed secret_detection
   info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
-  if run_cmd "$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"; then
+  if pull_image secret_detection "Secret Detection" "${SECRET_DETECTION_IMAGE}" "secret detection did NOT run."; then
     if $DRY_RUN; then
       print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GIT_DEPTH="${GIT_DEPTH:-50}" -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" "${SECRET_DETECTION_IMAGE}" sh /runner.sh
     else
@@ -766,9 +832,6 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
       start_watchdog "$SECRET_DETECTION_PID"
       SECRET_DETECTION_WATCHDOG=$WATCHDOG_PID
     fi
-  else
-    warning "[Secret Detection] Failed to pull ${SECRET_DETECTION_IMAGE}; skipping scan"
-    record_skip secret_detection "Could not pull ${SECRET_DETECTION_IMAGE}, so secret detection did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
   fi
 elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
   info "[Secret Detection] Skipped — not a Git worktree or image unset"
@@ -905,7 +968,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       if [ -n "$cs_dockerfile" ]; then
         CS_DOCKERFILE_ARGS=(-e CS_DOCKERFILE_PATH="$cs_dockerfile")
       fi
-      if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
+      if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
         if $DRY_RUN; then
           print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
         elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
@@ -926,16 +989,13 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
           record_skip container_scanning "Container scanning failed while scanning $CS_VALUE, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (registry credentials, image reference, container runtime, timeout), fix it, then re-run this skill."
         fi
-      else
-        warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
-        record_skip container_scanning "Could not pull ${GITLAB_CS_IMAGE}, so container scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
       fi
       ;;
     archive)
       mark_attempted container_scanning
       mark_executed container_scanning
       info "[GitLab CS] Scanning locally-built image (offline, bundled Trivy)..."
-      if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
+      if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
         if $DRY_RUN; then
           print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
         elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
@@ -953,16 +1013,22 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
           record_skip container_scanning "Container scanning failed on the locally-built image archive, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (image build, container runtime, memory, timeout), fix it, then re-run this skill."
         fi
-      else
-        warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
-        record_skip container_scanning "Could not pull ${GITLAB_CS_IMAGE}, so container scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
       fi
       ;;
     error)
-      warning "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
       # No target means no scan. Unrecorded, this branch left container_scanning
       # counted as covered — clean if any older report was still on disk.
-      record_skip container_scanning "The container-scanning target could not be prepared (the image could not be built or saved), so container scanning did NOT run. Fix the build/save error reported above, then re-run this skill."
+      #
+      # container-target.sh already tells a base-image pull failure apart from a
+      # broken build and prints the remedy for each. Reading CS_VALUE keeps that
+      # distinction: collapsing both into one message sent people to raise a
+      # ticket for a missing `docker login`.
+      if [ "$CS_VALUE" = base-pull ]; then
+        record_config_error container_scanning "The Dockerfile's FROM base image could not be pulled from the registry, so container scanning did NOT run. Log in to the registry, or set the credentials named by settings.container_registry in scanner-preferences.yaml, and point FROM at the internal mirror — the exact commands are printed above. Details: .appsec-results/container-build.log"
+      else
+        warning "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
+        record_skip container_scanning "The container-scanning target could not be prepared (the image could not be built or saved), so container scanning did NOT run. Fix the build/save error reported above, then re-run this skill."
+      fi
       ;;
     *)
       info "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
@@ -1031,10 +1097,20 @@ if [ -n "$PY_BIN" ]; then
     # which packages and fixed versions the scanners actually reported.
     set +e
     run_normalize >/dev/null 2>&1
+    # The probe's own stderr used to go to /dev/null with it, so a mirror that
+    # refused every request could say so and nobody would ever hear it. Keep the
+    # probe non-fatal (set +e), but let it be heard.
     "$PY_BIN" "$SCRIPTS_DIR/check-remediation.py" .appsec-results \
       --registries "${PACKAGE_REGISTRIES:-}" \
-      --token-env "${PACKAGE_REGISTRY_AUTH_ENV:-}"
+      --token-env "${PACKAGE_REGISTRY_AUTH_ENV:-}" \
+      2> .appsec-results/remediation-probe.log
     set -e
+    while IFS= read -r probe_line; do
+      case "$probe_line" in
+        CONFIG-ERROR:\ *) record_config_error "" "${probe_line#CONFIG-ERROR: }" ;;
+        *) printf '%s\n' "$probe_line" >&2 ;;
+      esac
+    done < .appsec-results/remediation-probe.log
     [ -f .appsec-results/registry-availability.json ] && \
       AVAILABILITY_ARGS="--availability .appsec-results/registry-availability.json"
   fi
@@ -1043,6 +1119,7 @@ if [ -n "$PY_BIN" ]; then
   run_normalize
   gate_rc=$?
   set -e
+  report_config_errors
   if [ "$gate_rc" -eq 0 ] && [ -n "$SKIPPED_IMAGE_SCANNERS" ]; then
     warning "enabled scanners skipped for missing images: $SKIPPED_IMAGE_SCANNERS"
     exit 2
@@ -1104,5 +1181,6 @@ cat > .appsec-results/scan-coverage.json <<EOF
   "reason": "python3 unavailable: findings were never normalized, triaged or gated"
 }
 EOF
+report_config_errors
 error "findings were never assessed (python3 unavailable) — this run is NOT a pass"
 exit 2

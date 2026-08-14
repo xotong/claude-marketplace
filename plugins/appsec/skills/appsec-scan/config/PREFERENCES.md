@@ -131,11 +131,20 @@ settings:
   |---|---|---|
   | available | 200, version confirmed | stays `fixable_candidate` — loop may attempt it |
   | absent | 404 | `blocked_registry_gap` — loop skips it, TRIAGE.md §3b lists it |
-  | unknown | timeout, auth failure, 5xx, no template | nothing changes |
+  | unauthorized | 401/403 | nothing changes, and a `CONFIG-ERROR:` is reported |
+  | unknown | timeout, 5xx, no template | nothing changes |
 
   `unknown` deliberately changes nothing: a registry you could not reach is not
   evidence a package is missing, and treating it as one would send developers
   chasing mirroring requests for packages that are already there.
+
+  `unauthorized` changes nothing either, for exactly the same reason — but it is a
+  separate verdict because the two need opposite handling. A timeout may fix
+  itself; a rejected credential never will. Folded into `unknown`, a mirror that
+  is not anonymous made every probe shrug, the whole registry-gap feature quietly
+  do nothing, and the run still read like a result. Preflight now asks each
+  configured registry one throwaway question up front so this surfaces in seconds
+  rather than after the scan.
 
   Gap findings still count toward the gate — a vulnerability you cannot fix yet is
   still a vulnerability. Container-scanning findings are never probed against a

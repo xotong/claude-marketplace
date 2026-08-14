@@ -58,6 +58,29 @@ esac
 
 emit() { printf '%s\n' "$1"; }
 
+# Pure parameter expansion, no `dirname`: a minimal airgapped userland need not
+# carry coreutils, and these helpers are tested under a stripped PATH.
+_ce_dir=${BASH_SOURCE[0]%/*}
+if [ "$_ce_dir" = "${BASH_SOURCE[0]}" ]; then _ce_dir=.; fi
+# shellcheck source=scripts/classify-error.sh
+. "$_ce_dir/classify-error.sh"
+
+# The availability check, with the one failure that must not be read as a
+# mirroring gap taken out first. Every fallback candidate below lives on the SAME
+# registry, so a registry that refused us will refuse those too: falling through
+# to "ask your platform team to mirror X" invents work for an image that is
+# already there, and hides a missing credential behind a plausible story. Stop
+# instead — see the CONFIG-ERROR: prefix in SKILL.md.
+pull_ok() {
+  if [ "$PULL_MODE" = no-pull ]; then return 0; fi
+  if pull_err=$("$RUNTIME" pull -q "$1" 2>&1); then return 0; fi
+  if is_auth_error "$pull_err"; then
+    echo "CONFIG-ERROR: the registry refused our credentials for $1, so no scanner image could be resolved — run '$RUNTIME login <registry-host>', or set the credentials named by settings.container_registry in scanner-preferences.yaml" >&2
+    exit 2
+  fi
+  return 1
+}
+
 # Split "registry/path/name:tag" into prefix ("registry/path"), name, and tag.
 # A tag is only a tag if the last '/'-segment contains ':' — otherwise a port in
 # the registry host (registry:5000/foo) would be mistaken for one.
@@ -125,7 +148,7 @@ if [ -z "$CONFIGURED" ]; then
   # there is nothing to fall back to, so an unavailable image is fatal here
   # rather than a warning — the alternative is a docker-run failure several
   # steps later with a far less useful message.
-  if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$TEMPLATE" >/dev/null 2>&1; then
+  if pull_ok "$TEMPLATE"; then
     emit "$TEMPLATE"
     exit 0
   fi
@@ -137,7 +160,7 @@ if [ -z "$CONFIGURED" ]; then
     echo "[image]   Falling back to the component's default variant ${TEMPLATE_ORIGINAL}." >&2
     echo "[image]   The scan will use a JDK that does not match the project — ask your" >&2
     echo "[image]   platform team to mirror ${TEMPLATE}." >&2
-    if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$TEMPLATE_ORIGINAL" >/dev/null 2>&1; then
+    if pull_ok "$TEMPLATE_ORIGINAL"; then
       emit "$TEMPLATE_ORIGINAL"
       exit 0
     fi
@@ -215,7 +238,7 @@ candidate="${configured_repo}:${effective_tag}"
 echo "[image] component template declares ${template_tag}; configured ${configured_tag:-<untagged>}" >&2
 echo "[image] trying ${candidate}" >&2
 
-if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$candidate" >/dev/null 2>&1; then
+if pull_ok "$candidate"; then
   echo "[image] using ${candidate} (component-tracked)" >&2
   emit "$candidate"
   exit 0

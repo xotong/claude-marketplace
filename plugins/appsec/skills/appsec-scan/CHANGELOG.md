@@ -9,6 +9,58 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **A misconfiguration now stops the work it blocks instead of being routed around.**
+  Found testing in an airgapped estate: a JFrog repo that was not anonymous made the
+  skill keep hunting for alternative methods, and the run still produced output that
+  read like a result. Two defects sat behind it. Nothing told a registry that *refused*
+  us apart from one we could not *reach* — `resolve-package.sh` mapped 401/403 into the
+  same `unknown` a timeout produces, so with no `package_registries.auth_token_env` set
+  every probe shrugged and the whole registry-gap feature quietly did nothing. And
+  nothing said a configuration error is terminal, while the docs celebrate fifteen
+  fallback chains — so faced with a 401 the natural move was to invent a sixteenth.
+  Now: `scripts/classify-error.sh` holds the single definition of an auth failure (moved
+  out of `resolve-base-image.sh`, which had the only correct copy); `resolve-package.sh`
+  returns a distinct `unauthorized`; and a config error prints `CONFIG-ERROR: <what> —
+  <the setting to fix>`, aborts only the category it blocks, and exits 2 at any
+  `fail_on` — including `none`, which otherwise always exits 0. Environment failures
+  (timeout, connection refused, DNS, 5xx) keep their existing graceful fallback: the
+  airgap guarantee rides on it. The coverage invariant is unchanged — a blocked category
+  still lands in `missing_report` with `coverage_complete: false` and its HIGH
+  `APPSEC-REPORT-*` finding — and no finding's status ever moves, because being refused
+  is no more evidence of absence than a timeout. Design principle in ARCHITECTURE.md
+  "Configuration errors vs environment failures".
+- **Preflight probes what you configured, before any container starts.** One throwaway
+  request per non-empty `package_registries` template (401/403 → fail fast naming
+  `auth_token_env`), plus readability checks for `ca_bundle` and `maven_settings` — the
+  latter was a mid-run warning, and an unreadable CA bundle fails every request from
+  inside the container in a way that reads like a network outage rather than a trust
+  problem. Nothing configured means nothing probed, so an estate that sets none of this
+  gains no new failure surface. Deliberately not checked: the Artifactory and container
+  registry credential vars, whose *names* ship with defaults and therefore carry no
+  signal — requiring them would block every estate that pulls anonymously.
+
+### Fixed
+
+- **Diagnosis that was already computed no longer gets thrown away.**
+  `container-target.sh` distinguishes a base-image pull failure and prints the exact
+  `login` remedy, but `run-scan.sh` discarded its exit code with `|| true` and collapsed
+  `base-pull`/`build`/`save` into one "submit a Jira ticket" message. `resolve-image.sh`
+  swallowed pull stderr, so an auth failure was reported as "not available from this
+  registry — ask your platform team to mirror it", inventing mirroring work for an image
+  that was already there. And `check-remediation.py` ran with its stderr sent to
+  `/dev/null`, so a mirror that refused every request could say so and nobody would ever
+  hear it. All three now surface.
+- `catalog.sh` no longer reports a rejected token and an unreachable instance as the
+  same `[offline-fallback]`. A refusal resolves `[offline-fallback: unauthorized]`,
+  prints a `CONFIG-ERROR:`, and makes `resolve-components.sh` exit non-zero — after
+  printing the table, so you still see what resolved. The status comes from one extra
+  request made only on the failure path, so a healthy run issues no additional traffic.
+  This is the rule MIGRATION.md and UPDATE-GUIDE.md already applied to re-vendoring
+  ("fix the connection or the token — do not work around it"), now applied to scanning.
+- The repo README claimed the skill "tries anonymous API reads first" and "continues on
+  the vendored snapshots" if no token works, contradicting preflight's hard failure and
+  reading as a licence to improvise. Corrected.
+
 - **The Fortify JDK variant is now detected from the codebase — no configuration.**
   `scripts/detect-java-release.sh` reads the compile target out of every `pom.xml`
   (`maven.compiler.release|source|target`, `java.version`, the compiler plugin's

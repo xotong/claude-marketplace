@@ -137,7 +137,12 @@ class SkillDocumentationContractTest(unittest.TestCase):
 
         for expected in (
             '"$RUNTIME" run',
-            '"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"',
+            # Every image pull goes through pull_image, which is the only place
+            # that tells a refused credential apart from an unreachable registry.
+            # Assert both halves: that the abstraction still runs the detected
+            # runtime, and that secret detection still routes through it.
+            'run_cmd "$RUNTIME" pull "$pull_ref"',
+            'pull_image secret_detection "Secret Detection" "${SECRET_DETECTION_IMAGE}"',
             "GITLAB_FEATURES",
         ):
             with self.subTest(expected=expected):
@@ -184,10 +189,22 @@ class SkillDocTokenBudgetTest(unittest.TestCase):
         # false all-clear, so the rule has to be in the file the model reads.
         # Paid for by deduplicating three restatements of "not an all-clear"
         # down to one; the remaining budget is deliberately tight.
+        #
+        # Raised from 330/17600 in 2026-08 for the CONFIG-ERROR: prefix and the
+        # rule that a configuration error is never worked around. Tested in an
+        # airgapped estate, a non-anonymous JFrog made the skill hunt for
+        # alternative methods instead of stopping: this file states fourteen
+        # hard-stop conditions but drew the misconfiguration-vs-environment
+        # distinction zero times, while the scripts implement fifteen fallback
+        # chains the docs celebrate. Faced with a 401 the model generalised from
+        # those fifteen and improvised a sixteenth. The rule only works if it is
+        # in the file the model actually reads. Paid for partly by cutting the
+        # stale `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` literal (the pull
+        # moved into pull_image) and tightening Step 0's rationale.
         lines = SKILL_TEXT.splitlines()
 
-        self.assertLessEqual(len(lines), 330)
-        self.assertLessEqual(len(SKILL_TEXT), 17600)
+        self.assertLessEqual(len(lines), 334)
+        self.assertLessEqual(len(SKILL_TEXT), 18100)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):

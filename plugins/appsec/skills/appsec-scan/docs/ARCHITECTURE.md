@@ -252,15 +252,44 @@ the second pass folds into `remediation_status`:
 - **Hardened images** — probed against `hardened_repo` into separate keys that no
   status decision reads. Suggestion only.
 
-`unknown` — unreachable registry, auth failure, 5xx, no template, no runtime — changes
-nothing, ever. Unreachable is not evidence of absence, and a wrong `absent` invents
-mirroring work for the platform team. Blocked findings are skipped by the fix loop
-(they cannot succeed) and batched into TRIAGE.md §3b as one mirroring request.
+`unknown` — unreachable registry, 5xx, no template, no runtime — changes nothing, ever.
+Unreachable is not evidence of absence, and a wrong `absent` invents mirroring work for
+the platform team. A package registry that answers 401/403 returns `unauthorized`, which
+changes nothing either but is reported as a `CONFIG-ERROR:` (see the design principle
+below); base-image probes have no such verdict and keep collapsing auth into `unknown`,
+so they can never manufacture a false `absent`. Blocked findings are skipped by the fix
+loop (they cannot succeed) and batched into TRIAGE.md §3b as one mirroring request.
 
 The whole probe is gated on `package_registries` containing at least one URL, so an
 estate that configures only `base_repo` gets no probing.
 
 For the internet → airgapped platform migration runbook, see [`MIGRATION.md`](../MIGRATION.md).
+
+## Configuration errors vs environment failures
+
+The design principle the rest of the error handling follows:
+
+> **A failure the user's own configuration caused is terminal for whatever it blocks.
+> A failure the environment caused may fall back, and the fallback must be reported.**
+
+The test is mechanical: HTTP 401/403, and the registry auth phrases matched by
+`scripts/classify-error.sh`, are configuration. Timeouts, connection failures, DNS and
+5xx are environment. Anything in the first bucket prints a `CONFIG-ERROR:` line naming
+the exact setting to fix, stops the category it blocks without attempting an
+alternative, and makes `run-scan.sh` exit 2 — at any `fail_on`, including `none`.
+
+Why the distinction has to be mechanised rather than left to judgement: this skill
+implements roughly fifteen deliberate fallback chains, and they are load-bearing. The
+airgap guarantee *is* one of them. Faced with a refusal, the natural move is to reach
+for a sixteenth — another image, another tag, another endpoint — and every one of those
+fails the same way, so the run ends with a plausible story and no scan. A rejected
+credential is never fixed by trying harder; only the admin can fix it.
+
+What this does **not** change: a configuration error is still recorded through the
+ordinary skip path, so the blocked category still lands in `missing_report` with
+`coverage_complete: false` and still synthesises its HIGH `APPSEC-REPORT-*` finding. And
+it never moves a finding's status — a registry that refused us is no more evidence a
+package is missing than one that timed out.
 
 ## Network and airgap policy
 
