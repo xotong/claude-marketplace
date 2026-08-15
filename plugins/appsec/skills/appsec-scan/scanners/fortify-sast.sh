@@ -81,9 +81,80 @@ case "${FORTIFY_LANGUAGE}" in
     sourceanalyzer -b "${FORTIFY_BUILD_ID}" "${SOURCE_PATH}"
     ;;
   python)
+    # SCA does not run the code, it resolves imports statically, so an import it
+    # cannot resolve is dataflow it cannot follow. Upstream measured it on crAPI:
+    # empty venv 28 vulnerabilities, populated venv 46. This arm used to pass no
+    # -python-path at all — thinner than the component, and silent about it.
+    #
+    # Two tiers, and never a third that quietly reaches the public internet:
+    #   uv settings configured -> replicate CI exactly (uv, interpreter and
+    #                             packages all from the configured mirror)
+    #   not configured         -> stdlib only, and SAY the scan is degraded
+    PY_RESOLUTION=stdlib-only
+    PYPATH=
+    if [ -n "${UV_INSTALLER_BASE:-}" ] && [ -n "${UV_VERSION:-}" ]; then
+      echo "[fortify] installing uv ${UV_VERSION} from ${UV_INSTALLER_BASE}" >&2
+      if curl -LsSf "${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh" | sh >&2 &&
+         . "$HOME/.local/bin/env" 2>/dev/null; then
+        [ -z "${FORTIFY_PYTHON_VERSION:-}" ] || uv python install "${FORTIFY_PYTHON_VERSION}" >&2 || true
+        if uv venv >&2 && . .venv/bin/activate; then
+          if [ -f "${SOURCE_PATH}/requirements.txt" ]; then
+            REQ="${SOURCE_PATH}/requirements.txt"
+            # Bulk install is atomic: one unbuildable package (psycopg2 wants
+            # pg_config, which a scanner image has no reason to ship) must
+            # degrade the venv, not empty it and take the scan with it.
+            uv pip install -r "$REQ" >&2 || {
+              echo "[fortify] bulk install failed; retrying per-package" >&2
+              UNRESOLVED=0
+              while read -r pkg; do
+                pkg=$(printf '%s' "$pkg" | sed 's/#.*//; s/[[:space:]]*$//')
+                case "$pkg" in ''|-*) continue ;; esac
+                uv pip install "$pkg" >/dev/null 2>&1 || {
+                  echo "[fortify]   unresolvable: $pkg" >&2
+                  UNRESOLVED=$((UNRESOLVED + 1))
+                }
+              done <"$REQ"
+              [ "$UNRESOLVED" -eq 0 ] || echo "[fortify] ${UNRESOLVED} package(s) unresolvable — resolution is partial" >&2
+            }
+          elif [ -f "${SOURCE_PATH}/pyproject.toml" ]; then
+            uv pip install "${SOURCE_PATH}" >&2 || echo "[fortify] project install failed" >&2
+          fi
+          PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+          [ -z "$PYPATH" ] || PY_RESOLUTION=full
+        fi
+      else
+        echo "[fortify] uv install failed — falling back to stdlib-only resolution" >&2
+      fi
+    fi
+
+    # SCA bundles only a subset of the stdlib and ignores PYTHONPATH, so the
+    # interpreter's own stdlib must be named or logging/json/textwrap stay
+    # unresolved. Worth it even in the degraded tier: upstream saw the scan get
+    # both more accurate AND faster (349s -> 259s).
+    STDLIB=$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])' 2>/dev/null || true)
+    if [ -n "$STDLIB" ] && [ -d "$STDLIB" ]; then
+      PYPATH="${PYPATH:+$PYPATH:}$STDLIB"
+    fi
+
+    if [ "$PY_RESOLUTION" != full ]; then
+      echo "APPSEC-PY-DEGRADED: third-party imports were NOT resolved, so this scan finds less than CI will. Set settings.python_runtime.{uv_version,uv_installer_base,uv_python_install_mirror} to your mirror." >&2
+    fi
+
+    # Opt-in and all-or-nothing: -disable-template-autodiscover REPLACES
+    # discovery, so naming one directory in a repo with two loses the second.
+    set --
+    if [ -n "${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" ]; then
+      set -- -django-template-dirs "${FORTIFY_PYTHON_TEMPLATE_DIRS}" \
+             -jinja-template-dirs "${FORTIFY_PYTHON_TEMPLATE_DIRS}" \
+             -disable-template-autodiscover
+    fi
+
+    echo "[fortify] python-path: ${PYPATH:-<none>} (resolution: ${PY_RESOLUTION})" >&2
     sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \
+      ${PYPATH:+-python-path "$PYPATH"} \
       -python-version 3 \
+      "$@" \
       "${SOURCE_PATH}"
     ;;
   javascript)

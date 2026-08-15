@@ -804,7 +804,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
       if $DRY_RUN; then
         while IFS='|' read -r u_path u_lang; do
           [ -n "$u_path" ] || continue
-          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e UV_VERSION="${UV_VERSION:-}" -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
         done <"$SAST_UNITS_FILE"
       else
         # Units run sequentially inside ONE background job: a Fortify container
@@ -845,6 +845,13 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
               -e SOURCE_PATH="$u_path" \
               -e FORTIFY_LANGUAGE="$u_lang" \
               -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
+              -e UV_VERSION="${UV_VERSION:-}" \
+              -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" \
+              -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" \
+              -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" \
+              -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" \
+              -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" \
+              -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" \
               -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
               -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
               "${FORTIFY_SAST_IMAGE}" \
@@ -988,6 +995,16 @@ if ! $DRY_RUN; then
     if [ -n "$unscanned" ]; then
       warning "[Fortify SCA] No report for:$unscanned"
       record_skip sast "Fortify produced no report for:$unscanned — that source was NOT analysed, even though other units in this repository were. Read .appsec-results/fortify-sast.log for the per-unit cause, fix it, then re-run this skill."
+    fi
+    # A python unit that resolved no third-party imports still produces a report,
+    # so this is NOT a coverage gap — the scanner ran. It is a scan that finds
+    # less than CI will (upstream measured 28 vs 46 on the same code), which is
+    # exactly the kind of quiet shortfall this skill exists to surface.
+    if grep -q '^APPSEC-PY-DEGRADED:' .appsec-results/fortify-sast.log 2>/dev/null; then
+      warning "[Fortify SCA] Python resolution was DEGRADED — third-party imports were not resolved,"
+      warning "  so this scan finds less than CI will. It is not a coverage gap: the scanner ran."
+      warning "  Fix: set settings.python_runtime.{uv_version,uv_installer_base,uv_python_install_mirror}"
+      warning "  to your internal mirror. Details in .appsec-results/fortify-sast.log"
     fi
   fi
 

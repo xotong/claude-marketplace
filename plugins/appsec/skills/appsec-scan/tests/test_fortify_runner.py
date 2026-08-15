@@ -45,7 +45,7 @@ class FortifyRunnerTest(unittest.TestCase):
         return repo
 
     def _run(self, repo: Path, language: str = "gradle",
-             source_path: str = "src") -> subprocess.CompletedProcess[str]:
+             source_path: str = "src", **extra: str) -> subprocess.CompletedProcess[str]:
         env = dict(
             os.environ,
             PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
@@ -54,6 +54,7 @@ class FortifyRunnerTest(unittest.TestCase):
             FORTIFY_LANGUAGE=language,
             APP_NAME="demo",
         )
+        env.update(extra)
         return subprocess.run(
             ["sh", str(RUNNER)], cwd=repo, env=env, capture_output=True, text=True
         )
@@ -100,12 +101,67 @@ class FortifyRunnerTest(unittest.TestCase):
         self.assertIn("-debug-verbose", javascript.stdout)
         self.assertIn("-Dcom.fortify.sca.follow.imports=false", javascript.stdout)
 
-    def test_python_arm_does_not_pass_python_path(self) -> None:
-        """Deliberate: the component's `.venv` cannot exist in that job, and
-        -python-path alone does not add the library to the build anyway. See
-        github issue #12 — do not "restore" this without the translation target."""
+    def test_python_arm_passes_python_path_but_not_a_translation_target(self) -> None:
+        """Mirrors the component exactly — both halves matter.
+
+        The original omission was deliberate: issue #12 established that the old
+        component's `.venv` could not exist in that job (no pip, no uv, no
+        virtualenv in the image, `dependencies: []`), so its `-python-path`
+        pointed at nothing. That premise CHANGED when fortify-sast!2 taught the
+        job to build the venv with uv, so the flag now resolves something real
+        and this arm passes it.
+
+        What has NOT changed is issue #12's other half, which its measured table
+        is explicit about: `-python-path` resolves imports for the front end but
+        does NOT add the library to the build, so a taint path routing THROUGH a
+        dependency is still missed. Recovering it needs site-packages as a
+        translation target as well — and adding that here alone would make the
+        local scan find things CI does not, which breaks the mirror in the other
+        direction. It stays an upstream fix; issue #12 stays open.
+        """
         result = self._run(self._repo("q"), language="python")
-        self.assertNotIn("-python-path", result.stdout)
+        self.assertIn("-python-path", result.stdout)
+        # The scan target is the source path, never site-packages.
+        self.assertNotIn("site-packages -python-version", result.stdout)
+        self.assertTrue(
+            result.stdout.rstrip().endswith("src")
+            or " src\n" in result.stdout,
+            result.stdout,
+        )
+
+
+    def test_python_without_uv_settings_declares_itself_degraded(self) -> None:
+        """The failure being fixed is a QUIET shortfall, not a missing scan: with
+        no mirror configured the scan still runs, finds less than CI, and used to
+        say nothing at all. Upstream measured the same code at 28 vs 46."""
+        result = self._run(self._repo("d"), language="python")
+        output = result.stdout + result.stderr
+        self.assertIn("APPSEC-PY-DEGRADED:", output)
+        self.assertIn("python_runtime", output)
+        # Degraded still beats nothing: the stdlib is named either way, which
+        # upstream measured as both more accurate AND faster (349s -> 259s).
+        self.assertIn("-python-path", result.stdout)
+
+    def test_python_never_reaches_the_public_internet_to_close_the_gap(self) -> None:
+        """An unconfigured airgapped host must degrade, not silently fetch uv
+        from astral.sh — the component's own default points there."""
+        result = self._run(self._repo("n"), language="python")
+        output = result.stdout + result.stderr
+        self.assertNotIn("astral.sh", output)
+        self.assertNotIn("uv-installer.sh", output)
+
+    def test_template_dirs_are_all_or_nothing(self) -> None:
+        """-disable-template-autodiscover REPLACES discovery, so naming one
+        directory in a repo with two loses the second. Unset must stay unset."""
+        off = self._run(self._repo("t1"), language="python")
+        self.assertNotIn("-disable-template-autodiscover", off.stdout)
+        self.assertNotIn("-django-template-dirs", off.stdout)
+
+        on = self._run(self._repo("t2"), language="python",
+                       FORTIFY_PYTHON_TEMPLATE_DIRS="app/templates:web/tpl")
+        self.assertIn("-django-template-dirs app/templates:web/tpl", on.stdout)
+        self.assertIn("-jinja-template-dirs app/templates:web/tpl", on.stdout)
+        self.assertIn("-disable-template-autodiscover", on.stdout)
 
 
 if __name__ == "__main__":

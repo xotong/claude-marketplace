@@ -111,6 +111,41 @@ settings:
   # same value. Empty = disabled, nothing is mounted.
   maven_settings: ""  # e.g. /home/dev/.m2/settings-internal.xml
 
+  # How the Fortify python scan resolves imports.
+  #
+  # Fortify SCA does not run your code; it resolves imports statically, and an
+  # import it cannot resolve is dataflow it cannot follow. Upstream measured the
+  # difference on crAPI: an empty venv reported 28 vulnerabilities, a populated
+  # one reported 46. So a python scan with no dependencies installed does not
+  # merely run "a bit thinner" — it under-reports, and it used to do so silently.
+  #
+  # The component builds that venv with uv, which needs THREE separate artifacts,
+  # each from a different place. Empty (the shipped default) means the component's
+  # own defaults apply, and those point at the public internet:
+  #
+  #   uv_version              which uv to install; also pins reproducibility
+  #   uv_installer_base       where uv itself comes from  (default: astral.sh)
+  #   uv_python_install_mirror where the CPython build comes from (default: github)
+  #
+  # Set all three to your internal mirror and the local scan replicates CI's
+  # resolution exactly. Leave them empty on an airgapped host and the scan still
+  # runs, but with STDLIB-ONLY resolution — third-party imports stay unresolved
+  # and the summary says so rather than passing the thinner result off as a scan.
+  # It never silently reaches the public internet to close the gap.
+  #
+  # NOTE: with these set, the scanner container makes network calls (to your
+  # mirror only). That is the one exception to "no network inside the containers"
+  # — see docs/ARCHITECTURE.md "Network and airgap policy".
+  #
+  # python_version pins the interpreter uv installs. Empty = detect the project's
+  # requirement and pick the closest version your mirror offers, the same way the
+  # Fortify JDK variant is chosen; set it to override.
+  python_runtime:
+    uv_version: ""               # e.g. 0.11.28
+    uv_installer_base: ""        # e.g. https://jfrog.internal/artifactory/uv/releases/download
+    uv_python_install_mirror: "" # e.g. https://jfrog.internal/artifactory/python-build-standalone
+    python_version: ""           # e.g. 3.12
+
   # Package registries used to CHECK whether a suggested upgrade is actually
   # obtainable here, before the fix loop tries it. Leave every value empty to skip
   # the check entirely (nothing is probed, no status changes).

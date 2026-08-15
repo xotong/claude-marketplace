@@ -304,6 +304,21 @@ template it resolved. No WebFetch, no discovery, no other hosts:
 | `scripts/resolve-base-image.sh` | `settings.container_registry.base_repo` / `hardened_repo` |
 | `resolve-jq.sh` / `resolve-python.sh` | `settings.jq.install_url` / `settings.python.install_url` |
 
+One deliberate exception: with `settings.python_runtime` configured, the Fortify Python
+arm fetches uv, a CPython build and the project's packages **from the configured mirror**,
+inside the container. That is the only way to match CI's import resolution, and without it
+the scan finds strictly less than CI does — upstream measured 28 vs 46 vulnerabilities on
+the same code. Unset, it degrades to stdlib-only and announces `APPSEC-PY-DEGRADED:`; it
+never falls through to the public internet, which is where the component's own defaults
+point.
+
+Component **versions** come from `/releases`, not from git tags: GitLab's `~latest` means
+the latest *released* catalog version, and a tag with no release behind it is not one. An
+instance that publishes no releases still resolves from tags — a fallback, not a failure —
+and says so, because `@~latest` will not resolve there in a real pipeline. Snapshots record
+the commit behind the tag, so a tag MOVED onto new content is reported rather than silently
+served stale from the offline fallback.
+
 Everything else is offline by construction: catalog resolution falls back to the
 vendored snapshots under
 `reference/catalog/lobster-thermidor/devops/ci-catalogue/<name>/<name>/<tag>/`, the
