@@ -123,7 +123,15 @@ case "${FORTIFY_LANGUAGE}" in
 
       # Ask before assuming: if TLS already verifies, there is nothing to fix and
       # nothing to weaken.
-      tls_ok() { curl -sSf --max-time 30 -o /dev/null "$UV_URL" 2>/dev/null; }
+      #
+      # Deliberately WITHOUT -f. With it, an HTTP 404 exits 22 and is
+      # indistinguishable from a certificate failure — so a mirror that is
+      # perfectly trusted but simply does not carry this uv version would be
+      # diagnosed as "TLS could not be verified", and on an estate with
+      # allow_insecure_uv_download set that would disable verification to solve a
+      # missing file. Without -f, a non-zero exit means the transport itself
+      # failed; the real fetch below still uses -f and reports the 404 as a 404.
+      tls_ok() { curl -sS --max-time 30 -o /dev/null "$UV_URL" 2>/dev/null; }
 
       UV_GOT=false
       UV_TLS=verified

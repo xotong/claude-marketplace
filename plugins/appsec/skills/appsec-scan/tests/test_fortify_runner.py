@@ -249,6 +249,26 @@ class UvTlsLadderTest(unittest.TestCase):
         self.assertIn("APPSEC-PY-DEGRADED", result.stderr)
         self.assertFalse(self._used_insecure(), "used -k without being allowed to")
 
+    def test_a_404_is_not_diagnosed_as_a_tls_failure(self) -> None:
+        """Caught against the real image. The probe used `curl -sSf`, so an HTTP
+        404 exits 22 exactly like a certificate failure — a trusted mirror that
+        simply does not carry this uv version was reported as "TLS could not be
+        verified", and on an estate with allow_insecure_uv_download set that
+        would disable verification to solve a missing file."""
+        stub = self.bin / "curl"
+        # Transport fine, HTTP 404: fails only when -f is passed.
+        stub.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> {self.calls}\n'
+            'case " $* " in *" -f "*|*"-LsSf"*|*"-sSf"*) exit 22 ;; esac\n'
+            "exit 0\n"
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        result = self._run(ALLOW_INSECURE_UV_DOWNLOAD="true")
+        self.assertNotIn("could not be verified", result.stderr)
+        self.assertNotIn("APPSEC-INSECURE-TLS", result.stderr)
+        self.assertFalse(self._used_insecure(), "disabled TLS over an HTTP 404")
+
     def test_rung3_insecure_only_when_explicitly_allowed_and_says_so(self) -> None:
         self._curl(plain_works=False)
         result = self._run(ALLOW_INSECURE_UV_DOWNLOAD="true")
