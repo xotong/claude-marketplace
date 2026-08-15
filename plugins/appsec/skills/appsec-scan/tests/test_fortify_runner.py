@@ -164,5 +164,98 @@ class FortifyRunnerTest(unittest.TestCase):
         self.assertIn("-disable-template-autodiscover", on.stdout)
 
 
+class UvTlsLadderTest(unittest.TestCase):
+    """Downloading a script and piping it to sh is remote code execution if
+    anything can sit in the middle, so the order of these rungs is the whole
+    point: verify, then trust the configured internal CA, and only then -- if an
+    admin has explicitly allowed it -- give up on verification, loudly.
+
+    Verified against the real fortify-sca 25.2.0 image: the container runs as
+    uid 1000 with a non-writable anchors dir, so `update-ca-trust` cannot be the
+    mechanism; exporting SSL_CERT_FILE/CURL_CA_BUNDLE/REQUESTS_CA_BUNDLE is, and
+    unlike `curl --cacert` it also covers uv's own downloads.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for name in ("sourceanalyzer",):
+            stub = self.bin / name
+            stub.write_text("#!/bin/sh\nexit 0\n")
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        self.calls = self.root / "curl-calls.log"
+
+    def _curl(self, *, plain_works: bool, ca_works: bool = False) -> None:
+        """A curl that verifies only under the conditions the test declares."""
+        stub = self.bin / "curl"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> {self.calls}\n'
+            'case " $* " in *" -k "*) exit 0 ;; esac\n'
+            + ("exit 0\n" if plain_works else
+               ('if [ -n "$SSL_CERT_FILE" ] && grep -q MAGIC-CA "$SSL_CERT_FILE" 2>/dev/null; then\n'
+                f'  {"exit 0" if ca_works else "exit 60"}\n'
+                'fi\n'
+                'exit 60\n'))
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    def _run(self, **extra: str):
+        repo = self.root / "repo"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        env = dict(
+            os.environ,
+            PATH=f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            CI_PROJECT_DIR=str(repo),
+            SOURCE_PATH="src",
+            FORTIFY_LANGUAGE="python",
+            APP_NAME="demo",
+            UV_VERSION="0.0.0",
+            UV_INSTALLER_BASE="https://mirror.invalid/uv",
+        )
+        env.update(extra)
+        return subprocess.run(["sh", str(RUNNER)], cwd=repo, env=env,
+                              capture_output=True, text=True)
+
+    def _used_insecure(self) -> bool:
+        if not self.calls.exists():
+            return False
+        return any(" -k " in f" {line} " for line in self.calls.read_text().splitlines())
+
+    def test_rung1_verified_needs_no_ca_and_no_k(self) -> None:
+        self._curl(plain_works=True)
+        result = self._run()
+        self.assertNotIn("APPSEC-INSECURE-TLS", result.stderr)
+        self.assertNotIn("settings.ca_bundle", result.stderr)
+        self.assertFalse(self._used_insecure(), self.calls.read_text())
+
+    def test_rung2_configured_ca_rescues_the_handshake(self) -> None:
+        ca = self.root / "ca.pem"
+        ca.write_text("MAGIC-CA\n")
+        self._curl(plain_works=False, ca_works=True)
+        result = self._run(ADDITIONAL_CA_CERT_BUNDLE=str(ca))
+        self.assertIn("verified via settings.ca_bundle", result.stderr)
+        self.assertNotIn("APPSEC-INSECURE-TLS", result.stderr)
+        self.assertFalse(self._used_insecure(), "fell back to -k with a working CA")
+
+    def test_rung4_refuses_when_insecure_is_not_permitted(self) -> None:
+        """The default. No CA, no verification, no download."""
+        self._curl(plain_works=False)
+        result = self._run(ALLOW_INSECURE_UV_DOWNLOAD="false")
+        self.assertIn("could not be verified", result.stderr)
+        self.assertIn("APPSEC-PY-DEGRADED", result.stderr)
+        self.assertFalse(self._used_insecure(), "used -k without being allowed to")
+
+    def test_rung3_insecure_only_when_explicitly_allowed_and_says_so(self) -> None:
+        self._curl(plain_works=False)
+        result = self._run(ALLOW_INSECURE_UV_DOWNLOAD="true")
+        self.assertIn("APPSEC-INSECURE-TLS", result.stderr)
+        self.assertIn("arbitrary code", result.stderr)
+        self.assertTrue(self._used_insecure(), "claimed insecure but never used -k")
+
+
 if __name__ == "__main__":
     unittest.main()

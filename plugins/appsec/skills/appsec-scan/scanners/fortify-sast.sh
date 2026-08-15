@@ -94,31 +94,66 @@ case "${FORTIFY_LANGUAGE}" in
     PYPATH=
     if [ -n "${UV_INSTALLER_BASE:-}" ] && [ -n "${UV_VERSION:-}" ]; then
       echo "[fortify] installing uv ${UV_VERSION} from ${UV_INSTALLER_BASE}" >&2
-      # Three rungs, most-verified first. An internal CA is the REASON TLS fails
-      # in an airgapped estate, so try it before considering giving up on
-      # verification: settings.ca_bundle is already mounted here.
-      #
-      # The last rung disables verification on a script that is piped straight
-      # into sh, which is remote code execution if anything can sit in the middle
-      # — so it is loud, and settings.python_runtime.allow_insecure_uv_download
-      # turns it off entirely. It exists because the upstream dependency-scanning
-      # component does the same thing (`curl -k`) and an estate that needs it
-      # there needs it here; fixing ca_bundle is the real answer.
+      UV_URL="${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh"
       UV_SH=$(mktemp)
-      uv_fetch() { curl -LsSf "$@" "${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh" -o "$UV_SH"; }
+
+      # Trust the internal CA for EVERY tool, not just this one curl call.
+      #
+      # `update-ca-trust` is the usual way to install a CA, and it cannot run
+      # here: verified against fortify-sca 25.2.0, the container is uid 1000 and
+      # /etc/pki/ca-trust/source/anchors is not writable. Concatenating the
+      # system bundle with ours into a writable file and exporting the standard
+      # variables reaches the same end without root — and unlike `curl --cacert`
+      # it also covers uv's OWN downloads, the interpreter and every package.
+      # Passing --cacert to the installer fetch alone left uv itself untrusting.
+      appsec_trust_ca() {
+        [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] || return 1
+        _b=/tmp/appsec-ca-bundle.pem
+        : >"$_b" || return 1
+        for _sys in /etc/pki/tls/certs/ca-bundle.crt \
+                    /etc/ssl/certs/ca-certificates.crt \
+                    /etc/ssl/cert.pem; do
+          [ -r "$_sys" ] && cat "$_sys" >>"$_b" && break
+        done
+        cat "${ADDITIONAL_CA_CERT_BUNDLE}" >>"$_b" || return 1
+        # curl, python/requests and uv each read a different one of these.
+        export SSL_CERT_FILE="$_b" CURL_CA_BUNDLE="$_b" REQUESTS_CA_BUNDLE="$_b"
+        return 0
+      }
+
+      # Ask before assuming: if TLS already verifies, there is nothing to fix and
+      # nothing to weaken.
+      tls_ok() { curl -sSf --max-time 30 -o /dev/null "$UV_URL" 2>/dev/null; }
+
       UV_GOT=false
-      if uv_fetch; then
+      UV_TLS=verified
+      if tls_ok; then
         UV_GOT=true
-      elif [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] &&
-           uv_fetch --cacert "${ADDITIONAL_CA_CERT_BUNDLE}"; then
-        echo "[fortify] uv download needed settings.ca_bundle to verify TLS" >&2
+      elif appsec_trust_ca && tls_ok; then
+        UV_TLS=ca-bundle
+        echo "[fortify] TLS verified via settings.ca_bundle; exported for uv and pip too" >&2
         UV_GOT=true
-      elif [ "${ALLOW_INSECURE_UV_DOWNLOAD:-false}" = true ] && uv_fetch -k; then
-        echo "APPSEC-INSECURE-TLS: uv was downloaded with certificate verification DISABLED (-k) and piped to sh." >&2
-        echo "APPSEC-INSECURE-TLS:   Anything able to intercept that request could have run arbitrary code in this scanner." >&2
-        echo "APPSEC-INSECURE-TLS:   Fix settings.ca_bundle so the internal CA verifies, then set allow_insecure_uv_download: false." >&2
+      elif [ "${ALLOW_INSECURE_UV_DOWNLOAD:-false}" = true ]; then
+        UV_TLS=insecure
         UV_GOT=true
+      else
+        echo "[fortify] TLS to ${UV_INSTALLER_BASE} could not be verified." >&2
+        echo "[fortify]   Set settings.ca_bundle to your internal CA. If it genuinely cannot" >&2
+        echo "[fortify]   verify, settings.python_runtime.allow_insecure_uv_download: true" >&2
+        echo "[fortify]   permits an unverified download — read what that means first." >&2
       fi
+
+      if $UV_GOT; then
+        if [ "$UV_TLS" = insecure ]; then
+          echo "APPSEC-INSECURE-TLS: uv is being downloaded with certificate verification DISABLED (-k) and piped to sh." >&2
+          echo "APPSEC-INSECURE-TLS:   Anything able to intercept that request could run arbitrary code in this scanner." >&2
+          echo "APPSEC-INSECURE-TLS:   Fix settings.ca_bundle, then set allow_insecure_uv_download: false." >&2
+          curl -LsSf -k "$UV_URL" -o "$UV_SH" || UV_GOT=false
+        else
+          curl -LsSf "$UV_URL" -o "$UV_SH" || UV_GOT=false
+        fi
+      fi
+
       if $UV_GOT && sh "$UV_SH" >&2 && . "$HOME/.local/bin/env" 2>/dev/null; then
         rm -f "$UV_SH"
         [ -z "${FORTIFY_PYTHON_VERSION:-}" ] || uv python install "${FORTIFY_PYTHON_VERSION}" >&2 || true
