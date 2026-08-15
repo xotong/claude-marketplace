@@ -24,7 +24,15 @@ OUT_DIR="${RESULTS}"
 APP_NAME="${APP_NAME:-$(basename "${CI_PROJECT_DIR}")}"
 SOURCE_PATH="${SOURCE_PATH:-src}"
 FORTIFY_LANGUAGE="${FORTIFY_LANGUAGE:-}"
-FPR_PATH="${OUT_DIR}/fortify-sast.fpr"
+# One FPR and one Fortify build ID per unit. run-scan.sh runs this script once
+# per discovered (source-path, language) unit, exactly as CI includes the
+# component once per service; sharing either name across units would make each
+# `-clean` wipe the previous unit's build and leave one report standing for a
+# repository that had several. Both default to the single-unit values, so a
+# root-only project is byte-identical to before.
+FPR_NAME="${FPR_NAME:-fortify-sast.fpr}"
+FPR_PATH="${OUT_DIR}/${FPR_NAME}"
+FORTIFY_BUILD_ID="${FORTIFY_BUILD_ID:-${APP_NAME}}"
 
 cd "${CI_PROJECT_DIR}"
 mkdir -p "${OUT_DIR}"
@@ -39,11 +47,11 @@ fi
 # SCAN — mirrors the private catalog Fortify SAST component script.
 # =============================================================================
 
-sourceanalyzer -b "${APP_NAME}" -clean
+sourceanalyzer -b "${FORTIFY_BUILD_ID}" -clean
 
 case "${FORTIFY_LANGUAGE}" in
   maven)
-    sourceanalyzer -debug -verbose -b "${APP_NAME}" \
+    sourceanalyzer -debug -verbose -b "${FORTIFY_BUILD_ID}" \
       mvn clean install -s "${MAVEN_SETTINGS:-settings.xml}" -DskipTests
     ;;
   gradle)
@@ -66,20 +74,20 @@ case "${FORTIFY_LANGUAGE}" in
       echo "ERROR:   The component requires a working gradle wrapper in the repository." >&2
       exit 2
     fi
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       "${GRADLEW}" -p "${SOURCE_PATH}" clean assemble \
       "-Partifactory_user=${ARTIFACTORY_USER:-}" \
       "-Partifactory_password=${ARTIFACTORY_PASSWORD:-}"
-    sourceanalyzer -b "${APP_NAME}" "${SOURCE_PATH}"
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" "${SOURCE_PATH}"
     ;;
   python)
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \
       -python-version 3 \
       "${SOURCE_PATH}"
     ;;
   javascript)
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \
       -Dcom.fortify.sca.follow.imports=false \
       "${SOURCE_PATH}"
@@ -93,7 +101,7 @@ case "${FORTIFY_LANGUAGE}" in
     # sourceanalyzer can follow imports. Note the component omits
     # -Dcom.fortify.sca.follow.imports=false here, unlike the javascript arm.
     ( cd "${SOURCE_PATH}" && go mod download )
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \
       "${SOURCE_PATH}"
     ;;
@@ -108,9 +116,9 @@ case "${FORTIFY_LANGUAGE}" in
 esac
 
 if [ -n "${FILTER_ARGS}" ]; then
-  sourceanalyzer -b "${APP_NAME}" -scan -f "${FPR_PATH}" -filter filter_list.txt
+  sourceanalyzer -b "${FORTIFY_BUILD_ID}" -scan -f "${FPR_PATH}" -filter filter_list.txt
 else
-  sourceanalyzer -b "${APP_NAME}" -scan -f "${FPR_PATH}"
+  sourceanalyzer -b "${FORTIFY_BUILD_ID}" -scan -f "${FPR_PATH}"
 fi
 
 if command -v FPRUtility >/dev/null 2>&1; then

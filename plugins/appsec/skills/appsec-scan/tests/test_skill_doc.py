@@ -201,10 +201,16 @@ class SkillDocTokenBudgetTest(unittest.TestCase):
         # in the file the model actually reads. Paid for partly by cutting the
         # stale `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` literal (the pull
         # moved into pull_image) and tightening Step 0's rationale.
+        #
+        # Nudged 18100 -> 18200 in 2026-08 for the Fortify fan-out: the model has
+        # to know a scan is per build tree, or it reads one unit's report as the
+        # repository's result. Paid for first by trimming Step 1's prose and
+        # merging the duplicated FORTIFY_LANGUAGE row, which covered all but 30
+        # characters; the rest is the honest cost of the rule.
         lines = SKILL_TEXT.splitlines()
 
         self.assertLessEqual(len(lines), 334)
-        self.assertLessEqual(len(SKILL_TEXT), 18100)
+        self.assertLessEqual(len(SKILL_TEXT), 18200)
 
 
 class GitlabRunnerDocTest(unittest.TestCase):
