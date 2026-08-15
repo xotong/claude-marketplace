@@ -69,9 +69,14 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
 
   cp "$src/template.yml" "$dst/template.yml"
   [ -f "$src/AGENTS.md" ] && cp "$src/AGENTS.md" "$dst/AGENTS.md"
+  # The commit behind the tag, so a MOVED tag is detectable. fortify-sast 25.2.0
+  # was re-tagged onto new content while this snapshot kept the old one, and
+  # nothing could tell: same tag, same filenames, a different component.
+  [ -f "$src/.commit" ] && cp "$src/.commit" "$dst/.commit"
   {
-    printf '<!-- Vendored snapshot: fetched %s from %s CI/CD Catalog (component tag %s) -->\n' \
-      "$TODAY" "$INSTANCE" "$tag"
+    printf '<!-- Vendored snapshot: fetched %s from %s CI/CD Catalog (component tag %s%s) -->\n' \
+      "$TODAY" "$INSTANCE" "$tag" \
+      "$([ -f "$src/.commit" ] && printf ', commit %s' "$(cut -c1-8 <"$src/.commit")")"
     cat "$src/README.md"
   } >"$dst/README.md"
 

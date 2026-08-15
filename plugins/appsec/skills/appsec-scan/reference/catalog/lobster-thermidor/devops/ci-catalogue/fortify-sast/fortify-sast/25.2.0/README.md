@@ -1,4 +1,4 @@
-<!-- Vendored snapshot: fetched 2026-07-25 from https://gitlab.com CI/CD Catalog (component tag 25.2.0) -->
+<!-- Vendored snapshot: fetched 2026-08-15 from https://gitlab.com CI/CD Catalog (component tag 25.2.0, commit 448ffa44) -->
 # Fortify SAST Pipeline Component
 
 A GitLab CI/CD pipeline component for integrating Fortify Static Application Security Testing (SAST) into your software development workflow. This component provides automated security scanning for multiple programming languages and integrates with both Gitlab vulnerability dashboard and Software Risk Measurement (SRM) for vulnerability tracking.
@@ -93,7 +93,7 @@ For gradle projects, please ensure that you have configured a working gradle wra
 
 | CI/CD variable | Description | Remarks |
 | --- | --- | --- |
-| `ARTIFACTORY_USERNAME` | If build requires pulling packages from artifactory | For Gradle Project
+| `ARTIFACTORY_USER` | If build requires pulling packages from artifactory | For Gradle Project
 | `ARTIFACTORY_PASSWORD` | TOKEN for artifactory repository | For Gradle Project
 | `SRM_API_KEY` | SRM API Key. Copy the whole key <br> `api-key:Redacted` | For SRM Upload
 | `SRM_PROJECT_ID` | Refer to project id within SRM project link eg. `20` in `https://srm.com/srm/projects/20` | For SRM Upload

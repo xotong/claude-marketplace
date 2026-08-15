@@ -1,13 +1,13 @@
 ---
 id: fortify-sast
 category: sast
-summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, JavaScript), with results uploaded to the GitLab Vulnerability Dashboard and optionally to SRM.
+summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, JavaScript, Go), with results uploaded to the GitLab Vulnerability Dashboard and optionally to SRM.
 ---
 
 ## When to use
 
 - You need Fortify SAST scanning of your own source code.
-- The project language is `maven`, `gradle`, `python`, or `javascript`.
+- The project language is `maven`, `gradle`, `python`, `javascript`, or `go`.
 - You need results in the GitLab Vulnerability Dashboard, SRM, or both.
 
 ## When NOT to use
@@ -19,7 +19,7 @@ summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, Java
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `language` | yes* | `javascript` | One of: `maven`, `gradle`, `python`, `javascript`. *Always set this explicitly |
+| `language` | yes* | `javascript` | One of: `maven`, `gradle`, `python`, `javascript`, `go`. *Always set this explicitly |
 | `source-path` | no | `src` | Path of the source code to scan. Use `.` for the repo root |
 | `job-name` | no | `fortify-scan` | Base name for the created jobs |
 | `stage` | no | `sast` | Pipeline stage |
@@ -27,22 +27,49 @@ summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, Java
 | `downloaded-scan-report-name` | no | `scan.fpr` | Filename of the Fortify FPR report |
 | `upload-srm-option` | no | `"false"` | Set to `"true"` to also upload results to SRM |
 | `variant` | no | `jdk17-review` | JDK for compilation: `jdk17-review` or `jdk21-review` |
-| `registry` | no | `registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/` | Scanner image registry |
+| `registry` | no | `registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/` | Scanner image registry |
 | `image` | no | `fortify-sca` | Scanner image name |
 | `image-tag` | no | `25.2.0` | Scanner image tag |
 | `srm-branch` | no | `$CI_COMMIT_REF_NAME` | Branch name created in SRM |
 | `git-branch-name` | no | `$CI_COMMIT_REF_NAME` | Git branch used for SRM analysis. SRM does not support tags as branch names |
 | `maven-setting-path` | no | `settings.xml` | Maven settings file (maven only). The file must exist in the repo or the maven build fails |
-| `pip-index-url` | no | `jfrog.com/artifactory/api/pypi/pypi/simple` | pip index URL (python only) |
-| `python-version` | no | `3.12` | Python version (python only) |
+| `pip-index-url` | no | `https://jfrog.com/artifactory/api/pypi/pypi/simple` | Python package index (python only). Applied as `UV_DEFAULT_INDEX` and `PIP_INDEX_URL`. Must include the scheme |
+| `python-version` | no | `3.12` | Python version (python only). One of `3.10`–`3.14` |
+| `python-template-dirs` | no | *(empty)* | Colon-separated Django/Jinja2 template directories, relative to the repo root (python only). Set this if the scan logs *unable to discover any Django/Jinja2 template directories* |
+| `uv-version` | no | `0.11.28` | Pinned uv version to install (python only) |
+| `uv-installer-base` | no | `https://releases.astral.sh/github/uv/releases/download` | Where the uv installer script is fetched from. Point at an internal JFrog mirror for air-gapped runners (python only) |
+| `uv-python-install-mirror` | no | `https://github.com/astral-sh/python-build-standalone/releases/download` | Where uv downloads the managed Python build from. Point at an internal JFrog mirror for air-gapped runners (python only) |
 
 ## Jobs created
 
-- `<job-name>-<language>` — the Fortify scan. Only the job matching `language` runs. It **fails when critical or high severity issues are found** (with `allow-failure: true` the pipeline still continues).
-- `<job-name>-<language>-gitlab-upload` — converts the FPR report and uploads it to the GitLab Vulnerability Dashboard.
+- `<job-name>-<language>` — the Fortify scan. Only the job matching `language` runs. It converts the FPR to `gl-sast-report.json` and uploads it as the `sast` report. It does **not** fail on critical or high findings; that gate was removed and gating now belongs to GitLab security policies.
 - `<job-name>-scan-upload` — uploads the report to SRM. Comes from the included `srm-report-upload` component. Controlled by `upload-srm-option`.
 - Gradle projects must have a working `gradlew` wrapper in the repo.
 - If a `filter_list.txt` file exists in the repo root, the scan applies it as a Fortify filter file, which changes reported results.
+
+## Python environment
+
+The python job builds a virtualenv with `uv` before running `sourceanalyzer`, so that SCA can resolve
+third-party imports via `-python-path`. `uv` and the managed Python interpreter are fetched from the
+public internet by default; for air-gapped runners, point `uv-installer-base` and
+`uv-python-install-mirror` at internal JFrog mirrors.
+
+SCA is given both the venv's `site-packages` **and** the interpreter's standard-library
+directory on `-python-path`. SCA bundles only a subset of the stdlib and ignores `PYTHONPATH`, so
+without the stdlib path, imports such as `logging`, `json` and `textwrap` resolve as unknown and
+taint through them is lost.
+
+Template scanning is opt-in via `python-template-dirs`. SCA autodiscovers templates only in the
+project root and does **not** read Django's `TEMPLATE_DIRS` setting, so an app whose templates live
+elsewhere gets no template coverage until the directories are named.
+
+`pip-index-url` is exported as `UV_DEFAULT_INDEX` and `PIP_INDEX_URL` in the job's `variables:`, so
+it applies to every uv invocation. `UV_INDEX_URL` is deliberately not set: it is the deprecated
+spelling and makes `uv` warn on install.
+
+**Precedence caveat:** a project- or group-level CI/CD variable named `PIP_INDEX_URL` or
+`UV_DEFAULT_INDEX` overrides the job `variables:` set from `pip-index-url`, and the
+input is then silently ignored.
 
 ## Outputs
 
@@ -54,7 +81,7 @@ summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, Java
 
 | Variable | Required when |
 |---|---|
-| `ARTIFACTORY_USER` | `language: gradle` and the build pulls packages from Artifactory |
+| `ARTIFACTORY_USER` | `language: gradle` and the build pulls packages from Artifactory. `ARTIFACTORY_USERNAME` is accepted as a fallback, for parity with `dependency-scanning` |
 | `ARTIFACTORY_PASSWORD` | `language: gradle` and the build pulls packages from Artifactory |
 | `SRM_API_KEY` | `upload-srm-option: "true"`. Copy the whole key, including the `api-key:` prefix |
 | `SRM_PROJECT_ID` | `upload-srm-option: "true"`. The numeric id in the SRM project URL, e.g. `20` in `https://srm.com/srm/projects/20` |
