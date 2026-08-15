@@ -431,6 +431,25 @@ record_skip() {
   printf '%s\t%s\n' "$1" "$2" >>"$SKIPS_FILE"
 }
 
+# A filesystem-safe name for one SAST unit. "." is the repo root.
+unit_slug() {
+  case "$1" in
+    .|"") printf 'root' ;;
+    *) printf '%s' "$1" | sed 's#[^A-Za-z0-9._-]#-#g' ;;
+  esac
+}
+
+# One report per unit — but only when there IS more than one. A single-unit
+# repository keeps writing plain fortify-sast.fpr, so nothing downstream (or in
+# anyone's tooling) sees a new filename for a scan whose shape did not change.
+unit_fpr() {
+  if [ "${SAST_UNIT_COUNT:-1}" -le 1 ]; then
+    printf 'fortify-sast.fpr'
+  else
+    printf 'fortify-sast-%s.fpr' "$(unit_slug "$1")"
+  fi
+}
+
 # clear_stale_reports <category>: delete the PREVIOUS run's reports for a
 # category this run is going to attempt (see the single caller below).
 #
@@ -452,7 +471,7 @@ clear_stale_reports() {
   if $DRY_RUN; then return 0; fi
   case "$1" in
     sast)
-      rm -f .appsec-results/fortify-sast.fpr
+      rm -f .appsec-results/fortify-sast.fpr .appsec-results/fortify-sast-*.fpr .appsec-results/sast-units
       ;;
     dependency_scanning)
       # dependency-sbom-scan-*.json is derived from these SBOMs and counts as
@@ -701,6 +720,11 @@ fi
 
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
+# Captured BEFORE the default is applied: an explicitly chosen source path or
+# language pins the scan to exactly one unit (today's behaviour, and the
+# documented override), while the absence of both is what licenses discovery.
+SAST_PINNED=false
+{ [ -n "${SOURCE_PATH:-}" ] || [ -n "${FORTIFY_LANGUAGE:-}" ]; } && SAST_PINNED=true
 SOURCE_PATH="${SOURCE_PATH:-src}"
 
 HAS_POM=false
@@ -739,17 +763,38 @@ done
 
 # ponytail: RUN_* values are data; only the literal string true enables a scanner.
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE" ]; then
-  if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
-    if $HAS_GRADLE; then FORTIFY_LANGUAGE=gradle
-    elif $HAS_POM; then FORTIFY_LANGUAGE=maven
-    elif $HAS_REQUIREMENTS; then FORTIFY_LANGUAGE=python
-    elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
-    elif $HAS_GO; then FORTIFY_LANGUAGE=go
-    else
-      info "[Fortify SCA] No supported project type detected; skipping"
-      record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript/go), so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
-      RUN_FORTIFY_SAST=false
+  # Fortify is a per-build-tree scanner: CI includes the component once per
+  # service, each with its own source-path. One detected language and one path
+  # cannot represent a repository that has several, so the units are discovered
+  # — and every one of them is recorded as expected coverage, exactly the rule
+  # `--only` follows. Narrowing what RUNS must never narrow what is EXPECTED.
+  SAST_UNITS_FILE=.appsec-results/sast-units
+  : >"$SAST_UNITS_FILE"
+  if $SAST_PINNED; then
+    if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
+      if $HAS_GRADLE; then FORTIFY_LANGUAGE=gradle
+      elif $HAS_POM; then FORTIFY_LANGUAGE=maven
+      elif $HAS_REQUIREMENTS; then FORTIFY_LANGUAGE=python
+      elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
+      elif $HAS_GO; then FORTIFY_LANGUAGE=go
+      fi
     fi
+    [ -z "${FORTIFY_LANGUAGE:-}" ] || printf '%s|%s\n' "$SOURCE_PATH" "$FORTIFY_LANGUAGE" >"$SAST_UNITS_FILE"
+  else
+    sh "$SCRIPTS_DIR/detect-sast-units.sh" . >"$SAST_UNITS_FILE" 2>/dev/null || :
+  fi
+
+  SAST_UNIT_COUNT=$(grep -c '|' "$SAST_UNITS_FILE" 2>/dev/null || echo 0)
+  if [ "$SAST_UNIT_COUNT" -eq 0 ]; then
+    info "[Fortify SCA] No supported project type detected; skipping"
+    record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript/go) anywhere in this repository, so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
+    RUN_FORTIFY_SAST=false
+  else
+    info "[Fortify SCA] $SAST_UNIT_COUNT unit(s) to scan:"
+    while IFS='|' read -r u_path u_lang; do
+      [ -n "$u_path" ] || continue
+      info "  - $u_path ($u_lang)"
+    done <"$SAST_UNITS_FILE"
   fi
   if [ "$RUN_FORTIFY_SAST" = true ]; then
     mark_attempted sast
@@ -757,22 +802,39 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
     if pull_image sast "Fortify SCA" "${FORTIFY_SAST_IMAGE}" "SAST did NOT run and your source was never analysed."; then
       if $DRY_RUN; then
-        print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+        while IFS='|' read -r u_path u_lang; do
+          [ -n "$u_path" ] || continue
+          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+        done <"$SAST_UNITS_FILE"
       else
-        "$RUNTIME" run --rm \
-          -v "$PWD:/workspace" \
-          -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
-          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
-          ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
-          -w /workspace \
-          -e APP_NAME="$APP_NAME" \
-          -e SOURCE_PATH="$SOURCE_PATH" \
-          -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" \
-          -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
-          -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
-          -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
-          "${FORTIFY_SAST_IMAGE}" \
-          sh /runner.sh > .appsec-results/fortify-sast.log 2>&1 &
+        # Units run sequentially inside ONE background job: a Fortify container
+        # is heavy, and N of them at once starves the other scanners this
+        # backgrounding exists to overlap with. The whole group keeps a single
+        # PID and a single watchdog, so timeout handling is unchanged.
+        (
+          group_rc=0
+          while IFS='|' read -r u_path u_lang; do
+            [ -n "$u_path" ] || continue
+            echo "=== Fortify unit: $u_path ($u_lang) ==="
+            "$RUNTIME" run --rm \
+              -v "$PWD:/workspace" \
+              -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
+              ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+              ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
+              -w /workspace \
+              -e APP_NAME="$APP_NAME" \
+              -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" \
+              -e FPR_NAME="$(unit_fpr "$u_path")" \
+              -e SOURCE_PATH="$u_path" \
+              -e FORTIFY_LANGUAGE="$u_lang" \
+              -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
+              -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
+              -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
+              "${FORTIFY_SAST_IMAGE}" \
+              sh /runner.sh || group_rc=1
+          done <"$SAST_UNITS_FILE"
+          exit "$group_rc"
+        ) > .appsec-results/fortify-sast.log 2>&1 &
         FORTIFY_SAST_PID=$!
         start_watchdog "$FORTIFY_SAST_PID"
         FORTIFY_SAST_WATCHDOG=$WATCHDOG_PID
@@ -889,6 +951,22 @@ if ! $DRY_RUN; then
       [ -z "$watchdog_pid" ] || wait "$watchdog_pid" 2>/dev/null || true
     fi
   done
+
+  # Per-unit accounting. The group's exit code says "something failed"; only the
+  # reports say WHICH source paths were actually analysed. Without this, three
+  # units out of four succeeding left a category with reports on disk — covered,
+  # and silent about the service nobody scanned.
+  if [ -s "${SAST_UNITS_FILE:-/dev/null}" ]; then
+    unscanned=
+    while IFS='|' read -r u_path u_lang; do
+      [ -n "$u_path" ] || continue
+      [ -f ".appsec-results/$(unit_fpr "$u_path")" ] || unscanned="$unscanned $u_path($u_lang)"
+    done <"$SAST_UNITS_FILE"
+    if [ -n "$unscanned" ]; then
+      warning "[Fortify SCA] No report for:$unscanned"
+      record_skip sast "Fortify produced no report for:$unscanned — that source was NOT analysed, even though other units in this repository were. Read .appsec-results/fortify-sast.log for the per-unit cause, fix it, then re-run this skill."
+    fi
+  fi
 
   # The analyzer exits 0 when it simply finds no lock file, so a non-zero rc is
   # not the signal — the absence of a report is. Name the real cause instead of

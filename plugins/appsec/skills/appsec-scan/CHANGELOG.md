@@ -9,6 +9,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Fortify now fans out one scan per build tree, the way CI does.** CI includes
+  the component once per service, each with its own `source-path`. Locally there are no
+  includes to read, so run-scan.sh detected ONE language from the repo root and scanned
+  ONE path — and on a repository with a root manifest plus services beneath it, that
+  scanned the root, silently ignored the rest, and still reported `sast` covered with
+  `coverage_complete: true`. That is the `--only` bug one axis over: the invariant was
+  keyed on category, so it could not see narrowing *within* a category.
+  `scripts/detect-sast-units.sh` discovers every `(source-path, language)` unit — pruning
+  a language only under an ancestor that already produced one, so a Gradle multi-module
+  build stays one unit while a Python service beside a JavaScript one stays two — and
+  each unit gets its own Fortify run, its own build id, its own report and its own
+  coverage row. A unit that produces no report names the source path that went
+  unanalysed, instead of hiding behind the reports its siblings did produce. Units run
+  sequentially inside one background job (a Fortify container is heavy; N at once starves
+  the scanners this backgrounding exists to overlap with), and the unit list is printed
+  before scanning. `SOURCE_PATH`/`FORTIFY_LANGUAGE` still pin a single unit. A single-unit
+  repository is byte-identical to before, down to the `fortify-sast.fpr` filename.
+  Findings from a fanned-out unit are re-rooted to their source path — the same defect CI
+  fixed with `--prepend-path`, where all four services' findings were stamped with one
+  service's path. Dependency scanning deliberately does not fan out: its analyzer walks
+  the whole worktree in one pass.
+
 - **A misconfiguration now stops the work it blocks instead of being routed around.**
   Found testing in an airgapped estate: a JFrog repo that was not anonymous made the
   skill keep hunting for alternative methods, and the run still produced output that

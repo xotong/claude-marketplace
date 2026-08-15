@@ -37,11 +37,10 @@ Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-
 | Variable | Description |
 |---|---|
 | `APPSEC_PROFILE` | Active profile (`default_profile` from config) |
-| `FORTIFY_LANGUAGE` | `maven`\|`gradle`\|`python`\|`javascript`\|`go`; auto-detected |
 | `FORTIFY_VARIANT` | Fortify JDK image variant (e.g. `jdk21-review`); auto-detected from the project's Java release. Set only to override |
+| `SOURCE_PATH`/`FORTIFY_LANGUAGE` | `maven`\|`gradle`\|`python`\|`javascript`\|`go`. Unset = every build tree is found and scanned, one run each (CI's include-per-service); either one set pins a single unit |
 | `CS_IMAGE` | Container image:tag for Container Scanning (optional) |
 | `APP_NAME` | Application name (default: `basename $PWD`) |
-| `SOURCE_PATH` | Source dir for Fortify (default: `src`) |
 
 ---
 
@@ -78,10 +77,10 @@ scoped result as "you are clear to push."
 
 ## Step 1 — Locate the skill's directories
 
-The scanner scripts live beside this file, not in the project being scanned.
-You read this file from disk, so you already know its directory — that is
-`SKILL_DIR`; substitute the real absolute path below. Do **not** derive it from
-`$0` or `${BASH_SOURCE[0]}`: those resolve to your shell and yield `/bin`.
+The scanner scripts live beside this file, not in the project being scanned. You
+read this file from disk, so its directory is `SKILL_DIR` — substitute the real
+absolute path below. Do **not** derive it from `$0` or `${BASH_SOURCE[0]}`:
+those resolve to your shell and yield `/bin`.
 
 ```bash
 export SKILL_DIR=/absolute/path/to/plugins/appsec/skills/appsec-scan
@@ -91,12 +90,11 @@ export SCRIPTS_DIR="$SKILL_DIR/scripts"
   echo "ERROR: wrong SKILL_DIR='$SKILL_DIR'" >&2; exit 1; }
 ```
 
-**Shell contract — applies to every snippet in this file.** Run them with
-`bash`, not your login shell, and send each step's commands as ONE invocation.
-Two reasons, both of which fail silently rather than loudly: exports do not
-survive between separate tool calls, and zsh (the macOS default) does not
-word-split unquoted variables the way these snippets expect. Every script here
-self-loads what it needs, so a step that only invokes a script is safe alone.
+**Shell contract — applies to every snippet here.** Run them with `bash`, not
+your login shell, and send each step as ONE invocation. Both failure modes are
+silent: exports do not survive between tool calls, and zsh (the macOS default)
+does not word-split unquoted variables the way these snippets expect. Every
+script self-loads what it needs, so a step that only invokes one is safe alone.
 
 ---
 
@@ -208,7 +206,7 @@ bash "$SCRIPTS_DIR/run-scan.sh"                        # SCAN_SCOPE=all
 bash "$SCRIPTS_DIR/run-scan.sh" --only "$SCAN_SCOPE"   # one category from Step 0
 ```
 
-run-scan.sh invokes `"$RUNTIME" run`/`pull` per scanner; `resolve-jq.sh` and `container-target.sh` run internally (`GITLAB_FEATURES=dependency_scanning` for DS). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT). Stdout: summary from `normalize.py`. **Branch on exit code AND `coverage_complete` (`scan-coverage.json`), never the code alone**: exit 1 → findings, Step 4; exit 0 + complete → done; exit 0 + incomplete → NOT an all-clear: name each `missing_report` category and why (`evidence.why`), then require a full scan before pushing; exit 2 → name each `CONFIG-ERROR:` line and its fix, never present the run as a pass. `fail_on: none` always exits 0 for findings, but not over a config error — that still exits 2. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — Step 0 scope or Step 5 rescan. `--only` narrows what RUNS, never what is EXPECTED, so a scoped verdict needs the same rule plus a full scan before pushing.
+run-scan.sh invokes `"$RUNTIME" run`/`pull` per scanner; `resolve-jq.sh`, `detect-sast-units.sh` and `container-target.sh` run internally (`GITLAB_FEATURES=dependency_scanning` for DS). **Fortify fans out**: `detect-sast-units.sh` finds every build tree; each gets its own run, report and coverage row. DS does not — its analyzer walks the worktree once. A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT). Stdout: summary from `normalize.py`. **Branch on exit code AND `coverage_complete` (`scan-coverage.json`), never the code alone**: exit 1 → findings, Step 4; exit 0 + complete → done; exit 0 + incomplete → NOT an all-clear: name each `missing_report` category and why (`evidence.why`), then require a full scan before pushing; exit 2 → name each `CONFIG-ERROR:` line and its fix, never present the run as a pass. `fail_on: none` always exits 0 for findings, but not over a config error — that still exits 2. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — Step 0 scope or Step 5 rescan. `--only` narrows what RUNS, never what is EXPECTED, so a scoped verdict needs the same rule plus a full scan before pushing.
 
 Dependency Scanning produces only an SBOM locally (GitLab matches it server-side behind a `CI_JOB_TOKEN`-only API), so run-scan.sh matches it offline with the Trivy bundled in the container-scanning image. **Those findings and their `fixed_version`s are Trivy's, not GitLab's** — say so: a pre-push signal that will not match the post-push Vulnerability Report exactly. If that match cannot run it becomes a coverage skip.
 

@@ -224,6 +224,10 @@ def _report_category(path):
         return "dependency_scanning"
     if name.startswith("dependency-sbom-scan") and name.endswith(".json"):
         return "dependency_scanning"
+    # Fortify fans out one report per (source-path, language) unit, so its names
+    # are variable for the same reason the two above are.
+    if name.startswith("fortify-sast") and name.endswith(".fpr"):
+        return "sast"
     return REPORT_CATEGORIES.get(name)
 
 def _fallback_category(path):
@@ -439,7 +443,35 @@ def _fvdl_recommendations(root):
             guidance[class_id] = collapsed[:1200]
     return guidance
 
-def parse_fvdl_root(root, path):
+def _unit_prefix(path):
+    """Repo-relative source path of the unit that produced this FPR, or "".
+
+    Fortify records file names relative to the tree it was pointed at, so a
+    finding from `services/workshop` comes back as `crapi/shop/views.py`. Two
+    units can then report the same-looking path for different files, and every
+    link into the repo is broken. CI hit the identical problem and solved it the
+    identical way, with --prepend-path. run-scan.sh writes the mapping beside the
+    reports; a missing or unreadable file means the single-unit layout, where
+    paths are already repo-relative and the prefix is correctly empty.
+    """
+    path = Path(path)
+    units = path.parent / "sast-units"
+    try:
+        lines = units.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    entries = [line.split("|", 1)[0].strip() for line in lines if "|" in line]
+    entries = [entry for entry in entries if entry]
+    if len(entries) <= 1:
+        return ""
+    for source_path in entries:
+        slug = re.sub(r"[^A-Za-z0-9._-]", "-", source_path) if source_path != "." else "root"
+        if path.name == "fortify-sast-" + slug + ".fpr":
+            return "" if source_path == "." else source_path.rstrip("/")
+    return ""
+
+
+def parse_fvdl_root(root, path, prefix=""):
     path = Path(path)
     findings = []
     recommendations = _fvdl_recommendations(root)
@@ -461,6 +493,8 @@ def parse_fvdl_root(root, path):
             ["LineStart", "FunctionDeclarationSourceLocation/Line", "Line"],
         )
         rule_id = first_text(class_info, ["ClassID", "RuleID"])
+        if prefix and file_name:
+            file_name = prefix + "/" + file_name.lstrip("/")
         evidence = {"raw_report": str(path)}
         guidance = recommendations.get(rule_id) if rule_id else None
         if guidance:
@@ -515,12 +549,13 @@ def parse_generic_xml(path):
 def parse_fpr(path):
     path = Path(path)
     findings = []
+    prefix = _unit_prefix(path)
     with zipfile.ZipFile(path) as archive:
         members = [name for name in archive.namelist() if name.lower().endswith(".fvdl")]
         members.sort(key=lambda name: Path(name).name.lower() != "audit.fvdl")
         for member in members:
             root = ET.fromstring(archive.read(member))
-            findings.extend(parse_fvdl_root(root, path))
+            findings.extend(parse_fvdl_root(root, path, prefix))
     return findings
 
 def unsupported_report_finding(path):
@@ -564,7 +599,7 @@ def normalize_reports(results_dir):
             continue
         name = path.name.lower()
         try:
-            if name == "fortify-sast.fpr":
+            if name.startswith("fortify-sast") and name.endswith(".fpr"):
                 findings.extend(parse_fpr(path))
             elif name.endswith(".json"):
                 data = read_json_loose(path)
