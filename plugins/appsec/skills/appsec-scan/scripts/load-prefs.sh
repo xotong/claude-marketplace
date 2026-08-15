@@ -383,6 +383,7 @@ END {
   print "SETTING\tpython_runtime.uv_installer_base\t" settings["python_runtime.uv_installer_base"]
   print "SETTING\tpython_runtime.uv_python_install_mirror\t" settings["python_runtime.uv_python_install_mirror"]
   print "SETTING\tpython_runtime.python_version\t" settings["python_runtime.python_version"]
+  print "SETTING\tpython_runtime.allow_insecure_uv_download\t" settings["python_runtime.allow_insecure_uv_download"]
   print "SETTING\tbuild_credentials.artifactory_user_env\t" settings["build_credentials.artifactory_user_env"]
   print "SETTING\tbuild_credentials.artifactory_password_env\t" settings["build_credentials.artifactory_password_env"]
   print "SETTING\tcontainer_registry.user_env\t" settings["container_registry.user_env"]
@@ -438,6 +439,7 @@ uv_version=
 uv_installer_base=
 uv_python_install_mirror=
 fortify_python_version=
+allow_insecure_uv_download=false
 artifactory_user_env=ARTIFACTORY_USER
 artifactory_password_env=ARTIFACTORY_PASSWORD
 cs_user_env=
@@ -514,6 +516,7 @@ while IFS="$tab" read -r record field1 field2 field3; do
         python_runtime.uv_installer_base) uv_installer_base=$field2 ;;
         python_runtime.uv_python_install_mirror) uv_python_install_mirror=$field2 ;;
         python_runtime.python_version) fortify_python_version=$field2 ;;
+        python_runtime.allow_insecure_uv_download) [ -z "$field2" ] || allow_insecure_uv_download=$field2 ;;
         build_credentials.artifactory_user_env) [ -z "$field2" ] || artifactory_user_env=$field2 ;;
         build_credentials.artifactory_password_env) [ -z "$field2" ] || artifactory_password_env=$field2 ;;
         container_registry.user_env) cs_user_env=$field2 ;;
@@ -732,6 +735,7 @@ emit UV_VERSION "$uv_version"
 emit UV_INSTALLER_BASE "$uv_installer_base"
 emit UV_PYTHON_INSTALL_MIRROR "$uv_python_install_mirror"
 emit FORTIFY_PYTHON_VERSION "$fortify_python_version"
+emit ALLOW_INSECURE_UV_DOWNLOAD "$allow_insecure_uv_download"
 emit ARTIFACTORY_USER_ENV "$artifactory_user_env"
 emit ARTIFACTORY_PASSWORD_ENV "$artifactory_password_env"
 emit CS_USER_ENV "$cs_user_env"

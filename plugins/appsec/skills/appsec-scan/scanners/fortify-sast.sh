@@ -94,8 +94,33 @@ case "${FORTIFY_LANGUAGE}" in
     PYPATH=
     if [ -n "${UV_INSTALLER_BASE:-}" ] && [ -n "${UV_VERSION:-}" ]; then
       echo "[fortify] installing uv ${UV_VERSION} from ${UV_INSTALLER_BASE}" >&2
-      if curl -LsSf "${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh" | sh >&2 &&
-         . "$HOME/.local/bin/env" 2>/dev/null; then
+      # Three rungs, most-verified first. An internal CA is the REASON TLS fails
+      # in an airgapped estate, so try it before considering giving up on
+      # verification: settings.ca_bundle is already mounted here.
+      #
+      # The last rung disables verification on a script that is piped straight
+      # into sh, which is remote code execution if anything can sit in the middle
+      # — so it is loud, and settings.python_runtime.allow_insecure_uv_download
+      # turns it off entirely. It exists because the upstream dependency-scanning
+      # component does the same thing (`curl -k`) and an estate that needs it
+      # there needs it here; fixing ca_bundle is the real answer.
+      UV_SH=$(mktemp)
+      uv_fetch() { curl -LsSf "$@" "${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh" -o "$UV_SH"; }
+      UV_GOT=false
+      if uv_fetch; then
+        UV_GOT=true
+      elif [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] &&
+           uv_fetch --cacert "${ADDITIONAL_CA_CERT_BUNDLE}"; then
+        echo "[fortify] uv download needed settings.ca_bundle to verify TLS" >&2
+        UV_GOT=true
+      elif [ "${ALLOW_INSECURE_UV_DOWNLOAD:-false}" = true ] && uv_fetch -k; then
+        echo "APPSEC-INSECURE-TLS: uv was downloaded with certificate verification DISABLED (-k) and piped to sh." >&2
+        echo "APPSEC-INSECURE-TLS:   Anything able to intercept that request could have run arbitrary code in this scanner." >&2
+        echo "APPSEC-INSECURE-TLS:   Fix settings.ca_bundle so the internal CA verifies, then set allow_insecure_uv_download: false." >&2
+        UV_GOT=true
+      fi
+      if $UV_GOT && sh "$UV_SH" >&2 && . "$HOME/.local/bin/env" 2>/dev/null; then
+        rm -f "$UV_SH"
         [ -z "${FORTIFY_PYTHON_VERSION:-}" ] || uv python install "${FORTIFY_PYTHON_VERSION}" >&2 || true
         if uv venv >&2 && . .venv/bin/activate; then
           if [ -f "${SOURCE_PATH}/requirements.txt" ]; then
@@ -131,7 +156,14 @@ case "${FORTIFY_LANGUAGE}" in
     # interpreter's own stdlib must be named or logging/json/textwrap stay
     # unresolved. Worth it even in the degraded tier: upstream saw the scan get
     # both more accurate AND faster (349s -> 259s).
-    STDLIB=$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])' 2>/dev/null || true)
+    # `python` exists only inside an activated venv; the bare fortify-sca image
+    # ships python3 and no python at all. The component's own template gets away
+    # with `python` because it always runs after `activate` — the degraded tier
+    # here does not, and using `python` made this silently resolve nothing, which
+    # is the entire value of the degraded tier.
+    PY_BIN=python
+    command -v "$PY_BIN" >/dev/null 2>&1 || PY_BIN=python3
+    STDLIB=$("$PY_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])' 2>/dev/null || true)
     if [ -n "$STDLIB" ] && [ -d "$STDLIB" ]; then
       PYPATH="${PYPATH:+$PYPATH:}$STDLIB"
     fi

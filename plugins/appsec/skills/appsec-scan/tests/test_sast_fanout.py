@@ -47,6 +47,38 @@ FVDL = """<?xml version="1.0"?>
   </Vulnerabilities>
 </FVDL>"""
 
+# A real fortify-sca 25.2.0 vulnerability, trimmed. The location is NOT under
+# InstanceInfo and is carried in ATTRIBUTES — which is why the element-text
+# lookup this parser shipped with matched only hand-written fixtures.
+REAL_FVDL = """<?xml version="1.0"?>
+<FVDL xmlns="xmlns://www.fortifysoftware.com/schema/fvdl">
+  <Vulnerabilities>
+    <Vulnerability>
+      <ClassInfo>
+        <ClassID>6D51470E-844E-4933-B56C-438158B4F6D7</ClassID>
+        <Type>Dynamic Code Evaluation</Type>
+        <Subtype>Code Injection</Subtype>
+        <DefaultSeverity>5.0</DefaultSeverity>
+      </ClassInfo>
+      <InstanceInfo>
+        <InstanceID>FACC875495CB4DDBB70D33C1D035B094</InstanceID>
+        <InstanceSeverity>5.0</InstanceSeverity>
+        <Confidence>5.0</Confidence>
+      </InstanceInfo>
+      <AnalysisInfo><Unified>
+        <Context>
+          <Function name="main" namespace="app"/>
+          <FunctionDeclarationSourceLocation path="app.py" line="4"/>
+        </Context>
+        <ReplacementDefinitions>
+          <Def key="PrimaryLocation.file" value="app.py"/>
+          <Def key="PrimaryLocation.line" value="7"/>
+        </ReplacementDefinitions>
+      </Unified></AnalysisInfo>
+    </Vulnerability>
+  </Vulnerabilities>
+</FVDL>"""
+
 
 def touch(root: Path, *relative: str) -> None:
     for item in relative:
@@ -429,6 +461,44 @@ class UnitPathPrefixTest(unittest.TestCase):
         self.assertEqual(
             normalize._report_category(Path("fortify-sast-services-web.fpr")), "sast"
         )
+
+
+class RealFortifyLocationTest(unittest.TestCase):
+    """Verified against a real fortify-sca 25.2.0 FPR.
+
+    Every Fortify finding used to be reported at the .fpr file itself, with no
+    line: the parser looked for <FileName>/<LineStart> under InstanceInfo, and
+    real output carries neither there nor as element text. Findings were
+    unlocatable, and every one of them shared a location for fingerprinting.
+    """
+
+    def _findings(self, results: Path, units: str | None):
+        fpr = results / "fortify-sast.fpr"
+        with zipfile.ZipFile(fpr, "w") as archive:
+            archive.writestr("audit.fvdl", REAL_FVDL)
+        if units is not None:
+            (results / "sast-units").write_text(units, encoding="utf-8")
+        return normalize.parse_fpr(fpr)
+
+    def test_location_comes_from_the_replacement_definitions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = self._findings(Path(tmp), ".|python")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["location"]["file"], "app.py")
+        self.assertEqual(findings[0]["location"]["line"], "7")
+
+    def test_single_unit_still_reroots_to_its_source_path(self) -> None:
+        """Fortify reports paths relative to the tree it scanned, so a scan of
+        `src` says `app.py` — a path that does not exist in the repo."""
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = self._findings(Path(tmp), "src|python")
+        self.assertEqual(findings[0]["location"]["file"], "src/app.py")
+
+    def test_no_units_file_still_yields_a_real_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = self._findings(Path(tmp), None)
+        self.assertEqual(findings[0]["location"]["file"], "app.py")
+        self.assertEqual(findings[0]["location"]["line"], "7")
 
 
 if __name__ == "__main__":

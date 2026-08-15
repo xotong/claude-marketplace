@@ -145,6 +145,14 @@ settings:
     uv_installer_base: ""        # e.g. https://jfrog.internal/artifactory/uv/releases/download
     uv_python_install_mirror: "" # e.g. https://jfrog.internal/artifactory/python-build-standalone
     python_version: ""           # e.g. 3.12
+    # Last-resort TLS escape hatch for the uv download, off by default.
+    # The uv installer is piped into sh, so downloading it without verifying the
+    # certificate is remote code execution if anything can sit in the middle.
+    # settings.ca_bundle is tried first and is the real fix for an internal CA;
+    # this exists only because the upstream dependency-scanning component does
+    # the same thing (curl -k), so an estate that needs it there needs it here.
+    # Every use is announced as APPSEC-INSECURE-TLS.
+    allow_insecure_uv_download: false
 
   # Package registries used to CHECK whether a suggested upgrade is actually
   # obtainable here, before the fix loop tries it. Leave every value empty to skip

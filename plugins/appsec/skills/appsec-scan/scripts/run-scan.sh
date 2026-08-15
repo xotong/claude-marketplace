@@ -804,7 +804,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
       if $DRY_RUN; then
         while IFS='|' read -r u_path u_lang; do
           [ -n "$u_path" ] || continue
-          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e UV_VERSION="${UV_VERSION:-}" -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e UV_VERSION="${UV_VERSION:-}" -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
         done <"$SAST_UNITS_FILE"
       else
         # Units run sequentially inside ONE background job: a Fortify container
@@ -852,6 +852,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
               -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" \
               -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" \
               -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" \
+              -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}" \
               -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
               -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
               "${FORTIFY_SAST_IMAGE}" \

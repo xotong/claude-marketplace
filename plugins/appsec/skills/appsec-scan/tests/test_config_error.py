@@ -43,6 +43,10 @@ BASH = shutil.which("bash") or "/bin/bash"
 # A curl that honours -o and reports whatever status the test asked for. The real
 # probe reads the code from -w, so a stub that only writes a body proves nothing.
 FAKE_CURL = """#!/bin/sh
+# Must answer --version like curl: preflight rejects a 'curl' that cannot
+# identify itself, after a stub exactly like this one was found shadowing the
+# real binary on a developer machine.
+case "${{1:-}}" in --version) echo "curl 8.0.0 (fake stub)"; exit 0 ;; esac
 out=
 prev=
 for arg do
@@ -275,10 +279,28 @@ class PreflightProbeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             marker = root / "curl-was-called"
-            stub(root / "bin", "curl", f"touch '{marker}'\nprintf '000'\n")
+            stub(
+                root / "bin",
+                "curl",
+                'case "${1:-}" in --version) echo "curl 8.0.0 (fake stub)"; exit 0 ;; esac\n'
+                f"touch '{marker}'\nprintf '000'\n",
+            )
             proc = self._preflight(root, None)
             self.assertFalse(marker.exists(), "probed with nothing configured")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_a_curl_that_is_not_curl_fails_preflight(self) -> None:
+        """Found in the wild: a 21-byte `#!/bin/sh; printf 000` had been written
+        over conda's curl and sat ahead of /usr/bin on PATH. It exits 0 for
+        everything, so `command -v curl` is satisfied while every catalog fetch
+        falls back and every registry probe answers `unknown` — with nothing
+        anywhere saying the tool itself was broken."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stub(root / "bin", "curl", "printf '000'\n")  # the real stub, verbatim
+            proc = self._preflight(root, None)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("is not curl", proc.stdout + proc.stderr)
 
     def test_unreadable_ca_bundle_fails_before_scanning(self) -> None:
         """It otherwise fails every request from inside the container in a way
