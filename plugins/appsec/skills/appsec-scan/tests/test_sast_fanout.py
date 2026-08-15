@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -290,6 +291,92 @@ class FanoutOrchestrationTest(unittest.TestCase):
         # And it must name WHICH source path went unscanned, not just "sast" —
         # the other two reports sitting on disk are what made this invisible.
         self.assertIn("services/worker", output)
+
+
+class FanoutWatchdogTest(unittest.TestCase):
+    """The watchdog must still reach the container, not just the group wrapper.
+
+    Units run inside one background subshell, so start_watchdog signals the
+    subshell. Without forwarding, a timeout reports the scan killed while the
+    container carries on — the watchdog's whole job undone by one level of
+    indirection, and a fail-open path in a security tool.
+    """
+
+    def test_a_term_ignoring_container_is_still_killed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            touch(repo, "pom.xml")
+            pidfile = root / "container.pid"
+            runtime = root / "fake-runtime"
+            # IGNORES TERM, like a scanner wedged in an uninterruptible state.
+            # Forwarding TERM alone leaves this running forever, so the test has
+            # to assert the process is GONE, not merely that it was signalled.
+            runtime.write_text(
+                "#!/bin/sh\n"
+                'if [ "${1:-}" = run ]; then\n'
+                f"  echo $$ > {pidfile}\n"
+                "  trap '' TERM\n"
+                "  while :; do /bin/sleep 0.1; done\n"
+                "fi\nexit 0\n",
+                encoding="utf-8",
+            )
+            runtime.chmod(0o755)
+            env = dict(
+                {k: v for k, v in os.environ.items()
+                 if k not in ("SOURCE_PATH", "FORTIFY_LANGUAGE")},
+                RUNTIME=str(runtime),
+                SKILL_DIR=str(SKILL_DIR),
+                SCANNERS_DIR=str(SCANNERS),
+                SCRIPTS_DIR=str(SCRIPTS),
+                APPSEC_PROFILE="catalog",
+                APPSEC_SCAN_TIMEOUT="1",
+                RUN_FORTIFY_SAST="true",
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+                FORTIFY_SAST_IMAGE="example/fortify:test",
+                GITLAB_DS_IMAGE="x",
+                SECRET_DETECTION_IMAGE="x",
+                GITLAB_CS_IMAGE="x",
+                CS_USER_ENV="U",
+                CS_PASS_ENV="P",
+                PYTHON_INSTALL_URL="",
+                JQ_INSTALL_URL="",
+                CI_GATE_FAIL_ON="high",
+            )
+            proc = subprocess.run(
+                [BASH, str(RUN_SCAN), "--only", "sast"],
+                cwd=repo,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertTrue(pidfile.exists(), "container never started\n" + proc.stderr)
+            container_pid = int(pidfile.read_text().strip())
+            # Give the escalation its 1s grace plus slack on a loaded machine.
+            deadline = time.monotonic() + 10
+            alive = True
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(container_pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    alive = False
+                    break
+                time.sleep(0.2)
+            if alive:  # never leave a runaway behind, pass or fail
+                try:
+                    os.kill(container_pid, 9)
+                except OSError:
+                    pass
+        self.assertFalse(
+            alive,
+            "a TERM-ignoring container outlived the watchdog — it would run "
+            "forever while the scan reported itself killed\n" + proc.stderr,
+        )
 
 
 class UnitPathPrefixTest(unittest.TestCase):

@@ -813,8 +813,25 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
         # PID and a single watchdog, so timeout handling is unchanged.
         (
           group_rc=0
+          unit_pid=
+          stopped=false
+          # start_watchdog signals THIS subshell, not the container, so the
+          # escalation has to be repeated one level down. Forwarding only TERM is
+          # not enough: the subshell would exit first, the outer KILL would find
+          # nothing left to kill, and a TERM-ignoring scanner would be orphaned
+          # and run forever — the exact fail-open the watchdog exists to close.
+          # The 1s grace is deliberately shorter than start_watchdog's 2s, so the
+          # container is dead before the outer KILL arrives. Stop afterwards too:
+          # the remaining units belong to a run that has been abandoned.
+          trap 'stopped=true
+                if [ -n "$unit_pid" ]; then
+                  kill -TERM "$unit_pid" 2>/dev/null || true
+                  sleep 1
+                  kill -KILL "$unit_pid" 2>/dev/null || true
+                fi' TERM
           while IFS='|' read -r u_path u_lang; do
             [ -n "$u_path" ] || continue
+            if $stopped; then break; fi
             echo "=== Fortify unit: $u_path ($u_lang) ==="
             "$RUNTIME" run --rm \
               -v "$PWD:/workspace" \
@@ -831,7 +848,13 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
               -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
               -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
               "${FORTIFY_SAST_IMAGE}" \
-              sh /runner.sh || group_rc=1
+              sh /runner.sh &
+            # Backgrounded so the TERM trap above can reach it: with the
+            # container in the foreground the trap does not run until it exits,
+            # which for a hung scan is never.
+            unit_pid=$!
+            wait "$unit_pid" || group_rc=1
+            unit_pid=
           done <"$SAST_UNITS_FILE"
           exit "$group_rc"
         ) > .appsec-results/fortify-sast.log 2>&1 &
