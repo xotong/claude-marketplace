@@ -144,6 +144,20 @@ FORTIFY_LANGUAGE=go /appsec-scan
 
 Supported: `maven`, `gradle`, `python`, `javascript`, `go`.
 
+**The Fortify JDK is picked for you.** For Java projects the scan reads the compile
+target out of your `pom.xml` or `*.gradle[.kts]` and selects the matching analyzer
+image, so a Java 21 project is not built by a JDK 17 analyzer:
+
+```
+INFO: [Fortify SCA] Project targets Java 21; selecting jdk21-review
+```
+
+Override only if that is wrong for your repo:
+
+```bash
+FORTIFY_VARIANT=jdk17-review /appsec-scan
+```
+
 **Point at a subdirectory** in a monorepo (defaults to `src`):
 
 ```bash
@@ -205,12 +219,24 @@ On WSL2, enable Docker Desktop's integration for your distro under
 **Settings → Resources → WSL Integration**.
 
 ### The catalogue fetch failed but the scan continued
-That's intended. `catalog.sh` falls back to the vendored snapshots in
-`reference/catalog/` and says `[offline-fallback]`. Scans keep working with no network:
+That's intended, *if* it said `[offline-fallback]`. `catalog.sh` falls back to the
+vendored snapshots in `reference/catalog/` and scans keep working with no network:
 the snapshots carry the same `template.yml` the live read would have returned, so
 version resolution, drift checks **and the scanner image** all still resolve — from a
 snapshot rather than from your instance. If those snapshots were vendored somewhere
 else, that is your admin's problem to fix (MIGRATION.md "Re-vendor"), not yours.
+
+`[offline-fallback: unauthorized]` is a different thing and does **not** continue: your
+instance answered and refused the token. Fix or set the PAT named by
+`settings.catalog.auth_token_env`. A snapshot is no substitute here — it cannot tell you
+the component changed, so continuing would look like a live check that passed.
+
+### It says CONFIG-ERROR and stopped
+Something you (or your admin) configured is wrong: a registry refused our credentials, a
+`ca_bundle` path is not readable, a mirror needs a token it was not given. The line names
+the exact setting or env var. Nothing else is tried on purpose — a rejected credential is
+not fixed by another image, tag or endpoint, and every alternative fails the same way,
+leaving you with a scan that reads like a result. Fix what the line names and re-run.
 
 ### SAST was skipped
 Fortify needs a recognisable project. It looks for `pom.xml`, `build.gradle`,

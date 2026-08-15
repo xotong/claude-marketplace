@@ -8,6 +8,7 @@ EXECUTED_CATEGORIES=
 DS_RAN=false
 DS_FAILED=false
 SKIPPED_IMAGE_SCANNERS=
+CONFIG_ERRORS=
 
 info() { printf 'INFO: %s\n' "$*" >&2; }
 warning() { printf 'WARNING: %s\n' "$*" >&2; }
@@ -43,6 +44,9 @@ esac
 SCRIPTS_DIR="${SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 SKILL_DIR="${SKILL_DIR:-$(dirname "$SCRIPTS_DIR")}"
 SCANNERS_DIR="${SCANNERS_DIR:-$SKILL_DIR/scanners}"
+
+# shellcheck source=scripts/classify-error.sh
+. "$SCRIPTS_DIR/classify-error.sh"
 
 if [ -z "${RUN_FORTIFY_SAST+x}" ] && \
    [ -z "${RUN_GITLAB_DS+x}" ] && \
@@ -115,6 +119,74 @@ record_missing_image() {
   else
     SKIPPED_IMAGE_SCANNERS=$1
   fi
+}
+
+# record_config_error [category] <actionable reason>
+#
+# A configuration error is terminal for whatever it blocks: no retry, no other
+# image, no other endpoint will authenticate a credential the admin has not set,
+# and trying anyway just buries the cause under a scan that reads like a result.
+#
+# It rides record_skip so the coverage record needs no new shape -- the category
+# still lands in missing_report with coverage_complete false, still synthesises
+# its HIGH APPSEC-REPORT-* finding, and normalize.py carries this text verbatim
+# into evidence.why. What it adds is a non-zero exit that a passing gate (or
+# `fail_on: none`, which always exits 0) would otherwise swallow.
+#
+# The category is optional: a refused package registry is a run-level problem,
+# not a scanner that failed to produce a report.
+record_config_error() {
+  cfg_category=$1
+  cfg_reason=$2
+  printf 'CONFIG-ERROR: %s\n' "$cfg_reason" >&2
+  [ -z "$cfg_category" ] || record_skip "$cfg_category" "CONFIG-ERROR: $cfg_reason"
+  if [ -n "$CONFIG_ERRORS" ]; then
+    CONFIG_ERRORS="$CONFIG_ERRORS
+$cfg_reason"
+  else
+    CONFIG_ERRORS=$cfg_reason
+  fi
+}
+
+# pull_image <category> <label> <image> <consequence>
+#
+# Returns 0 on success; on failure records the skip itself and returns 1. Splits
+# the two causes that used to share one message and one outcome: a registry that
+# REFUSED us is a config error, while one we could not reach keeps the existing
+# advice and the existing graceful skip.
+pull_image() {
+  pull_category=$1
+  pull_label=$2
+  pull_ref=$3
+  pull_consequence=$4
+  pull_log=".appsec-results/pull-${pull_category}.log"
+  if run_cmd "$RUNTIME" pull "$pull_ref" 2>"$pull_log"; then
+    rm -f "$pull_log"
+    return 0
+  fi
+  if is_auth_error "$(cat "$pull_log" 2>/dev/null)"; then
+    record_config_error "$pull_category" "The registry refused our credentials for ${pull_ref}, so ${pull_consequence} Run '$RUNTIME login <registry-host>', or set the credentials named by settings.container_registry in scanner-preferences.yaml (${CS_USER_ENV:-CS_REGISTRY_USER} / ${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}). Details: $pull_log"
+    return 1
+  fi
+  warning "[$pull_label] Failed to pull ${pull_ref}; skipping scan"
+  record_skip "$pull_category" "Could not pull ${pull_ref}, so ${pull_consequence} Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill. Details: $pull_log"
+  return 1
+}
+
+# Printed after the normalizer's summary, so it is the last thing on screen, and
+# it exits 2 whatever the gate said. `fail_on: none` always exits 0 on findings —
+# without this override the whole "stop and report" contract would come down to a
+# warning somewhere up the scrollback.
+report_config_errors() {
+  [ -n "$CONFIG_ERRORS" ] || return 0
+  printf '\n' >&2
+  error "CONFIGURATION ERRORS — this run is NOT a valid scan"
+  printf '%s\n' "$CONFIG_ERRORS" | while IFS= read -r cfg_line; do
+    [ -n "$cfg_line" ] || continue
+    printf '  - %s\n' "$cfg_line" >&2
+  done
+  error "No workaround was attempted: only your admin config can fix these. Fix them and re-run this skill."
+  exit 2
 }
 
 is_sensitive_env_name() {
@@ -266,6 +338,11 @@ FORTIFY_SAST_IMAGE="${FORTIFY_SAST_IMAGE:-}"
 GITLAB_DS_IMAGE="${GITLAB_DS_IMAGE:-}"
 SECRET_DETECTION_IMAGE="${SECRET_DETECTION_IMAGE:-}"
 GITLAB_CS_IMAGE="${GITLAB_CS_IMAGE:-}"
+# Credential variable NAMES, not values. The component reads $ARTIFACTORY_USER /
+# $ARTIFACTORY_PASSWORD, but an estate that already names them something else
+# should not have to rename its CI variables to run this locally.
+ARTIFACTORY_USER_ENV="${ARTIFACTORY_USER_ENV:-ARTIFACTORY_USER}"
+ARTIFACTORY_PASSWORD_ENV="${ARTIFACTORY_PASSWORD_ENV:-ARTIFACTORY_PASSWORD}"
 CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
 
@@ -354,6 +431,25 @@ record_skip() {
   printf '%s\t%s\n' "$1" "$2" >>"$SKIPS_FILE"
 }
 
+# A filesystem-safe name for one SAST unit. "." is the repo root.
+unit_slug() {
+  case "$1" in
+    .|"") printf 'root' ;;
+    *) printf '%s' "$1" | sed 's#[^A-Za-z0-9._-]#-#g' ;;
+  esac
+}
+
+# One report per unit — but only when there IS more than one. A single-unit
+# repository keeps writing plain fortify-sast.fpr, so nothing downstream (or in
+# anyone's tooling) sees a new filename for a scan whose shape did not change.
+unit_fpr() {
+  if [ "${SAST_UNIT_COUNT:-1}" -le 1 ]; then
+    printf 'fortify-sast.fpr'
+  else
+    printf 'fortify-sast-%s.fpr' "$(unit_slug "$1")"
+  fi
+}
+
 # clear_stale_reports <category>: delete the PREVIOUS run's reports for a
 # category this run is going to attempt (see the single caller below).
 #
@@ -375,7 +471,7 @@ clear_stale_reports() {
   if $DRY_RUN; then return 0; fi
   case "$1" in
     sast)
-      rm -f .appsec-results/fortify-sast.fpr
+      rm -f .appsec-results/fortify-sast.fpr .appsec-results/fortify-sast-*.fpr .appsec-results/sast-units
       ;;
     dependency_scanning)
       # dependency-sbom-scan-*.json is derived from these SBOMs and counts as
@@ -444,6 +540,78 @@ category_scanner_name() {
 # internet-connected instance that pull SUCCEEDS, so the scan runs the PUBLIC
 # analyzer instead of the configured internal mirror and nothing says so.
 #
+# Which Fortify JDK variant this project needs. Detected here rather than left to
+# config because the component's default (jdk17-review) silently under-builds a
+# Java 21 project, and asking every admin to hand-pin an image per repository is
+# the kind of manual step that never happens. Same shape as FORTIFY_LANGUAGE
+# below: auto-detected, overridable by the environment.
+#
+# The release comes from the codebase; which variants exist comes from the
+# component's checked-in contract, never from a literal list here. That is the
+# half this skill kept getting wrong: fortify-sast.contract has recorded
+# input.variant.option=jdk21-review all along while nothing consumed it. Read it,
+# and a future jdk25-review starts being selected by the contract regeneration
+# that a component bump already requires.
+#
+# Not a Java project, or no release declared anywhere: stay empty and leave every
+# existing path untouched.
+if [ -z "${FORTIFY_VARIANT:-}" ]; then
+  detected_release=$(sh "$SCRIPTS_DIR/detect-java-release.sh" . 2>/dev/null || true)
+  if [ -n "$detected_release" ]; then
+    # Which variants exist is taken from the component as resolved THIS RUN, so a
+    # platform team publishing jdk25-review reaches every developer without an MR
+    # here — the same way `version: ~latest` already rolls out a new component
+    # version. The checked-in contract is the offline fallback, not the gate;
+    # check-drift still reports the change either way.
+    sast_component=
+    sast_runner=
+    for tuple in ${ENABLED_COMPONENTS:-}; do
+      case "$tuple" in
+        *'|sast')
+          sast_component=${tuple%%|*}
+          sast_rest=${tuple#*|}          # version|runner|image|category
+          sast_rest=${sast_rest#*|}      # runner|image|category
+          sast_runner=${sast_rest%%|*}
+          ;;
+      esac
+    done
+    # Derived from the configured runner, never a literal filename: `runner:` is an
+    # admin override, and catalog.sh pairs a runner with its contract the same way.
+    variant_contract="$SCANNERS_DIR/${sast_runner:-fortify-sast.sh}"
+    variant_contract="${variant_contract%.sh}.contract"
+    if [ -n "$sast_component" ]; then
+      live_contract="${CATALOG_CACHE:-.appsec-results/catalog}/fortify-variant.contract"
+      mkdir -p "$(dirname "$live_contract")" 2>/dev/null || true
+      if bash "$SCRIPTS_DIR/catalog.sh" contract "$sast_component" \
+           "${CATALOG_CACHE:-.appsec-results/catalog}" >"$live_contract" 2>/dev/null &&
+         grep -q '^input\.variant\.option=' "$live_contract" 2>/dev/null; then
+        variant_contract=$live_contract
+      fi
+    fi
+    FORTIFY_VARIANT=$(sh "$SCRIPTS_DIR/select-jdk-variant.sh" "$detected_release" \
+                        "$variant_contract" 2>/dev/null || true)
+    if [ -n "$FORTIFY_VARIANT" ]; then
+      selected_jdk=$(printf '%s' "$FORTIFY_VARIANT" | sed -n 's/^jdk\([0-9][0-9]*\).*/\1/p')
+      info "[Fortify SCA] Project targets Java ${detected_release}; selecting ${FORTIFY_VARIANT}"
+      # CI does not detect this — the component takes `variant` as an input and
+      # defaults it. So whenever we pick something other than that default, the
+      # pipeline is about to scan this project with a different JDK than we just
+      # did. Print the exact line to paste, while the developer is already here.
+      default_variant=$(grep '^input\.variant\.default=' "$variant_contract" 2>/dev/null |
+                          head -1 | sed 's/^[^=]*=//')
+      if [ -n "$default_variant" ] && [ "$default_variant" != "$FORTIFY_VARIANT" ]; then
+        info "[Fortify SCA] CI defaults to ${default_variant}. Add 'variant: ${FORTIFY_VARIANT}' to your SAST component inputs in .gitlab-ci.yml so the pipeline matches this scan."
+      fi
+      # Nothing published is new enough. Say so: the build may fail on syntax the
+      # analyzer's JDK does not accept, and that is a component gap, not a bug here.
+      if [ -n "$selected_jdk" ] && [ "$selected_jdk" -lt "$detected_release" ] 2>/dev/null; then
+        warning "[Fortify SCA] The component publishes no JDK ${detected_release} variant; ${FORTIFY_VARIANT} is the newest offered. Ask the component maintainers to publish one."
+      fi
+    fi
+  fi
+fi
+FORTIFY_VARIANT="${FORTIFY_VARIANT:-}"
+
 # Word-splitting the tuple list is intentional and safe: this file is bash and
 # load-prefs.sh emits space-separated tuples with no spaces inside one.
 for tuple in ${ENABLED_COMPONENTS:-}; do
@@ -477,9 +645,14 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
   tmpl=$(bash "$SCRIPTS_DIR/catalog.sh" template-image "$comp" \
     "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null || true)
 
+  # Only SAST's image carries a JDK variant; the other categories' tags do not,
+  # and resolve-image.sh would find nothing to substitute anyway.
+  preferred_variant=
+  [ "$cat_name" = sast ] && preferred_variant=$FORTIFY_VARIANT
+
   if effective=$(bash "$SCRIPTS_DIR/resolve-image.sh" \
       "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}" \
-      "$image_pull_mode"); then
+      "$image_pull_mode" "$preferred_variant"); then
     [ -n "$effective" ] && eval "$var=\$effective"
   else
     record_missing_image "$(category_scanner_name "$cat_name")" "$var" "$cat_name"
@@ -547,6 +720,11 @@ fi
 
 APP_NAME="${APP_NAME:-$(basename "$PWD")}"
 BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}"
+# Captured BEFORE the default is applied: an explicitly chosen source path or
+# language pins the scan to exactly one unit (today's behaviour, and the
+# documented override), while the absence of both is what licenses discovery.
+SAST_PINNED=false
+{ [ -n "${SOURCE_PATH:-}" ] || [ -n "${FORTIFY_LANGUAGE:-}" ]; } && SAST_PINNED=true
 SOURCE_PATH="${SOURCE_PATH:-src}"
 
 HAS_POM=false
@@ -585,47 +763,105 @@ done
 
 # ponytail: RUN_* values are data; only the literal string true enables a scanner.
 if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE" ]; then
-  if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
-    if $HAS_GRADLE; then FORTIFY_LANGUAGE=gradle
-    elif $HAS_POM; then FORTIFY_LANGUAGE=maven
-    elif $HAS_REQUIREMENTS; then FORTIFY_LANGUAGE=python
-    elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
-    elif $HAS_GO; then FORTIFY_LANGUAGE=go
-    else
-      info "[Fortify SCA] No supported project type detected; skipping"
-      record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript/go), so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
-      RUN_FORTIFY_SAST=false
+  # Fortify is a per-build-tree scanner: CI includes the component once per
+  # service, each with its own source-path. One detected language and one path
+  # cannot represent a repository that has several, so the units are discovered
+  # — and every one of them is recorded as expected coverage, exactly the rule
+  # `--only` follows. Narrowing what RUNS must never narrow what is EXPECTED.
+  SAST_UNITS_FILE=.appsec-results/sast-units
+  : >"$SAST_UNITS_FILE"
+  if $SAST_PINNED; then
+    if [ -z "${FORTIFY_LANGUAGE:-}" ]; then
+      if $HAS_GRADLE; then FORTIFY_LANGUAGE=gradle
+      elif $HAS_POM; then FORTIFY_LANGUAGE=maven
+      elif $HAS_REQUIREMENTS; then FORTIFY_LANGUAGE=python
+      elif $HAS_PACKAGE_JSON; then FORTIFY_LANGUAGE=javascript
+      elif $HAS_GO; then FORTIFY_LANGUAGE=go
+      fi
     fi
+    [ -z "${FORTIFY_LANGUAGE:-}" ] || printf '%s|%s\n' "$SOURCE_PATH" "$FORTIFY_LANGUAGE" >"$SAST_UNITS_FILE"
+  else
+    sh "$SCRIPTS_DIR/detect-sast-units.sh" . >"$SAST_UNITS_FILE" 2>/dev/null || :
+  fi
+
+  SAST_UNIT_COUNT=$(grep -c '|' "$SAST_UNITS_FILE" 2>/dev/null || echo 0)
+  if [ "$SAST_UNIT_COUNT" -eq 0 ]; then
+    info "[Fortify SCA] No supported project type detected; skipping"
+    record_skip sast "Fortify found no supported project type (maven/gradle/python/javascript/go) anywhere in this repository, so SAST did NOT run and your source was never analysed. Set FORTIFY_LANGUAGE explicitly, or add the matching build manifest, then re-run this skill."
+    RUN_FORTIFY_SAST=false
+  else
+    info "[Fortify SCA] $SAST_UNIT_COUNT unit(s) to scan:"
+    while IFS='|' read -r u_path u_lang; do
+      [ -n "$u_path" ] || continue
+      info "  - $u_path ($u_lang)"
+    done <"$SAST_UNITS_FILE"
   fi
   if [ "$RUN_FORTIFY_SAST" = true ]; then
     mark_attempted sast
     mark_executed sast
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
-    if run_cmd "$RUNTIME" pull "${FORTIFY_SAST_IMAGE}"; then
+    if pull_image sast "Fortify SCA" "${FORTIFY_SAST_IMAGE}" "SAST did NOT run and your source was never analysed."; then
       if $DRY_RUN; then
-        print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e SOURCE_PATH="$SOURCE_PATH" -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+        while IFS='|' read -r u_path u_lang; do
+          [ -n "$u_path" ] || continue
+          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+        done <"$SAST_UNITS_FILE"
       else
-        "$RUNTIME" run --rm \
-          -v "$PWD:/workspace" \
-          -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
-          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
-          ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
-          -w /workspace \
-          -e APP_NAME="$APP_NAME" \
-          -e SOURCE_PATH="$SOURCE_PATH" \
-          -e FORTIFY_LANGUAGE="$FORTIFY_LANGUAGE" \
-          -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
-          -e ARTIFACTORY_USER="${ARTIFACTORY_USER:-}" \
-          -e ARTIFACTORY_PASSWORD="${ARTIFACTORY_PASSWORD:-}" \
-          "${FORTIFY_SAST_IMAGE}" \
-          sh /runner.sh > .appsec-results/fortify-sast.log 2>&1 &
+        # Units run sequentially inside ONE background job: a Fortify container
+        # is heavy, and N of them at once starves the other scanners this
+        # backgrounding exists to overlap with. The whole group keeps a single
+        # PID and a single watchdog, so timeout handling is unchanged.
+        (
+          group_rc=0
+          unit_pid=
+          stopped=false
+          # start_watchdog signals THIS subshell, not the container, so the
+          # escalation has to be repeated one level down. Forwarding only TERM is
+          # not enough: the subshell would exit first, the outer KILL would find
+          # nothing left to kill, and a TERM-ignoring scanner would be orphaned
+          # and run forever — the exact fail-open the watchdog exists to close.
+          # The 1s grace is deliberately shorter than start_watchdog's 2s, so the
+          # container is dead before the outer KILL arrives. Stop afterwards too:
+          # the remaining units belong to a run that has been abandoned.
+          trap 'stopped=true
+                if [ -n "$unit_pid" ]; then
+                  kill -TERM "$unit_pid" 2>/dev/null || true
+                  sleep 1
+                  kill -KILL "$unit_pid" 2>/dev/null || true
+                fi' TERM
+          while IFS='|' read -r u_path u_lang; do
+            [ -n "$u_path" ] || continue
+            if $stopped; then break; fi
+            echo "=== Fortify unit: $u_path ($u_lang) ==="
+            "$RUNTIME" run --rm \
+              -v "$PWD:/workspace" \
+              -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
+              ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+              ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
+              -w /workspace \
+              -e APP_NAME="$APP_NAME" \
+              -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" \
+              -e FPR_NAME="$(unit_fpr "$u_path")" \
+              -e SOURCE_PATH="$u_path" \
+              -e FORTIFY_LANGUAGE="$u_lang" \
+              -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
+              -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
+              -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
+              "${FORTIFY_SAST_IMAGE}" \
+              sh /runner.sh &
+            # Backgrounded so the TERM trap above can reach it: with the
+            # container in the foreground the trap does not run until it exits,
+            # which for a hung scan is never.
+            unit_pid=$!
+            wait "$unit_pid" || group_rc=1
+            unit_pid=
+          done <"$SAST_UNITS_FILE"
+          exit "$group_rc"
+        ) > .appsec-results/fortify-sast.log 2>&1 &
         FORTIFY_SAST_PID=$!
         start_watchdog "$FORTIFY_SAST_PID"
         FORTIFY_SAST_WATCHDOG=$WATCHDOG_PID
       fi
-    else
-      warning "[Fortify SCA] Failed to pull ${FORTIFY_SAST_IMAGE}; skipping scan"
-      record_skip sast "Could not pull ${FORTIFY_SAST_IMAGE}, so SAST did NOT run and your source was never analysed. Log in to the registry (docker login <registry-host>) or fix the image path in scanner-preferences.yaml, then re-run this skill."
     fi
   fi
 fi
@@ -635,7 +871,7 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
   mark_attempted dependency_scanning
   mark_executed dependency_scanning
   info "[GitLab DS] Pulling ${GITLAB_DS_IMAGE}..."
-  if run_cmd "$RUNTIME" pull "${GITLAB_DS_IMAGE}"; then
+  if pull_image dependency_scanning "GitLab DS" "${GITLAB_DS_IMAGE}" "dependency scanning did NOT run."; then
     if $DRY_RUN; then
       print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-dependency-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GITLAB_FEATURES=dependency_scanning ${DS_AIRGAP_ARGS[@]+"${DS_AIRGAP_ARGS[@]}"} "${GITLAB_DS_IMAGE}" sh /runner.sh
     else
@@ -655,9 +891,6 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
       start_watchdog "$GITLAB_DS_PID"
       GITLAB_DS_WATCHDOG=$WATCHDOG_PID
     fi
-  else
-    warning "[GitLab DS] Failed to pull ${GITLAB_DS_IMAGE}; skipping scan"
-    record_skip dependency_scanning "Could not pull ${GITLAB_DS_IMAGE}, so dependency scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
   fi
 fi
 
@@ -665,7 +898,7 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
   mark_attempted secret_detection
   mark_executed secret_detection
   info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
-  if run_cmd "$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"; then
+  if pull_image secret_detection "Secret Detection" "${SECRET_DETECTION_IMAGE}" "secret detection did NOT run."; then
     if $DRY_RUN; then
       print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GIT_DEPTH="${GIT_DEPTH:-50}" -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" "${SECRET_DETECTION_IMAGE}" sh /runner.sh
     else
@@ -684,9 +917,6 @@ if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-pa
       start_watchdog "$SECRET_DETECTION_PID"
       SECRET_DETECTION_WATCHDOG=$WATCHDOG_PID
     fi
-  else
-    warning "[Secret Detection] Failed to pull ${SECRET_DETECTION_IMAGE}; skipping scan"
-    record_skip secret_detection "Could not pull ${SECRET_DETECTION_IMAGE}, so secret detection did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
   fi
 elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
   info "[Secret Detection] Skipped — not a Git worktree or image unset"
@@ -744,6 +974,22 @@ if ! $DRY_RUN; then
       [ -z "$watchdog_pid" ] || wait "$watchdog_pid" 2>/dev/null || true
     fi
   done
+
+  # Per-unit accounting. The group's exit code says "something failed"; only the
+  # reports say WHICH source paths were actually analysed. Without this, three
+  # units out of four succeeding left a category with reports on disk — covered,
+  # and silent about the service nobody scanned.
+  if [ -s "${SAST_UNITS_FILE:-/dev/null}" ]; then
+    unscanned=
+    while IFS='|' read -r u_path u_lang; do
+      [ -n "$u_path" ] || continue
+      [ -f ".appsec-results/$(unit_fpr "$u_path")" ] || unscanned="$unscanned $u_path($u_lang)"
+    done <"$SAST_UNITS_FILE"
+    if [ -n "$unscanned" ]; then
+      warning "[Fortify SCA] No report for:$unscanned"
+      record_skip sast "Fortify produced no report for:$unscanned — that source was NOT analysed, even though other units in this repository were. Read .appsec-results/fortify-sast.log for the per-unit cause, fix it, then re-run this skill."
+    fi
+  fi
 
   # The analyzer exits 0 when it simply finds no lock file, so a non-zero rc is
   # not the signal — the absence of a report is. Name the real cause instead of
@@ -823,7 +1069,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
       if [ -n "$cs_dockerfile" ]; then
         CS_DOCKERFILE_ARGS=(-e CS_DOCKERFILE_PATH="$cs_dockerfile")
       fi
-      if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
+      if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
         if $DRY_RUN; then
           print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
         elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
@@ -844,16 +1090,13 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
           record_skip container_scanning "Container scanning failed while scanning $CS_VALUE, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (registry credentials, image reference, container runtime, timeout), fix it, then re-run this skill."
         fi
-      else
-        warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
-        record_skip container_scanning "Could not pull ${GITLAB_CS_IMAGE}, so container scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
       fi
       ;;
     archive)
       mark_attempted container_scanning
       mark_executed container_scanning
       info "[GitLab CS] Scanning locally-built image (offline, bundled Trivy)..."
-      if run_cmd "$RUNTIME" pull "${GITLAB_CS_IMAGE}"; then
+      if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
         if $DRY_RUN; then
           print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
         elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
@@ -871,16 +1114,22 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
           record_skip container_scanning "Container scanning failed on the locally-built image archive, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (image build, container runtime, memory, timeout), fix it, then re-run this skill."
         fi
-      else
-        warning "[GitLab CS] Failed to pull ${GITLAB_CS_IMAGE}; skipping scan"
-        record_skip container_scanning "Could not pull ${GITLAB_CS_IMAGE}, so container scanning did NOT run. Log in to the registry or fix the image path in scanner-preferences.yaml, then re-run this skill."
       fi
       ;;
     error)
-      warning "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
       # No target means no scan. Unrecorded, this branch left container_scanning
       # counted as covered — clean if any older report was still on disk.
-      record_skip container_scanning "The container-scanning target could not be prepared (the image could not be built or saved), so container scanning did NOT run. Fix the build/save error reported above, then re-run this skill."
+      #
+      # container-target.sh already tells a base-image pull failure apart from a
+      # broken build and prints the remedy for each. Reading CS_VALUE keeps that
+      # distinction: collapsing both into one message sent people to raise a
+      # ticket for a missing `docker login`.
+      if [ "$CS_VALUE" = base-pull ]; then
+        record_config_error container_scanning "The Dockerfile's FROM base image could not be pulled from the registry, so container scanning did NOT run. Log in to the registry, or set the credentials named by settings.container_registry in scanner-preferences.yaml, and point FROM at the internal mirror — the exact commands are printed above. Details: .appsec-results/container-build.log"
+      else
+        warning "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
+        record_skip container_scanning "The container-scanning target could not be prepared (the image could not be built or saved), so container scanning did NOT run. Fix the build/save error reported above, then re-run this skill."
+      fi
       ;;
     *)
       info "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
@@ -949,10 +1198,20 @@ if [ -n "$PY_BIN" ]; then
     # which packages and fixed versions the scanners actually reported.
     set +e
     run_normalize >/dev/null 2>&1
+    # The probe's own stderr used to go to /dev/null with it, so a mirror that
+    # refused every request could say so and nobody would ever hear it. Keep the
+    # probe non-fatal (set +e), but let it be heard.
     "$PY_BIN" "$SCRIPTS_DIR/check-remediation.py" .appsec-results \
       --registries "${PACKAGE_REGISTRIES:-}" \
-      --token-env "${PACKAGE_REGISTRY_AUTH_ENV:-}"
+      --token-env "${PACKAGE_REGISTRY_AUTH_ENV:-}" \
+      2> .appsec-results/remediation-probe.log
     set -e
+    while IFS= read -r probe_line; do
+      case "$probe_line" in
+        CONFIG-ERROR:\ *) record_config_error "" "${probe_line#CONFIG-ERROR: }" ;;
+        *) printf '%s\n' "$probe_line" >&2 ;;
+      esac
+    done < .appsec-results/remediation-probe.log
     [ -f .appsec-results/registry-availability.json ] && \
       AVAILABILITY_ARGS="--availability .appsec-results/registry-availability.json"
   fi
@@ -961,6 +1220,7 @@ if [ -n "$PY_BIN" ]; then
   run_normalize
   gate_rc=$?
   set -e
+  report_config_errors
   if [ "$gate_rc" -eq 0 ] && [ -n "$SKIPPED_IMAGE_SCANNERS" ]; then
     warning "enabled scanners skipped for missing images: $SKIPPED_IMAGE_SCANNERS"
     exit 2
@@ -1022,5 +1282,6 @@ cat > .appsec-results/scan-coverage.json <<EOF
   "reason": "python3 unavailable: findings were never normalized, triaged or gated"
 }
 EOF
+report_config_errors
 error "findings were never assessed (python3 unavailable) — this run is NOT a pass"
 exit 2

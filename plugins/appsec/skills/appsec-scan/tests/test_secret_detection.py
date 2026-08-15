@@ -71,7 +71,12 @@ class SecretDetectionDocumentationTest(unittest.TestCase):
         self.assertIn("run the app's relevant tests", skill)
 
         run_scan = RUN_SCAN.read_text(encoding="utf-8")
-        self.assertIn('"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"', run_scan)
+        # Pulled through pull_image, which classifies a refused credential as a
+        # config error rather than a generic "could not pull".
+        self.assertIn(
+            'pull_image secret_detection "Secret Detection" "${SECRET_DETECTION_IMAGE}"',
+            run_scan,
+        )
 
     def test_runner_mirrors_catalog_script(self) -> None:
         runner = RUNNER.read_text(encoding="utf-8")

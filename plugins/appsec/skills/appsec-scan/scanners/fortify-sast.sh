@@ -3,7 +3,7 @@
 # Scanner      : Fortify SAST
 # Target       : Source tree in analyzer workspace
 # CI component : lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast@~latest
-# Last synced  : 2026-07-25
+# Last synced  : 2026-08-12
 # Image env var: FORTIFY_SAST_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Languages    : maven, gradle, python, javascript, go
 # Output       : fortify-sast.fpr
@@ -24,7 +24,15 @@ OUT_DIR="${RESULTS}"
 APP_NAME="${APP_NAME:-$(basename "${CI_PROJECT_DIR}")}"
 SOURCE_PATH="${SOURCE_PATH:-src}"
 FORTIFY_LANGUAGE="${FORTIFY_LANGUAGE:-}"
-FPR_PATH="${OUT_DIR}/fortify-sast.fpr"
+# One FPR and one Fortify build ID per unit. run-scan.sh runs this script once
+# per discovered (source-path, language) unit, exactly as CI includes the
+# component once per service; sharing either name across units would make each
+# `-clean` wipe the previous unit's build and leave one report standing for a
+# repository that had several. Both default to the single-unit values, so a
+# root-only project is byte-identical to before.
+FPR_NAME="${FPR_NAME:-fortify-sast.fpr}"
+FPR_PATH="${OUT_DIR}/${FPR_NAME}"
+FORTIFY_BUILD_ID="${FORTIFY_BUILD_ID:-${APP_NAME}}"
 
 cd "${CI_PROJECT_DIR}"
 mkdir -p "${OUT_DIR}"
@@ -39,27 +47,48 @@ fi
 # SCAN — mirrors the private catalog Fortify SAST component script.
 # =============================================================================
 
-sourceanalyzer -b "${APP_NAME}" -clean
+sourceanalyzer -b "${FORTIFY_BUILD_ID}" -clean
 
 case "${FORTIFY_LANGUAGE}" in
   maven)
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -debug -verbose -b "${FORTIFY_BUILD_ID}" \
       mvn clean install -s "${MAVEN_SETTINGS:-settings.xml}" -DskipTests
     ;;
   gradle)
-    sourceanalyzer -b "${APP_NAME}" \
-      ./gradlew -p "${SOURCE_PATH}" clean assemble \
+    # The component runs $[[ inputs.source-path ]]/gradlew (template.yml:130), not
+    # ./gradlew. Those are different files whenever source-path is not "." — so
+    # running the wrong one means this scan and the CI job disagree about which
+    # build they even executed. Prefer CI's path; fall back to a root wrapper
+    # rather than refusing to scan, but name the CI consequence, because catching
+    # that here is the entire point of running this before pushing.
+    if [ -x "${SOURCE_PATH}/gradlew" ]; then
+      GRADLEW="${SOURCE_PATH}/gradlew"
+    elif [ -x ./gradlew ]; then
+      GRADLEW=./gradlew
+      echo "WARNING: CI runs ${SOURCE_PATH}/gradlew, which does not exist here." >&2
+      echo "WARNING:   Scanning with ./gradlew instead: this scan will pass and the CI job" >&2
+      echo "WARNING:   will fail. Move the wrapper into ${SOURCE_PATH}/, or set the" >&2
+      echo "WARNING:   component input source-path: . to match." >&2
+    else
+      echo "ERROR: no gradle wrapper at ${SOURCE_PATH}/gradlew or ./gradlew" >&2
+      echo "ERROR:   The component requires a working gradle wrapper in the repository." >&2
+      exit 2
+    fi
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
+      "${GRADLEW}" -p "${SOURCE_PATH}" clean assemble \
       "-Partifactory_user=${ARTIFACTORY_USER:-}" \
       "-Partifactory_password=${ARTIFACTORY_PASSWORD:-}"
-    sourceanalyzer -b "${APP_NAME}" "${SOURCE_PATH}"
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" "${SOURCE_PATH}"
     ;;
   python)
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
+      -debug-verbose \
       -python-version 3 \
       "${SOURCE_PATH}"
     ;;
   javascript)
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
+      -debug-verbose \
       -Dcom.fortify.sca.follow.imports=false \
       "${SOURCE_PATH}"
     ;;
@@ -72,7 +101,7 @@ case "${FORTIFY_LANGUAGE}" in
     # sourceanalyzer can follow imports. Note the component omits
     # -Dcom.fortify.sca.follow.imports=false here, unlike the javascript arm.
     ( cd "${SOURCE_PATH}" && go mod download )
-    sourceanalyzer -b "${APP_NAME}" \
+    sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \
       "${SOURCE_PATH}"
     ;;
@@ -87,9 +116,9 @@ case "${FORTIFY_LANGUAGE}" in
 esac
 
 if [ -n "${FILTER_ARGS}" ]; then
-  sourceanalyzer -b "${APP_NAME}" -scan -f "${FPR_PATH}" -filter filter_list.txt
+  sourceanalyzer -b "${FORTIFY_BUILD_ID}" -scan -f "${FPR_PATH}" -filter filter_list.txt
 else
-  sourceanalyzer -b "${APP_NAME}" -scan -f "${FPR_PATH}"
+  sourceanalyzer -b "${FORTIFY_BUILD_ID}" -scan -f "${FPR_PATH}"
 fi
 
 if command -v FPRUtility >/dev/null 2>&1; then

@@ -30,17 +30,17 @@ description: >
 Run the same scanner images your GitLab CI pipeline uses, locally. `scripts/run-scan.sh` orchestrates all four scanners; `scripts/normalize.py` emits `.appsec-results/findings.triaged.json` with per-finding `verification_status` and drives the severity gate. `scripts/fix-branch.sh` guards the fix loop. **Config:** `config/scanner-preferences.yaml`. **Versions/pins:** `version:` in category block → UPDATE-GUIDE.md.
 
 **Shell session:** see the shell contract in Step 1 — bash, one invocation per step. `run-scan.sh` self-locates and self-loads (including the runtime), so Steps 3 and 5 are safe standalone.
-**Exit-code contract:** `run-scan.sh` exits 0 (gate passed), 1 (gate failed / findings present), 2 (usage/config error — e.g. unrecognised `ci_gate` value).
+**Exit-code contract:** `run-scan.sh` exits 0 (gate passed), 1 (gate failed / findings present), 2 (usage, or a `CONFIG-ERROR:` — which exits 2 at any `fail_on`).
 
 ## Prerequisites
 
 | Variable | Description |
 |---|---|
 | `APPSEC_PROFILE` | Active profile (`default_profile` from config) |
-| `FORTIFY_LANGUAGE` | `maven`\|`gradle`\|`python`\|`javascript`\|`go`; auto-detected |
+| `FORTIFY_VARIANT` | Fortify JDK image variant (e.g. `jdk21-review`); auto-detected from the project's Java release. Set only to override |
+| `SOURCE_PATH`/`FORTIFY_LANGUAGE` | `maven`\|`gradle`\|`python`\|`javascript`\|`go`. Unset = every build tree is found and scanned, one run each (CI's include-per-service); either one set pins a single unit |
 | `CS_IMAGE` | Container image:tag for Container Scanning (optional) |
 | `APP_NAME` | Application name (default: `basename $PWD`) |
-| `SOURCE_PATH` | Source dir for Fortify (default: `src`) |
 
 ---
 
@@ -58,8 +58,8 @@ Set `SCAN_SCOPE` from the user's words **before** running anything.
 | anything you are not sure about | **ask — below** |
 
 **When unsure, ask — never guess.** Use `AskUserQuestion` with `multiSelect: true`.
-Many developers cannot tell these categories apart, so label by what the developer
-would recognise, not by tool name:
+Most developers cannot tell these apart, so label by what they would recognise,
+not by tool name:
 
 - `Everything (recommended)` — all four; exactly what CI will run
 - `My source code` — injection, unsafe calls, insecure patterns in code you wrote
@@ -77,10 +77,10 @@ scoped result as "you are clear to push."
 
 ## Step 1 — Locate the skill's directories
 
-The scanner scripts live beside this file, not in the project being scanned.
-You read this file from disk, so you already know its directory — that is
-`SKILL_DIR`; substitute the real absolute path below. Do **not** derive it from
-`$0` or `${BASH_SOURCE[0]}`: those resolve to your shell and yield `/bin`.
+The scanner scripts live beside this file, not in the project being scanned. You
+read this file from disk, so its directory is `SKILL_DIR` — substitute the real
+absolute path below. Do **not** derive it from `$0` or `${BASH_SOURCE[0]}`:
+those resolve to your shell and yield `/bin`.
 
 ```bash
 export SKILL_DIR=/absolute/path/to/plugins/appsec/skills/appsec-scan
@@ -90,12 +90,11 @@ export SCRIPTS_DIR="$SKILL_DIR/scripts"
   echo "ERROR: wrong SKILL_DIR='$SKILL_DIR'" >&2; exit 1; }
 ```
 
-**Shell contract — applies to every snippet in this file.** Run them with
-`bash`, not your login shell, and send each step's commands as ONE invocation.
-Two reasons, both of which fail silently rather than loudly: exports do not
-survive between separate tool calls, and zsh (the macOS default) does not
-word-split unquoted variables the way these snippets expect. Every script here
-self-loads what it needs, so a step that only invokes a script is safe alone.
+**Shell contract — applies to every snippet here.** Run them with `bash`, not
+your login shell, and send each step as ONE invocation. Both failure modes are
+silent: exports do not survive between tool calls, and zsh (the macOS default)
+does not word-split unquoted variables the way these snippets expect. Every
+script self-loads what it needs, so a step that only invokes one is safe alone.
 
 ---
 
@@ -177,12 +176,13 @@ e.g. `| lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast | 25.2.0
 on any prefix lines printed below it.
 
 Components are always resolved live; a failed fetch falls back to the vendored
-snapshots in `reference/catalog/`. An `[offline-fallback]` source therefore
-always means the read failed — unreachable instance, or a PAT in
-`$CATALOG_AUTH_ENV` that is missing, expired, or lacks `read_api` (MIGRATION.md
-step 0). Say so; the run continues on the snapshot, but it is not live.
+snapshots in `reference/catalog/`. The two causes are not interchangeable: an
+unreachable `$GITLAB_INSTANCE` is the airgap guarantee working — say so and
+continue on the snapshot. A `$CATALOG_AUTH_ENV` PAT that is rejected, expired or
+lacks `read_api` is a `CONFIG-ERROR:` — stop, and never let it read as live (the
+rule the revendor path already applies: MIGRATION.md, UPDATE-GUIDE.md).
 
-Scripts signal everything else with four prefixes. Surface the line verbatim,
+Scripts signal everything else with five prefixes. Surface the line verbatim,
 then:
 
 | Prefix | Required action |
@@ -191,6 +191,7 @@ then:
 | `DRIFT:` | a configured `image:` differs from the component's; report, never auto-bump it |
 | `CONTRACT-DRIFT:` | the component's inputs or reports changed vs `scanners/<runner>.contract`; explain what it affects and ask before scanning |
 | `NEEDS-MAPPING:` | the component supports something no runner implements; stop and ask |
+| `CONFIG-ERROR:` | your configuration is wrong; stop that category, surface the line verbatim, attempt no alternative |
 
 `template.yml` is the only machine source of truth. `AGENTS.md` is cached per
 component for guidance (offer to summarize) but its prose lags the template —
@@ -205,7 +206,7 @@ bash "$SCRIPTS_DIR/run-scan.sh"                        # SCAN_SCOPE=all
 bash "$SCRIPTS_DIR/run-scan.sh" --only "$SCAN_SCOPE"   # one category from Step 0
 ```
 
-run-scan.sh invokes `"$RUNTIME" run` per scanner and `"$RUNTIME" pull "${SECRET_DETECTION_IMAGE}"` before Secret Detection. `resolve-jq.sh` and `container-target.sh` are used internally (`GITLAB_FEATURES=dependency_scanning` for Dependency Scanning). A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT). Stdout: summary from `normalize.py`. **Branch on exit code AND `coverage_complete` (`scan-coverage.json`), never the code alone**: exit 1 → findings, Step 4; exit 0 + complete → done; exit 0 + incomplete → NOT an all-clear: name each `missing_report` category and why (`evidence.why`), then require a full scan before pushing. `fail_on: none` always exits 0, so its code says nothing about coverage. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — Step 0 scope or Step 5 rescan. `--only` narrows what RUNS, never what is EXPECTED, so a scoped verdict needs the same rule plus a full scan before pushing.
+run-scan.sh invokes `"$RUNTIME" run`/`pull` per scanner; `resolve-jq.sh`, `detect-sast-units.sh` and `container-target.sh` run internally (`GITLAB_FEATURES=dependency_scanning` for DS). **Fortify fans out**: `detect-sast-units.sh` finds every build tree; each gets its own run, report and coverage row. DS does not — its analyzer walks the worktree once. A scanner with no report becomes a HIGH coverage finding (HAS_MISSING_REPORT). Stdout: summary from `normalize.py`. **Branch on exit code AND `coverage_complete` (`scan-coverage.json`), never the code alone**: exit 1 → findings, Step 4; exit 0 + complete → done; exit 0 + incomplete → NOT an all-clear: name each `missing_report` category and why (`evidence.why`), then require a full scan before pushing; exit 2 → name each `CONFIG-ERROR:` line and its fix, never present the run as a pass. `fail_on: none` always exits 0 for findings, but not over a config error — that still exits 2. Flags: `--dry-run`; `--only <category>` (sast|dependency_scanning|secret_detection|container_scanning) — Step 0 scope or Step 5 rescan. `--only` narrows what RUNS, never what is EXPECTED, so a scoped verdict needs the same rule plus a full scan before pushing.
 
 Dependency Scanning produces only an SBOM locally (GitLab matches it server-side behind a `CI_JOB_TOKEN`-only API), so run-scan.sh matches it offline with the Trivy bundled in the container-scanning image. **Those findings and their `fixed_version`s are Trivy's, not GitLab's** — say so: a pre-push signal that will not match the post-push Vulnerability Report exactly. If that match cannot run it becomes a coverage skip.
 
@@ -312,6 +313,10 @@ Use **appsec-dast-sim** from this same plugin for design-time DAST (no running a
 
 ## What NOT to do
 
+- **Do not work around a `CONFIG-ERROR:`.** Stop that category, report the line
+  verbatim, and try no alternative image, registry, credential, endpoint,
+  profile or invocation. Only the admin can fix config; routing around it hides
+  the cause behind a scan that reads like a result
 - Do not edit scan mechanics or scanner commands in this file — edit `scripts/run-scan.sh` and `scanners/*.sh` respectively
 - Do not add `fortifyclient` upload steps — scan-only is the local model
 - Do not print raw secret values from `gl-secret-detection-report.json`

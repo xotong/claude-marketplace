@@ -239,6 +239,100 @@ class RunScanDryRunTest(unittest.TestCase):
         self.assertIn("re-run this skill", skips)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_variant_options_come_from_the_live_component(self) -> None:
+        """A platform team publishing jdk25-review must reach developers with no
+        MR against this repo — the same way `version: ~latest` already rolls out
+        a new component version. The checked-in contract is the offline fallback,
+        not the gate."""
+        component = "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast"
+        template = (
+            SKILL_DIR / "reference" / "catalog" / component / "25.2.0" / "template.yml"
+        ).read_text()
+        published = template.replace(
+            "        - jdk21-review", "        - jdk21-review\n        - jdk25-review"
+        )
+        self.assertIn("jdk25-review", published)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            (repo / "pom.xml").write_text(
+                "<project><properties>"
+                "<maven.compiler.release>25</maven.compiler.release>"
+                "</properties></project>\n",
+                encoding="utf-8",
+            )
+            cache = repo / "catalog-cache"
+            tag_dir = cache / component / "25.4.0"
+            tag_dir.mkdir(parents=True)
+            (tag_dir / "template.yml").write_text(published, encoding="utf-8")
+
+            env = self.base_env(
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+                CATALOG_CACHE=str(cache),
+                ENABLED_COMPONENTS=(
+                    f"{component}|~latest|fortify-sast.sh|example/fortify:test|sast"
+                ),
+            )
+            live = self.run_scan(repo, "--only", "sast", "--dry-run", env=env)
+
+            # Same project, no live snapshot: falls back and picks the newest the
+            # checked-in contract offers, rather than inventing a tag.
+            env_offline = self.base_env(
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+                CATALOG_CACHE=str(repo / "no-such-cache"),
+                ENABLED_COMPONENTS=(
+                    f"{component}|~latest|fortify-sast.sh|example/fortify:test|sast"
+                ),
+            )
+            offline = self.run_scan(repo, "--only", "sast", "--dry-run", env=env_offline)
+
+        self.assertIn("selecting jdk25-review", live.stderr + live.stdout)
+        self.assertIn("selecting jdk21-review", offline.stderr + offline.stdout)
+        self.assertIn("publishes no JDK 25 variant", offline.stderr + offline.stdout)
+
+    def test_retired_variant_stops_being_selected(self) -> None:
+        """Dropping jdk17 upstream must reach developers the same way."""
+        component = "lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast"
+        template = (
+            SKILL_DIR / "reference" / "catalog" / component / "25.2.0" / "template.yml"
+        ).read_text()
+        retired = template.replace("        - jdk17-review\n", "").replace(
+            "      default: jdk17-review", "      default: jdk21-review"
+        )
+        self.assertNotIn("- jdk17-review", retired)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            (repo / "pom.xml").write_text(
+                "<project><properties>"
+                "<maven.compiler.release>11</maven.compiler.release>"
+                "</properties></project>\n",
+                encoding="utf-8",
+            )
+            cache = repo / "catalog-cache"
+            tag_dir = cache / component / "25.5.0"
+            tag_dir.mkdir(parents=True)
+            (tag_dir / "template.yml").write_text(retired, encoding="utf-8")
+
+            env = self.base_env(
+                RUN_GITLAB_DS="false",
+                RUN_SECRET_DETECTION="false",
+                RUN_GITLAB_CS="false",
+                CATALOG_CACHE=str(cache),
+                ENABLED_COMPONENTS=(
+                    f"{component}|~latest|fortify-sast.sh|example/fortify:test|sast"
+                ),
+            )
+            result = self.run_scan(repo, "--only", "sast", "--dry-run", env=env)
+
+        # Java 11 would have taken jdk17-review; it is gone, so the smallest
+        # remaining variant that can still compile it wins.
+        self.assertIn("selecting jdk21-review", result.stderr + result.stdout)
+
     def test_only_disabled_category_exits_nonzero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_repo(tmp)

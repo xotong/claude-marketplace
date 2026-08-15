@@ -229,6 +229,7 @@ from HEAD (the file was added upstream after the 25.2.0 tag was cut, on
 | Scan orchestration logic changed | `scripts/run-scan.sh` |
 | Report parsing / triage / gate | `scripts/normalize.py` |
 | Scanner image retagged upstream | nothing — the component supplies the tag (Scenario 3) |
+| New Fortify JDK variant published or retired (`jdk25-review`) | nothing — the offered set is read from the live component each run; `select-jdk-variant.sh` picks from it |
 | Scanner image path moved to a different registry | `config/scanner-preferences.yaml` `image:` |
 | Component version pin changed | `config/scanner-preferences.yaml` `version:` + snapshot refresh (the pin also fixes the image) |
 | New setup step before scan | `scanners/<name>.sh` SETUP section only |

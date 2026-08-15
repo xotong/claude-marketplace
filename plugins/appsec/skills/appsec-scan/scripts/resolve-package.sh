@@ -15,12 +15,19 @@
 # Placeholders: {package} {version} {group_path} {artifact} {module}
 #
 # Verdicts (stdout, one word):
-#   available  registry answered 200 (and, for listing-style URLs, the body
-#              mentions the version)
-#   absent     registry answered 404 -- the mirror does not carry it
-#   unknown    no template configured, no curl, timeout, auth failure, or any
-#              other status. NEVER guessed as available or absent: a registry we
-#              could not reach is not evidence either way.
+#   available     registry answered 200 (and, for listing-style URLs, the body
+#                 mentions the version)
+#   absent        registry answered 404 -- the mirror does not carry it
+#   unauthorized  registry answered 401/403. Callers must treat this exactly as
+#                 `unknown` when deciding a finding's status -- being refused is
+#                 no more evidence of absence than a timeout is -- but it is a
+#                 SEPARATE word because the two need opposite handling. A
+#                 timeout may fix itself; a rejected credential never will, and
+#                 collapsing it into `unknown` is what let a non-anonymous JFrog
+#                 turn every probe into a shrug with nothing naming the cause.
+#   unknown       no template configured, no curl, timeout, or any other status.
+#                 NEVER guessed as available or absent: a registry we could not
+#                 reach is not evidence either way.
 #
 # Usage: resolve-package.sh <ecosystem> <package> <version> <url_template> [token_env]
 # =============================================================================
@@ -153,5 +160,8 @@ case "$status" in
     esac
     ;;
   404|410) verdict absent ;;
+  # 000 is the `|| printf '000'` short-circuit above: curl never got an answer.
+  # That, timeouts and 5xx stay `unknown` -- only an actual refusal is config.
+  401|403) verdict unauthorized ;;
   *)       verdict unknown ;;
 esac

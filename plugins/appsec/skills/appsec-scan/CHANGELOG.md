@@ -5,6 +5,152 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Fortify now fans out one scan per build tree, the way CI does.** CI includes
+  the component once per service, each with its own `source-path`. Locally there are no
+  includes to read, so run-scan.sh detected ONE language from the repo root and scanned
+  ONE path — and on a repository with a root manifest plus services beneath it, that
+  scanned the root, silently ignored the rest, and still reported `sast` covered with
+  `coverage_complete: true`. That is the `--only` bug one axis over: the invariant was
+  keyed on category, so it could not see narrowing *within* a category.
+  `scripts/detect-sast-units.sh` discovers every `(source-path, language)` unit — pruning
+  a language only under an ancestor that already produced one, so a Gradle multi-module
+  build stays one unit while a Python service beside a JavaScript one stays two — and
+  each unit gets its own Fortify run, its own build id, its own report and its own
+  coverage row. A unit that produces no report names the source path that went
+  unanalysed, instead of hiding behind the reports its siblings did produce. Units run
+  sequentially inside one background job (a Fortify container is heavy; N at once starves
+  the scanners this backgrounding exists to overlap with), and the unit list is printed
+  before scanning. `SOURCE_PATH`/`FORTIFY_LANGUAGE` still pin a single unit. A single-unit
+  repository is byte-identical to before, down to the `fortify-sast.fpr` filename.
+  Findings from a fanned-out unit are re-rooted to their source path — the same defect CI
+  fixed with `--prepend-path`, where all four services' findings were stamped with one
+  service's path. Dependency scanning deliberately does not fan out: its analyzer walks
+  the whole worktree in one pass.
+
+- **A misconfiguration now stops the work it blocks instead of being routed around.**
+  Found testing in an airgapped estate: a JFrog repo that was not anonymous made the
+  skill keep hunting for alternative methods, and the run still produced output that
+  read like a result. Two defects sat behind it. Nothing told a registry that *refused*
+  us apart from one we could not *reach* — `resolve-package.sh` mapped 401/403 into the
+  same `unknown` a timeout produces, so with no `package_registries.auth_token_env` set
+  every probe shrugged and the whole registry-gap feature quietly did nothing. And
+  nothing said a configuration error is terminal, while the docs celebrate fifteen
+  fallback chains — so faced with a 401 the natural move was to invent a sixteenth.
+  Now: `scripts/classify-error.sh` holds the single definition of an auth failure (moved
+  out of `resolve-base-image.sh`, which had the only correct copy); `resolve-package.sh`
+  returns a distinct `unauthorized`; and a config error prints `CONFIG-ERROR: <what> —
+  <the setting to fix>`, aborts only the category it blocks, and exits 2 at any
+  `fail_on` — including `none`, which otherwise always exits 0. Environment failures
+  (timeout, connection refused, DNS, 5xx) keep their existing graceful fallback: the
+  airgap guarantee rides on it. The coverage invariant is unchanged — a blocked category
+  still lands in `missing_report` with `coverage_complete: false` and its HIGH
+  `APPSEC-REPORT-*` finding — and no finding's status ever moves, because being refused
+  is no more evidence of absence than a timeout. Design principle in ARCHITECTURE.md
+  "Configuration errors vs environment failures".
+- **Preflight probes what you configured, before any container starts.** One throwaway
+  request per non-empty `package_registries` template (401/403 → fail fast naming
+  `auth_token_env`), plus readability checks for `ca_bundle` and `maven_settings` — the
+  latter was a mid-run warning, and an unreadable CA bundle fails every request from
+  inside the container in a way that reads like a network outage rather than a trust
+  problem. Nothing configured means nothing probed, so an estate that sets none of this
+  gains no new failure surface. Deliberately not checked: the Artifactory and container
+  registry credential vars, whose *names* ship with defaults and therefore carry no
+  signal — requiring them would block every estate that pulls anonymously.
+
+### Fixed
+
+- **Diagnosis that was already computed no longer gets thrown away.**
+  `container-target.sh` distinguishes a base-image pull failure and prints the exact
+  `login` remedy, but `run-scan.sh` discarded its exit code with `|| true` and collapsed
+  `base-pull`/`build`/`save` into one "submit a Jira ticket" message. `resolve-image.sh`
+  swallowed pull stderr, so an auth failure was reported as "not available from this
+  registry — ask your platform team to mirror it", inventing mirroring work for an image
+  that was already there. And `check-remediation.py` ran with its stderr sent to
+  `/dev/null`, so a mirror that refused every request could say so and nobody would ever
+  hear it. All three now surface.
+- `catalog.sh` no longer reports a rejected token and an unreachable instance as the
+  same `[offline-fallback]`. A refusal resolves `[offline-fallback: unauthorized]`,
+  prints a `CONFIG-ERROR:`, and makes `resolve-components.sh` exit non-zero — after
+  printing the table, so you still see what resolved. The status comes from one extra
+  request made only on the failure path, so a healthy run issues no additional traffic.
+  This is the rule MIGRATION.md and UPDATE-GUIDE.md already applied to re-vendoring
+  ("fix the connection or the token — do not work around it"), now applied to scanning.
+- The repo README claimed the skill "tries anonymous API reads first" and "continues on
+  the vendored snapshots" if no token works, contradicting preflight's hard failure and
+  reading as a licence to improvise. Corrected.
+
+- **The Fortify JDK variant is now detected from the codebase — no configuration.**
+  `scripts/detect-java-release.sh` reads the compile target out of every `pom.xml`
+  (`maven.compiler.release|source|target`, `java.version`, the compiler plugin's
+  `<release>/<source>/<target>`) and every `*.gradle[.kts]`
+  (`JavaLanguageVersion.of(N)`, `jvmToolchain(N)`, `source|targetCompatibility` in all
+  of its spellings) — every, not just `build.gradle`, so a `buildSrc` convention
+  plugin counts, and a version referenced by name is resolved from
+  `gradle.properties` — takes the **highest** release found, and
+  `scripts/select-jdk-variant.sh` maps it to the smallest variant the component
+  offers that can still compile it. The offered set is read from the component as
+  resolved that run, so a platform team publishing `jdk25-review` — or retiring
+  `jdk17-review` — reaches every developer with no MR against this repo, the same
+  way `version: ~latest` already rolls out a component version;
+  `scanners/fortify-sast.contract` is the offline fallback and `check-drift` still
+  reports the change. When nothing offered is new enough the highest runs and the
+  scan warns. Both halves of that follow from one property — a JDK compiles its own
+  release and every earlier one but never a later one — so the *highest* release
+  declared in the repository decides the *smallest* usable image. Generated copies
+  under `target/` and `build/` are pruned so a stale artifact cannot outvote the
+  source. Same shape as
+  `FORTIFY_LANGUAGE`: automatic, with `FORTIFY_VARIANT` as the environment override.
+  A detected variant outranks the variant in `image:` — it is evidence from the
+  repository rather than a line typed once — but it stays a preference: if the registry
+  does not carry it, the scan warns and runs the component's default rather than
+  failing. `.tool-versions`, `.sdkmanrc` and `.java-version` are deliberately not read;
+  they pin a developer's toolchain, not the build's target
+- When the selected variant differs from the component's own default, the scan prints
+  the line to paste into `.gitlab-ci.yml` (`variant: jdk21-review`) so the pipeline
+  matches. CI does not detect the release — the component takes `variant` as an input
+  and defaults it — so without this the local scan is right and the pipeline quietly
+  is not
+
+### Fixed
+
+- **Portability pass for other environments.** Nothing that varies per estate is
+  hardcoded in executable code any more: Artifactory credentials are read through
+  configurable variable **names** (`settings.build_credentials.*`, defaulting to the
+  component's own `ARTIFACTORY_USER`/`ARTIFACTORY_PASSWORD`); the Fortify variant
+  contract path is derived from the configured `runner:` rather than the literal
+  `fortify-sast.contract`, so a `runner:` override no longer silently falls back to the
+  shipped contract; the airgap error no longer advises a profile name that may not exist
+  in your estate; the CI-variant hint no longer prints a catalogue path; and
+  `catalog.sh self-test` uses a neutral fixture path instead of one that reads like a
+  real catalogue layout
+- **The Gradle arm ran a different wrapper than CI.** The component invokes
+  `$[[ inputs.source-path ]]/gradlew` (`template.yml:130`); this runner invoked
+  `./gradlew`. Whenever `source-path` is not `.` those are different files, so a
+  repository with the wrapper in only one of the two places passed locally and failed
+  in CI — or the reverse — with a message that read like a broken build rather than a
+  path mismatch. The runner now prefers CI's path, and when only a root wrapper exists
+  it scans with that **and states that the CI job will fail**, which is the whole point
+  of running this before pushing. No wrapper at all is a hard error instead of a
+  confusing Gradle failure
+- Diagnostic flags realigned with the component: `-debug -verbose` on the maven arm,
+  `-debug-verbose` on python and javascript (go already had it). Log output only —
+  but a translation that fails without them is harder to diagnose than the CI job it
+  mirrors. `-python-path` is still deliberately **not** passed; see GitHub issue #12
+- **A configured JDK variant is no longer silently replaced by the component's default.**
+  A Fortify tag carries the JDK the target compiles with (`25.2.0-jdk17-review` vs
+  `-jdk21-review`), and `follow-component` adopted the template's tag whole — so an
+  admin who pinned `…:25.2.0-jdk21-review` for a Java 21 project got the component's
+  JDK 17 analyzer, with nothing said. `resolve-image.sh` now applies the existing rule
+  one field further right: the component owns the **version**, the admin owns the
+  registry, path **and variant**. `…:25.2.0-jdk21-review` against a template declaring
+  `25.2.1-jdk17-review` now resolves to `…:25.2.1-jdk21-review`, and the substitution is
+  announced on stderr. Tags without a version-shaped head (`latest`) or without a
+  suffix (`container-scanning:8.6.31`) are unaffected
+
 ## [3.3.0] — 2026-08-08
 
 ### Changed — BREAKING

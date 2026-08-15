@@ -13,6 +13,15 @@ each finding's remediation_status:
     absent    -> blocked_registry_gap   route to TRIAGE.md as a mirroring request
     unknown   -> left alone             a registry we could not reach is not evidence
 
+A registry that answers 401/403 also leaves the status alone -- being refused is
+no more evidence of absence than a timeout. But it is reported as a CONFIG-ERROR:
+rather than folded silently into `unknown`, because the two failures need
+opposite handling: a timeout may fix itself, a rejected credential never will.
+Against a non-anonymous mirror with no `auth_token_env` set, EVERY probe returns
+unknown, the whole registry-gap feature quietly does nothing, and the run still
+reads like a result. One line per ecosystem, not per package -- a misconfigured
+registry produces hundreds of probes.
+
 Container-scanning findings are deliberately NOT probed against a PACKAGE
 registry. Their packages are OS packages (apk/deb/rpm) inside a base image; the
 remediation is rebuilding on a newer base image, not fetching a library from a
@@ -48,6 +57,12 @@ from pathlib import Path
 SCRIPTS_DIR = Path(__file__).resolve().parent
 RESOLVE_PACKAGE = SCRIPTS_DIR / "resolve-package.sh"
 RESOLVE_BASE_IMAGE = SCRIPTS_DIR / "resolve-base-image.sh"
+
+# resolve-package.sh's full contract. resolve-base-image.sh has no `unauthorized`
+# -- it deliberately collapses auth into `unknown` so it can never manufacture a
+# false `absent` -- so base-image probes keep the narrower set.
+PACKAGE_VERDICTS = frozenset({"available", "absent", "unauthorized", "unknown"})
+IMAGE_VERDICTS = frozenset({"available", "absent", "unknown"})
 
 # Dependency manifests are the most reliable ecosystem signal available: the
 # scanner reports the file the dependency was declared in.
@@ -124,7 +139,7 @@ def probe(ecosystem: str, package: str, version: str, template: str, token_env: 
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     verdict = (proc.stdout or "").strip()
-    return verdict if verdict in {"available", "absent", "unknown"} else "unknown"
+    return verdict if verdict in PACKAGE_VERDICTS else "unknown"
 
 
 def read_base_images(results_dir: Path) -> list:
@@ -171,7 +186,7 @@ def probe_base_image(image: str, tag: str, template: str) -> str:
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     verdict = (proc.stdout or "").strip()
-    return verdict if verdict in {"available", "absent", "unknown"} else "unknown"
+    return verdict if verdict in IMAGE_VERDICTS else "unknown"
 
 
 def collect_targets(findings: list) -> dict:
@@ -209,6 +224,11 @@ def probe_fixed_versions(
         return "available"
     if all(verdict == "absent" for verdict in verdicts):
         return "absent"
+    # Ranked below both settled answers on purpose: a registry that answered for
+    # one candidate and refused another has still told us something real, and the
+    # refusal is only worth surfacing when nothing settled it.
+    if "unauthorized" in verdicts:
+        return "unauthorized"
     return "unknown"
 
 
@@ -252,6 +272,7 @@ def main(argv=None) -> int:
 
     availability: dict = {}
     counts = {"available": 0, "absent": 0, "unknown": 0}
+    refused: list = []
     targets = collect_targets(findings) if package_mirrors else {}
     for key, (ecosystem, package, version) in sorted(targets.items()):
         template = str(registries.get(ecosystem) or "").strip()
@@ -263,6 +284,13 @@ def main(argv=None) -> int:
         verdict = probe_fixed_versions(
             ecosystem, package, version, template, args.token_env
         )
+        if verdict == "unauthorized":
+            # Downgraded to `unknown` before anything records it, so no finding's
+            # status can move: the map normalize.py reads never learns the
+            # difference. Only the human-facing report does.
+            if ecosystem not in refused:
+                refused.append(ecosystem)
+            verdict = "unknown"
         availability[key] = verdict
         counts[verdict] += 1
 
@@ -302,6 +330,15 @@ def main(argv=None) -> int:
             "[remediation] missing upgrades and base images will be reported as "
             "blocked_registry_gap and listed in TRIAGE.md for mirroring — the fix "
             "loop will not attempt them.",
+            file=sys.stderr,
+        )
+    for ecosystem in refused:
+        # run-scan.sh greps this prefix; keep the wording on one line.
+        print(
+            f"CONFIG-ERROR: the {ecosystem} package registry refused the request "
+            "(HTTP 401/403), so no upgrade could be checked against it — set "
+            "settings.package_registries.auth_token_env to the name of an env var "
+            "holding a token for it, or make the repository readable anonymously",
             file=sys.stderr,
         )
     return 0

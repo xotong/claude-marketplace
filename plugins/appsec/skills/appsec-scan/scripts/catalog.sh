@@ -29,6 +29,45 @@ urlencode_path() { printf '%s' "$1" | sed 's/\//%2F/g'; }
 # is wrong" when it was only a hiccup. --retry covers transient failures and
 # timeouts; it deliberately does NOT retry 401/404, so a genuine auth or path
 # problem still fails fast. Timeout is tunable for slow internal instances.
+#
+# On failure it records the status in CATALOG_LAST_HTTP so callers can tell a
+# REFUSAL apart from a failure to reach the instance. Both used to end at the
+# same [offline-fallback], which is right for an unreachable instance (that is
+# the airgap guarantee) and wrong for a rejected token: continuing on a snapshot
+# then looks like a live check that passed.
+#
+# `curl -sf` collapses every 4xx and 5xx into exit 22 with no way to read the
+# code back, so the status comes from one extra HEAD-shaped request made ONLY
+# after a failure. A healthy run issues no additional traffic at all, and the
+# fetch itself keeps its exact previous behaviour.
+CATALOG_LAST_HTTP=
+curl_status_probe() {
+  local url token_env token_value _tmpf code timeout
+  url=$1
+  token_env=${2:-}
+  timeout=$3
+  if [ -n "$token_env" ]; then
+    token_value=$(printenv "$token_env" 2>/dev/null || true)
+  else
+    token_value=
+  fi
+  if [ -n "$token_value" ]; then
+    _tmpf=$(mktemp) || { printf '000'; return 0; }
+    printf 'header = "PRIVATE-TOKEN: %s"\n' "$token_value" >"$_tmpf" || {
+      rm -f "$_tmpf"
+      printf '000'
+      return 0
+    }
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$timeout" \
+      --config "$_tmpf" "$url" 2>/dev/null || printf '000')
+    rm -f "$_tmpf"
+  else
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time "$timeout" \
+      "$url" 2>/dev/null || printf '000')
+  fi
+  printf '%s' "$code"
+}
+
 curl_get() {
   local url token_env token_value _tmpf curl_status timeout retries
   url=$1
@@ -54,10 +93,18 @@ curl_get() {
       curl_status=$?
     fi
     rm -f "$_tmpf"
-    return "$curl_status"
   else
-    curl -sf --max-time "$timeout" --retry "$retries" "$url"
+    if curl -sf --max-time "$timeout" --retry "$retries" "$url"; then
+      curl_status=0
+    else
+      curl_status=$?
+    fi
   fi
+  CATALOG_LAST_HTTP=
+  if [ "$curl_status" -ne 0 ]; then
+    CATALOG_LAST_HTTP=$(curl_status_probe "$url" "$token_env" "$timeout")
+  fi
+  return "$curl_status"
 }
 
 # Tag policy: strip one leading "v", exclude prereleases containing "-", then
@@ -208,7 +255,8 @@ fetch_online() {
 }
 
 resolve_cmd() {
-  local instance_url component_path version cache_dir token_env offline snapshot_root snapshot_tag
+  local instance_url component_path version cache_dir token_env offline snapshot_root snapshot_tag fallback_label
+  fallback_label=offline-fallback
   instance_url=$1
   component_path=$2
   version=$3
@@ -222,7 +270,20 @@ resolve_cmd() {
     if fetch_online "$instance_url" "$component_path" "$version" "$cache_dir" "$token_env"; then
       return 0
     fi
-    echo "WARN: catalog resolve failed online for ${component_path}; trying vendored snapshot" >&2
+    # A refusal is not an outage. The snapshot still gets used below — it is all
+    # there is — but it must never be reported as a live check that passed, so
+    # say which of the two happened.
+    case "${CATALOG_LAST_HTTP:-}" in
+      401|403)
+        echo "CONFIG-ERROR: ${instance_url} refused our catalogue credentials (HTTP ${CATALOG_LAST_HTTP}) for ${component_path} — the token named by settings.catalog.auth_token_env${token_env:+ (\$$token_env)} is missing, expired, or lacks read_api. The vendored snapshot below is NOT a substitute: it cannot tell you the component has changed." >&2
+        # Carried into the resolution table Step 2.5 shows the user verbatim, so
+        # the distinction survives past this one stderr line.
+        fallback_label="offline-fallback: unauthorized"
+        ;;
+      *)
+        echo "WARN: catalog resolve failed online for ${component_path}; trying vendored snapshot" >&2
+        ;;
+    esac
   fi
 
   snapshot_root="$(skill_dir)/reference/catalog/${component_path}"
@@ -238,7 +299,7 @@ resolve_cmd() {
 
   if [ -n "${snapshot_tag:-}" ]; then
     echo "INFO: using snapshot ${component_path}@${snapshot_tag}" >&2
-    printf '%s@%s [offline-fallback]\n' "$component_path" "$snapshot_tag"
+    printf '%s@%s [%s]\n' "$component_path" "$snapshot_tag" "$fallback_label"
     return 0
   fi
 
@@ -522,7 +583,8 @@ self_test_cmd() {
   root="$tmp/appsec-scan"
   script="$root/scripts/catalog.sh"
   cache="$tmp/cache"
-  component="lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection"
+  # Neutral fixture path: the self-test must not imply a real catalogue layout.
+  component="example-group/devops/catalogue/secret-detection/secret-detection"
 
   mkdir -p "$root/scripts" "$root/reference/catalog/$component/1.0.0" "$tmp/bin" "$cache"
   cp "$0" "$script"

@@ -13,6 +13,15 @@
 #   template    registry.gitlab.com/security-products/container-scanning:8.6.31
 #   effective   jfrog.internal/security/container-scanning:8.6.31
 #
+# A tag may also carry a VARIANT after the version, which the admin owns for the
+# same reason as the registry: it describes the target, not the analyzer release.
+# Fortify's variant is the JDK the project compiles with, so adopting the tag
+# whole would scan a Java 21 project with the component's default JDK 17 image:
+#
+#   configured  jfrog.internal/security/fortify-sca:25.2.0-jdk21-review
+#   template    registry.gitlab.com/.../fortify-sca:25.2.1-jdk17-review
+#   effective   jfrog.internal/security/fortify-sca:25.2.1-jdk21-review
+#
 # The adopted image is verified by pulling it. That pull is not overhead — it is
 # the availability check AND it warms the cache the scan is about to use. If the
 # mirror does not carry that tag yet, we say so and fall back to the configured
@@ -20,8 +29,14 @@
 #
 # Policy `pinned`: always use the configured image. No pull, no adoption.
 #
-# Usage:  resolve-image.sh <configured_image> <template_image> [runtime] [policy] [pull_mode]
+# Usage:  resolve-image.sh <configured_image> <template_image> [runtime] [policy]
+#                          [pull_mode] [preferred_variant]
 #         pull_mode is `pull` (default) or `no-pull` for dry-run resolution.
+#         preferred_variant overrides the tag's variant suffix — the caller
+#         detected what the project needs (see detect-java-release.sh). It beats
+#         both the configured and the template variant, because it is evidence
+#         from the codebase rather than a static guess. If the resulting image is
+#         not available, resolution falls back rather than failing the scan.
 # Prints: the effective image ref on stdout; diagnostics on stderr.
 # =============================================================================
 set -euo pipefail
@@ -31,6 +46,7 @@ TEMPLATE=${2:-}
 RUNTIME=${3:-${RUNTIME:-docker}}
 POLICY=${4:-${IMAGE_POLICY:-follow-component}}
 PULL_MODE=${5:-pull}
+PREFERRED_VARIANT=${6:-}
 
 case "$PULL_MODE" in
   pull|no-pull) ;;
@@ -41,6 +57,75 @@ case "$PULL_MODE" in
 esac
 
 emit() { printf '%s\n' "$1"; }
+
+# Pure parameter expansion, no `dirname`: a minimal airgapped userland need not
+# carry coreutils, and these helpers are tested under a stripped PATH.
+_ce_dir=${BASH_SOURCE[0]%/*}
+if [ "$_ce_dir" = "${BASH_SOURCE[0]}" ]; then _ce_dir=.; fi
+# shellcheck source=scripts/classify-error.sh
+. "$_ce_dir/classify-error.sh"
+
+# The availability check, with the one failure that must not be read as a
+# mirroring gap taken out first. Every fallback candidate below lives on the SAME
+# registry, so a registry that refused us will refuse those too: falling through
+# to "ask your platform team to mirror X" invents work for an image that is
+# already there, and hides a missing credential behind a plausible story. Stop
+# instead — see the CONFIG-ERROR: prefix in SKILL.md.
+pull_ok() {
+  if [ "$PULL_MODE" = no-pull ]; then return 0; fi
+  if pull_err=$("$RUNTIME" pull -q "$1" 2>&1); then return 0; fi
+  if is_auth_error "$pull_err"; then
+    echo "CONFIG-ERROR: the registry refused our credentials for $1, so no scanner image could be resolved — run '$RUNTIME login <registry-host>', or set the credentials named by settings.container_registry in scanner-preferences.yaml" >&2
+    exit 2
+  fi
+  return 1
+}
+
+# Split "registry/path/name:tag" into prefix ("registry/path"), name, and tag.
+# A tag is only a tag if the last '/'-segment contains ':' — otherwise a port in
+# the registry host (registry:5000/foo) would be mistaken for one.
+split_tag() {
+  local ref=$1 last
+  last=${ref##*/}
+  case "$last" in
+    *:*) printf '%s\t%s\n' "${ref%:*}" "${ref##*:}" ;;
+    *)   printf '%s\t%s\n' "$ref" "" ;;
+  esac
+}
+
+# Split "25.2.0-jdk21-review" into version "25.2.0" and variant "jdk21-review".
+# A tag with no '-', or whose head is not version-shaped ("latest", "8"), has no
+# variant and is returned whole with an empty second field.
+split_variant() {
+  local tag=$1 head
+  case "$tag" in
+    [0-9]*-*) head=${tag%%-*} ;;
+    *) printf '%s\t\n' "$tag"; return ;;
+  esac
+  case "$head" in
+    *[!0-9.]*) printf '%s\t\n' "$tag"; return ;;
+  esac
+  printf '%s\t%s\n' "$head" "${tag#*-}"
+}
+
+# Apply the caller's detected variant to the TEMPLATE ref up front, because the
+# template supplies the tag on every downstream path — including the shipped
+# state, where no image: is configured at all and the template ref is used whole.
+# TEMPLATE_ORIGINAL is kept so an estate that mirrors only the component's default
+# variant degrades to it instead of failing.
+TEMPLATE_ORIGINAL=$TEMPLATE
+if [ -n "$PREFERRED_VARIANT" ] && [ -n "$TEMPLATE" ]; then
+  tmpl_pair=$(split_tag "$TEMPLATE")
+  tmpl_repo=${tmpl_pair%%$'\t'*}
+  tmpl_tag=${tmpl_pair#*$'\t'}
+  tmpl_variant_pair=$(split_variant "$tmpl_tag")
+  tmpl_version=${tmpl_variant_pair%%$'\t'*}
+  tmpl_variant=${tmpl_variant_pair#*$'\t'}
+  if [ -n "$tmpl_variant" ] && [ "$tmpl_variant" != "$PREFERRED_VARIANT" ]; then
+    TEMPLATE="${tmpl_repo}:${tmpl_version}-${PREFERRED_VARIANT}"
+    echo "[image] project needs ${PREFERRED_VARIANT}; component defaults to ${tmpl_variant}" >&2
+  fi
+fi
 
 # No image: in config — the component is the sole source. This is the intended
 # steady state when the catalogue's templates already name your internal
@@ -63,9 +148,23 @@ if [ -z "$CONFIGURED" ]; then
   # there is nothing to fall back to, so an unavailable image is fatal here
   # rather than a warning — the alternative is a docker-run failure several
   # steps later with a far less useful message.
-  if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$TEMPLATE" >/dev/null 2>&1; then
+  if pull_ok "$TEMPLATE"; then
     emit "$TEMPLATE"
     exit 0
+  fi
+  # A detected variant is a preference, not a requirement. If the estate mirrors
+  # only the component's default variant, scan with that rather than not at all —
+  # a wrong-JDK scan is worse than a right one, but far better than none.
+  if [ "$TEMPLATE" != "$TEMPLATE_ORIGINAL" ]; then
+    echo "[image] WARNING: ${TEMPLATE} is not available from this registry." >&2
+    echo "[image]   Falling back to the component's default variant ${TEMPLATE_ORIGINAL}." >&2
+    echo "[image]   The scan will use a JDK that does not match the project — ask your" >&2
+    echo "[image]   platform team to mirror ${TEMPLATE}." >&2
+    if pull_ok "$TEMPLATE_ORIGINAL"; then
+      emit "$TEMPLATE_ORIGINAL"
+      exit 0
+    fi
+    TEMPLATE=$TEMPLATE_ORIGINAL
   fi
   echo "ERROR: the component's image is not available from this registry." >&2
   echo "  Component declares: ${TEMPLATE}" >&2
@@ -89,18 +188,6 @@ if [ -z "$TEMPLATE" ]; then
   exit 0
 fi
 
-# Split "registry/path/name:tag" into prefix ("registry/path"), name, and tag.
-# A tag is only a tag if the last '/'-segment contains ':' — otherwise a port in
-# the registry host (registry:5000/foo) would be mistaken for one.
-split_tag() {
-  local ref=$1 last
-  last=${ref##*/}
-  case "$last" in
-    *:*) printf '%s\t%s\n' "${ref%:*}" "${ref##*:}" ;;
-    *)   printf '%s\t%s\n' "$ref" "" ;;
-  esac
-}
-
 # Split the tab-separated pair in bash rather than with `cut`: coreutils is not
 # guaranteed on a minimal airgapped host, and run-scan.sh treats a non-zero exit
 # here as fatal -- a missing `cut` refused to scan at all instead of resolving
@@ -117,12 +204,41 @@ if [ -z "$template_tag" ] || [ "$template_tag" = "$configured_tag" ]; then
   exit 0
 fi
 
-candidate="${configured_repo}:${template_tag}"
+# The variant is the admin's call, not the component's. A Fortify tag carries the
+# JDK used to compile the target (25.2.0-jdk17-review vs -jdk21-review), so taking
+# the template's tag wholesale silently downgrades a Java 21 project to a JDK 17
+# analyzer -- the component's default overriding an explicit local choice. Extend
+# the existing rule (component owns the VERSION, admin owns the rest) one field
+# right: adopt the template's version, keep the configured variant.
+#
+# A PREFERRED_VARIANT outranks both and has already been folded into TEMPLATE
+# above, so skip this block entirely when one was supplied: what the codebase
+# demonstrably needs beats what someone typed into config months ago.
+configured_variant_pair=$(split_variant "$configured_tag")
+configured_variant=${configured_variant_pair#*$'\t'}
+template_variant_pair=$(split_variant "$template_tag")
+template_version=${template_variant_pair%%$'\t'*}
+template_variant=${template_variant_pair#*$'\t'}
+
+effective_tag=$template_tag
+if [ -z "$PREFERRED_VARIANT" ] &&
+   [ -n "$configured_variant" ] && [ -n "$template_variant" ] &&
+   [ "$configured_variant" != "$template_variant" ]; then
+  effective_tag="${template_version}-${configured_variant}"
+  echo "[image] keeping configured variant ${configured_variant} (component declares ${template_variant})" >&2
+  # Version matched too, so the configured ref already is the answer.
+  if [ "$effective_tag" = "$configured_tag" ]; then
+    emit "$CONFIGURED"
+    exit 0
+  fi
+fi
+
+candidate="${configured_repo}:${effective_tag}"
 
 echo "[image] component template declares ${template_tag}; configured ${configured_tag:-<untagged>}" >&2
 echo "[image] trying ${candidate}" >&2
 
-if [ "$PULL_MODE" = no-pull ] || "$RUNTIME" pull -q "$candidate" >/dev/null 2>&1; then
+if pull_ok "$candidate"; then
   echo "[image] using ${candidate} (component-tracked)" >&2
   emit "$candidate"
   exit 0

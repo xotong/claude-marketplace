@@ -115,6 +115,11 @@ settings:
   bind-mounted into the container; the Fortify maven build reads the same value.
   Exported as `APPSEC_PIP_INDEX_URL` (deliberately *not* `PIP_INDEX_URL`, which
   would repoint the developer's own `pip` in that terminal).
+- **build_credentials** — env var **names** holding Artifactory credentials for the
+  Fortify gradle build, defaulting to `ARTIFACTORY_USER` / `ARTIFACTORY_PASSWORD`
+  (what the CI component itself reads, so most estates need no entry). Change them
+  only if your environment already names its credentials differently — no secret is
+  ever written to this file.
 - **package_registries** — URL templates used to check, before the fix loop runs,
   whether a suggested upgrade is obtainable here. All empty (the shipped default)
   disables the check entirely. Placeholders: `{package}` `{version}` `{group_path}`
@@ -126,11 +131,20 @@ settings:
   |---|---|---|
   | available | 200, version confirmed | stays `fixable_candidate` — loop may attempt it |
   | absent | 404 | `blocked_registry_gap` — loop skips it, TRIAGE.md §3b lists it |
-  | unknown | timeout, auth failure, 5xx, no template | nothing changes |
+  | unauthorized | 401/403 | nothing changes, and a `CONFIG-ERROR:` is reported |
+  | unknown | timeout, 5xx, no template | nothing changes |
 
   `unknown` deliberately changes nothing: a registry you could not reach is not
   evidence a package is missing, and treating it as one would send developers
   chasing mirroring requests for packages that are already there.
+
+  `unauthorized` changes nothing either, for exactly the same reason — but it is a
+  separate verdict because the two need opposite handling. A timeout may fix
+  itself; a rejected credential never will. Folded into `unknown`, a mirror that
+  is not anonymous made every probe shrug, the whole registry-gap feature quietly
+  do nothing, and the run still read like a result. Preflight now asks each
+  configured registry one throwaway question up front so this surfaces in seconds
+  rather than after the scan.
 
   Gap findings still count toward the gate — a vulnerability you cannot fix yet is
   still a vulnerability. Container-scanning findings are never probed against a
@@ -241,6 +255,52 @@ Omitting `image:` is the intended steady state once your catalogue's templates
 name a registry you can reach — which means vendoring snapshots **from your own
 instance** (MIGRATION.md "Re-vendor"). Declare `image:` when your mirror path
 differs from the template's, or as the fallback for a tag you have not mirrored.
+
+**The JDK variant (Fortify) is automatic — there is nothing to configure.** A Fortify tag
+is `<version>-<variant>`, where the variant is the JDK that compiles your code
+(`jdk17-review` | `jdk21-review`) and the component always defaults to `jdk17-review`.
+Each run reads the repository's own build files and picks for you:
+
+```
+INFO: [Fortify SCA] Project targets Java 21; selecting jdk21-review
+```
+
+`scripts/detect-java-release.sh` reads `maven.compiler.release|source|target`,
+`java.version` and the compiler plugin's `<release>/<source>/<target>` from every
+`pom.xml`, and `JavaLanguageVersion.of(N)`, `jvmToolchain(N)` and
+`source|targetCompatibility` from every `*.gradle[.kts]` — every, not just
+`build.gradle`, so a `buildSrc` convention plugin is covered. A version referenced
+by name (`JavaLanguageVersion.of(javaVersion)`) is resolved from `gradle.properties`. It takes the **highest**
+release found anywhere — a JDK builds its own release and every earlier one, never a
+later one — and `scripts/select-jdk-variant.sh` maps it to the **smallest offered
+variant that can still compile it**. Which variants exist is read from the component
+**as resolved that run**, not hardcoded and not gated on this repo: publish
+`jdk25-review` and the next developer scan uses it for Java 22+ projects with no MR
+here — the same way `version: ~latest` already rolls out a new component version.
+Retire `jdk17-review` and it stops being selected just as directly. The checked-in
+`scanners/fortify-sast.contract` is the offline fallback for runs that cannot reach
+the catalogue; `check-drift` still reports the change either way. If nothing offered
+is new enough, the highest one runs and the scan says so. Generated copies under
+`target/` and `build/` are ignored. `.tool-versions`, `.sdkmanrc` and `.java-version` are
+deliberately **not** read: they pin a developer's local toolchain, which is often newer
+than what the build targets, and guessing high breaks builds that guessing low does not.
+
+Precedence, highest first:
+
+| Source | When it wins |
+|---|---|
+| `FORTIFY_VARIANT=jdk21-review` in the environment | always — the escape hatch for a repository the detector reads wrongly |
+| detected from the build files | whenever a release is found |
+| the variant in your `image:` tag | no release could be detected |
+| the component's default (`jdk17-review`) | nothing else said anything |
+
+Detection is a preference, never a requirement: if your registry does not carry the
+selected variant, the scan **warns and runs the component's default** rather than
+failing. Non-Java projects are unaffected — no release is detected, so nothing changes.
+
+Dependency scanning's `resolution_job_variant` (`openjdk17|openjdk21`) has the same shape
+but is not reachable locally — the skill runs the analyzer directly and never runs a
+resolution job.
 
 An image that can be neither derived nor configured **stops the scan with a
 non-zero exit**. It is never guessed and the scanner is never skipped: a skipped
