@@ -1,0 +1,261 @@
+spec:
+  inputs:
+    # Job specific Inputs
+    job-name:
+      default: fortify-scan
+      description: "Defines a job name"
+    stage:
+      default: sast
+      description: "Defines a job stage"
+    source-path:
+      default: src
+      description: "The path of the source code that you want to scan"
+    allow-failure:
+      default: true
+      type: boolean
+      description: "Allows the job to not fail if set to false"
+    downloaded-scan-report-name:
+      default: scan.fpr
+      description: "Name of scan report downloaded from SSC"
+    upload-srm-option:
+      type: string
+      default: "false"
+      description: "To include option to allow SRM component uploading"
+    language:
+      default: "javascript"
+      description: "The project language used. Accepted languages: python, javascript, maven, gradle"
+      options:
+        - maven
+        - gradle
+        - python
+        - javascript
+        - go
+
+    # Registry Inputs
+    registry:
+      description: "Define image registry"
+      default: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/
+    image:
+      default: fortify-sca
+      description: "Defines a job image"
+    image-tag:
+      default: "25.2.0"
+      description: "Defines a job image tag"
+    variant:
+      default: jdk17-review
+      description: "Define JDK version used for compilation"
+      options:
+        - jdk17-review
+        - jdk21-review
+
+    # Git Inputs
+    srm-branch:
+      default: $CI_COMMIT_REF_NAME
+      description: "Name of the branch to be created in SRM."
+    git-branch-name:
+      default: $CI_COMMIT_REF_NAME
+      description: "Name of the git branch. This branch will be used for analysis in SRM, SRM does not support tags as branch names."
+
+    # Maven Inputs
+    maven-setting-path:
+      default: settings.xml
+      description: "Define the maven settings file"
+
+    # Python Inputs
+    pip-index-url:
+      # jfrog.com is not a package index -- it serves 404 -- so the previous
+      # default made every install fail, leaving an empty venv and a scan that
+      # resolved no third-party imports while still exiting 0. Matches the
+      # dependency-scanning component's default. Override for an internal mirror.
+      default: "https://pypi.org/simple/"
+      description: "Python package index. Applied as UV_DEFAULT_INDEX and PIP_INDEX_URL. Must include the scheme."
+    python-version:
+      default: "3.12"
+      description: "Define the python version. Options: 3.10, 3.11, 3.12, 3.13, 3.14"
+      options:
+        - "3.10"
+        - "3.11"
+        - "3.12"
+        - "3.13"
+        - "3.14"
+    uv-version:
+      default: "0.11.28"
+      description: "Pinned uv version to install."
+    uv-installer-base:
+      default: "https://releases.astral.sh/github/uv/releases/download"
+      description: "Base URL the uv installer script is fetched from. Point at an internal JFrog mirror for air-gapped runners."
+    uv-python-install-mirror:
+      default: "https://github.com/astral-sh/python-build-standalone/releases/download"
+      description: "Base URL uv downloads the managed Python build from. Point at an internal JFrog mirror for air-gapped runners."
+    python-template-dirs:
+      default: ""
+      description: "Colon-separated Django/Jinja2 template directories, relative to the repo root. Set this if the scan logs 'unable to discover any Django/Jinja2 template directories' - SCA only autodiscovers templates in the project root and does not read Django's TEMPLATE_DIRS setting. Leave empty to keep autodiscovery."
+
+---
+
+include:
+  - component: $CI_SERVER_FQDN/lobster-thermidor/devops/ci-catalogue/srm-report-upload/srm-report-upload@~latest
+    inputs:
+      job-name: "$[[ inputs.job-name ]]-scan-upload"
+      needs-job: "$[[ inputs.job-name ]]-$[[ inputs.language ]]"
+      stage: "$[[ inputs.stage ]]"
+      scan-report-name: "$[[ inputs.downloaded-scan-report-name ]]"
+      srm-branch: "$[[ inputs.srm-branch ]]"
+      git-branch-name: "$[[ inputs.git-branch-name ]]"
+      upload-srm: "$[[ inputs.upload-srm-option ]]"
+
+# Hidden job name MUST stay templated on job-name. It is a fixed key otherwise, so including this
+# component more than once in a pipeline made every include define the same ".fortify-base" and the
+# last one silently won - every job then scanned with the last include's source-path.
+".$[[ inputs.job-name ]]-base":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.registry ]]$[[ inputs.image ]]:$[[ inputs.image-tag ]]-$[[ inputs.variant ]]
+  dependencies: []
+  script: &fortify_scan_and_report |
+    echo $[[ inputs.source-path ]]
+    sourceanalyzer -b $CI_JOB_ID -scan -f $[[ inputs.downloaded-scan-report-name ]] $(if [ -e "filter_list.txt" ]; then echo "-filter filter_list.txt"; fi)
+    BIRTReportGenerator -format HTML -output fortify.html -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "Developer Workbook"
+    BIRTReportGenerator -format PDF -output fortify.pdf -source $[[ inputs.downloaded-scan-report-name ]] -template "Developer Workbook"
+    ReportGenerator -format XML -f fortify.xml -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "DeveloperWorkbook.xml"
+    result=$(FPRUtility -information -signature -search -query "[fortify priority order]:critical OR [fortify priority order]:high AND [issue age]:!removed AND suppressed:false" -filterSet "Security Auditor View" -project $[[ inputs.downloaded-scan-report-name ]]);
+    echo $result
+
+    echo "Running conversion script and uploading to gitlab vulnerability dashboard..."
+    python3 /usr/local/bin/fortify_to_gitlab_sast.py $[[ inputs.downloaded-scan-report-name ]] -o gl-sast-report.json --prepend-path "$[[ inputs.source-path ]]"
+
+  allow_failure: $[[ inputs.allow-failure ]]
+  artifacts:
+    name: fortify-results
+    reports:
+      sast: gl-sast-report.json
+    paths:
+      - fortify.html
+      - fortify.pdf
+      - fortify.xml
+      - gl-sast-report.json
+      - $[[ inputs.downloaded-scan-report-name ]]
+    when: always
+
+# For Maven
+$[[ inputs.job-name ]]-maven:
+  # extends (not just !reference) so the job also inherits artifacts/reports:sast, allow_failure and dependencies from the base.
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "maven"'
+  script:
+    - sourceanalyzer -debug -verbose -b $CI_JOB_ID  -clean
+    - sourceanalyzer -debug -verbose -b $CI_JOB_ID  mvn clean install -s $[[ inputs.maven-setting-path ]] "-DskipTests"
+    - *fortify_scan_and_report
+
+# For gradle
+$[[ inputs.job-name ]]-gradle:
+  # extends (not just !reference) so the job also inherits artifacts/reports:sast, allow_failure and dependencies from the base.
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "gradle"'
+  script:
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - sourceanalyzer -b $CI_JOB_ID $[[ inputs.source-path ]]/gradlew -p $[[ inputs.source-path ]] clean assemble -Partifactory_user=${ARTIFACTORY_USER:-$ARTIFACTORY_USERNAME} -Partifactory_password=$ARTIFACTORY_PASSWORD
+    - sourceanalyzer -b $CI_JOB_ID $[[ inputs.source-path ]]
+    - *fortify_scan_and_report
+
+# For Python
+$[[ inputs.job-name ]]-python:
+  # extends (not just !reference) so the job also inherits artifacts/reports:sast, allow_failure and dependencies from the base.
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "python"'
+  variables:
+    # Set here, not exported mid-script, so the index reaches every uv call. UV_INDEX_URL omitted: deprecated spelling, warns on install.
+    UV_DEFAULT_INDEX: $[[ inputs.pip-index-url ]]
+    PIP_INDEX_URL: $[[ inputs.pip-index-url ]]
+    UV_PYTHON_INSTALL_MIRROR: $[[ inputs.uv-python-install-mirror ]]
+  script:
+    - echo "Installing UV"
+    - curl -LsSf "$[[ inputs.uv-installer-base ]]/$[[ inputs.uv-version ]]/uv-installer.sh" | sh
+    - source $HOME/.local/bin/env
+    - uv --version
+    # Mirror comes from UV_PYTHON_INSTALL_MIRROR in variables: above.
+    - uv python install $[[ inputs.python-version ]]
+    - uv python pin --global $[[ inputs.python-version ]]
+    - uv venv
+    - source .venv/bin/activate
+    - python -V
+    # Best-effort: bulk install is atomic, so one unbuildable package (psycopg2 needs pg_config) must not empty the venv or cancel the scan.
+    - |
+      SRC="$[[ inputs.source-path ]]"
+      if [ -f "$SRC/requirements.txt" ]; then
+        REQ="$SRC/requirements.txt"
+        echo "Installing dependencies from $REQ"
+        uv pip install -r "$REQ" || {
+          echo "WARNING: bulk install failed; retrying per-package for a partial venv"
+          while read -r pkg; do
+            pkg=$(printf '%s' "$pkg" | sed 's/#.*//; s/[[:space:]]*$//')
+            case "$pkg" in ''|-*) continue;; esac
+            uv pip install "$pkg" >/dev/null 2>&1 || echo "  unresolvable: $pkg"
+          done < "$REQ"
+        }
+      elif [ -f "$SRC/pyproject.toml" ]; then
+        echo "Installing project at $SRC"
+        uv pip install "$SRC" || echo "WARNING: project install failed; continuing with an empty venv."
+      else
+        echo "No requirements.txt or pyproject.toml under $SRC; standard-library imports only."
+      fi
+
+    # A broken index makes every install fail, and the scan then completes green
+    # having resolved no third-party imports at all. Say so loudly: an empty venv
+    # next to a real manifest is a degraded scan, not a clean one.
+    - |
+      INSTALLED=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null \
+        | xargs -I{} sh -c 'ls -1 "{}" 2>/dev/null' | grep -cE '\.dist-info$' || true)
+      SRC="$[[ inputs.source-path ]]"
+      if [ "${INSTALLED:-0}" -eq 0 ] && { [ -f "$SRC/requirements.txt" ] || [ -f "$SRC/pyproject.toml" ]; }; then
+        echo "WARNING: $SRC declares dependencies but 0 packages installed into the venv."
+        echo "WARNING: SCA will not resolve third-party imports; findings will miss dataflow through them."
+        echo "WARNING: check the package index is reachable -- pip-index-url is $[[ inputs.pip-index-url ]]"
+      else
+        echo "Installed $INSTALLED package(s) into the venv for SCA to resolve against."
+      fi
+
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - |
+      # Glob rather than hardcode: uv lays out lib/ and symlinks lib64/ only on 64-bit Linux.
+      PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+      # SCA bundles only a subset of the stdlib and ignores PYTHONPATH, so the interpreter's own
+      # stdlib dir must be on -python-path or imports like logging/json/textwrap stay unresolved.
+      # sysconfig reports the base interpreter's path even from inside the venv.
+      STDLIB=$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')
+      [ -d "$STDLIB" ] && PYPATH="$PYPATH:$STDLIB"
+      echo "SCA python-path: $PYPATH"
+      # Template dirs are opt-in: SCA's autodiscover only looks in the project root and ignores
+      # Django's own TEMPLATE_DIRS setting, so an app with templates elsewhere needs them named.
+      TPL="$[[ inputs.python-template-dirs ]]"
+      if [ -n "$TPL" ]; then
+        set -- -django-template-dirs "$TPL" -jinja-template-dirs "$TPL" -disable-template-autodiscover
+      else
+        set --
+      fi
+      sourceanalyzer -b $CI_JOB_ID -debug-verbose -python-path "$PYPATH" -python-version 3 "$@" $[[ inputs.source-path ]]
+    - *fortify_scan_and_report
+
+# For JS
+$[[ inputs.job-name ]]-javascript:
+  # extends (not just !reference) so the job also inherits artifacts/reports:sast, allow_failure and dependencies from the base.
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" ==  "javascript"'
+  script:
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - sourceanalyzer -b $CI_JOB_ID -debug-verbose -Dcom.fortify.sca.follow.imports=false $[[ inputs.source-path ]]
+    - *fortify_scan_and_report
+
+$[[ inputs.job-name ]]-go:
+  # extends (not just !reference) so the job also inherits artifacts/reports:sast, allow_failure and dependencies from the base.
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "go"'
+  script:
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - (cd $[[ inputs.source-path ]] && go mod download)
+    - sourceanalyzer -b $CI_JOB_ID -debug-verbose $[[ inputs.source-path ]]
+    - *fortify_scan_and_report
