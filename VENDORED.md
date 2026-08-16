@@ -120,16 +120,28 @@ The `appsec-scan` skill vendors offline fallback snapshots of 4 GitLab CI/CD Cat
 
 | Component | Tag | Fetched | Source |
 |---|---|---|---|
-| `lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast` | 25.2.0 | 2026-07-25 | gitlab.com (private, authenticated fetch) |
-| `lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning` | 1.0.0, 1.1.0 | 2026-07-25 | gitlab.com (private, authenticated fetch) |
-| `lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection` | 1.0.0 | 2026-07-15 | gitlab.com (private, authenticated fetch) |
-| `lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning` | 1.0.0, 1.1.0 | 2026-07-25 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast` | 25.2.0, 25.2.1 | 2026-08-16 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/dependency-scanning/dependency-scanning` | 1.0.0, 1.1.0, 1.2.0, 1.3.1 | 2026-08-16 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/secret-detection/secret-detection` | 1.0.0 | 2026-08-16 | gitlab.com (private, authenticated fetch) |
+| `lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning` | 1.0.0, 1.1.0 | 2026-08-16 | gitlab.com (private, authenticated fetch) |
+
+Each tag directory also carries a `.commit` stamp recording the commit the snapshot came from, so a tag that is later MOVED onto different content is reported as `DRIFT:` instead of being served stale from the offline fallback. `fortify-sast@25.2.0` was re-tagged exactly that way on 2026-08-15.
 
 Each snapshot includes `template.yml`, `README.md`, and `AGENTS.md`. Prior tag directories are kept; the resolver picks the highest. Refresh snapshots quarterly per UPDATE-GUIDE.md Scenario 6, and regenerate `plugins/appsec/skills/appsec-scan/scanners/*.contract` at the same time so component input/report drift keeps being detected.
 
 **Note:** `fortify-sast@25.2.0` was re-fetched on 2026-07-25. The earlier copy had been taken partly from HEAD and predated the component's registry move — it still named `…/ci-catalogue/fortify-sast/` for scanner images, whereas the tag now declares `…/ci-catalogue/docker-images/`. The `fortify-sast` project has no container registry of its own; all images live in the `docker-images` project.
 
 **Since v3.3.0 these snapshots decide which image runs**, not just what the offline fallback says: with `image:` omitted (how both profiles now ship), `catalog.sh template-image` reads the scanner image out of `template.yml`. A snapshot vendored from gitlab.com therefore names gitlab.com's registry — an airgapped estate must re-vendor from its own instance (`scripts/revendor.sh`) before rollout. `revendor.sh` refuses to vendor a component that resolved `[offline-fallback]`, so a stale snapshot cannot confirm itself.
+
+#### Known defects INSIDE these snapshots — do not "fix" them here
+
+Automated security review flags `curl -k` in `dependency-scanning/.../template.yml` on every re-vendor. It is a real defect, and it is **deliberately left byte-identical to upstream**:
+
+- A snapshot that differs from upstream makes the drift gate compare runners against fiction — the same false-clean these snapshots exist to prevent, and the same rule as *never hand-edit a contract to silence drift*.
+- It is not reachable through this skill. The line lives in the component's `<job-name>-python` **resolution** job; `scanners/gitlab-dependency-scanning.sh` runs `/analyzer run` and invokes no installer at all.
+- This skill's own runner does not copy the pattern: `scanners/fortify-sast.sh` verifies, then tries the configured CA, and reaches `-k` only behind `settings.python_runtime.allow_insecure_uv_download` (off by default), announcing every use as `APPSEC-INSECURE-TLS`.
+
+Tracked upstream at `dependency-scanning#3`. It was previously "part 2" of that project's `#1`, which was closed while the defect remained — which is why it now has an issue of its own.
 
 ### appsec-scan: catalogue components deliberately NOT covered
 
