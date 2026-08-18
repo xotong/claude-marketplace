@@ -16,8 +16,8 @@ The scanners are the four components of the private GitLab CI/CD Catalog at
 
 | Category | Catalog component | Shipped version | Runner | What runs locally |
 |---|---|---|---|---|
-| SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.0) | `fortify-sast.sh` | `fortify-sca` image from the catalogue's `docker-images` project; maven, gradle, python, javascript, go |
-| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.1.0) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output; then `sbom-vuln-scan.sh` matches that SBOM offline with Trivy — **Trivy's advisories, not GitLab's** |
+| SAST | `…/fortify-sast/fortify-sast` | `~latest` (25.2.1) | `fortify-sast.sh` | `fortify-sca` image from the catalogue's `docker-images` project; maven, gradle, python, javascript, go |
+| Dependency Scanning (SCA) | `…/dependency-scanning/dependency-scanning` | `~latest` (1.3.1) | `gitlab-dependency-scanning.sh` | GitLab-native SCA analyzer, SBOM output; then `sbom-vuln-scan.sh` matches that SBOM offline with Trivy — **Trivy's advisories, not GitLab's** |
 | Secret Detection | `…/secret-detection/secret-detection` | `~latest` (1.0.0) | `secret-detection.sh` | GitLab-native Gitleaks-based analyzer |
 | Container Scanning | `…/container-scanning/container-scanning` | `~latest` (1.1.0) | `gitlab-container-scanning.sh` | GTCS; registry image or locally built archive |
 
@@ -304,12 +304,21 @@ template it resolved. No WebFetch, no discovery, no other hosts:
 | `scripts/resolve-base-image.sh` | `settings.container_registry.base_repo` / `hardened_repo` |
 | `resolve-jq.sh` / `resolve-python.sh` | `settings.jq.install_url` / `settings.python.install_url` |
 
-One deliberate exception: with `settings.python_runtime` configured, the Fortify Python
-arm fetches uv, a CPython build and the project's packages **from the configured mirror**,
-inside the container. That is the only way to match CI's import resolution, and without it
-the scan finds strictly less than CI does — upstream measured 28 vs 46 vulnerabilities on
-the same code. Unset, it degrades to stdlib-only and announces `APPSEC-PY-DEGRADED:`; it
-never falls through to the public internet, which is where the component's own defaults
+One conditional exception, and it is off by default. The Fortify Python arm mirrors the
+component's `translation-mode`:
+
+- `normal` (the component's default and ours) translates only your own code. No dependency
+  install, no venv, no uv, **no network at all** — the stdlib path comes from the scanner
+  image's own `python3`. Complete coverage of your code; no dataflow through third-party
+  libraries.
+- `full` also follows imports into dependencies, which requires fetching uv, a CPython build
+  and the project's packages **from the configured mirror**, inside the container. The
+  component is blunt about the cost: it "CAN TAKE HOURS" and on a 230-package service
+  "exceeded 3h and produced no report", so it is rarely the right trade for a pre-push scan.
+
+`full` that cannot be honoured announces `APPSEC-PY-DEGRADED:` — a result thinner than the
+mode that was requested. `normal` announces nothing, because it is not a shortfall. Neither
+path ever falls through to the public internet, which is where the component's own defaults
 point.
 
 Component **versions** come from `/releases`, not from git tags: GitLab's `~latest` means

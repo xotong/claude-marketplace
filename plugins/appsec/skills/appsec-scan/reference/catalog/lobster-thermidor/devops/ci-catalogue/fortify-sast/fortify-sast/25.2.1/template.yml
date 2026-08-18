@@ -91,6 +91,25 @@ spec:
       default: ""
       description: "Colon-separated Django/Jinja2 template directories, relative to the repo root. Set this if the scan logs 'unable to discover any Django/Jinja2 template directories' - SCA only autodiscovers templates in the project root and does not read Django's TEMPLATE_DIRS setting. Leave empty to keep autodiscovery."
 
+    # SCA translates whatever -python-path resolves; there is no resolve-without-
+    # translate mode for python. So this is a genuine either/or, not a dial.
+    # Measured on a 230-package langchain service (crAPI services/chatbot):
+    #   normal  64s, all 21 of the project's files translated, 0 dependency files
+    #   full    hit a 25m cap having translated 6,016 dependency files and
+    #           0 project files; a 3h CI run behaved identically and produced
+    #           no report at all
+    # -exclude '**/site-packages/**' and -Dcom.fortify.sca.follow.imports=false
+    # were both measured and are INERT for python (the -exclude run translated
+    # MORE site-packages files than the baseline). Both are documented for
+    # JavaScript/TypeScript only. Do not reach for them here.
+    translation-mode:
+      type: string
+      default: "normal"
+      options:
+        - normal
+        - full
+      description: "normal: translate only the project's own code; dependencies are neither installed nor placed on -python-path. Seconds to minutes, complete coverage of your code, no dataflow through third-party libraries (their imports log as warnings). full: also follow imports into installed dependencies. CAN TAKE HOURS and may exceed the job timeout on a large dependency tree - on a 230-package service it exceeded 3h and produced no report. Use full only on a runner with a budget to match."
+
 ---
 
 include:
@@ -184,7 +203,11 @@ $[[ inputs.job-name ]]-python:
     # Best-effort: bulk install is atomic, so one unbuildable package (psycopg2 needs pg_config) must not empty the venv or cancel the scan.
     - |
       SRC="$[[ inputs.source-path ]]"
-      if [ -f "$SRC/requirements.txt" ]; then
+      if [ "$[[ inputs.translation-mode ]]" != "full" ]; then
+        echo "translation-mode=normal: skipping dependency install."
+        echo "  Dependencies are only useful to SCA if they go on -python-path, and anything"
+        echo "  on -python-path gets translated -- which is what makes full mode take hours."
+      elif [ -f "$SRC/requirements.txt" ]; then
         REQ="$SRC/requirements.txt"
         echo "Installing dependencies from $REQ"
         uv pip install -r "$REQ" || {
@@ -206,10 +229,14 @@ $[[ inputs.job-name ]]-python:
     # having resolved no third-party imports at all. Say so loudly: an empty venv
     # next to a real manifest is a degraded scan, not a clean one.
     - |
-      INSTALLED=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null \
-        | xargs -I{} sh -c 'ls -1 "{}" 2>/dev/null' | grep -cE '\.dist-info$' || true)
+      # `ls -d .venv/lib*/...` matches lib AND the lib64 symlink to it, so a naive
+      # glob counts every .dist-info twice (it reported 460 where uv said 230).
+      INSTALLED=$(ls -1 .venv/lib/python*/site-packages 2>/dev/null \
+        | grep -cE '\.dist-info$' || true)
       SRC="$[[ inputs.source-path ]]"
-      if [ "${INSTALLED:-0}" -eq 0 ] && { [ -f "$SRC/requirements.txt" ] || [ -f "$SRC/pyproject.toml" ]; }; then
+      if [ "$[[ inputs.translation-mode ]]" != "full" ]; then
+        : # normal mode installs nothing by design; an empty venv is expected
+      elif [ "${INSTALLED:-0}" -eq 0 ] && { [ -f "$SRC/requirements.txt" ] || [ -f "$SRC/pyproject.toml" ]; }; then
         echo "WARNING: $SRC declares dependencies but 0 packages installed into the venv."
         echo "WARNING: SCA will not resolve third-party imports; findings will miss dataflow through them."
         echo "WARNING: check the package index is reachable -- pip-index-url is $[[ inputs.pip-index-url ]]"
@@ -220,12 +247,18 @@ $[[ inputs.job-name ]]-python:
     - sourceanalyzer -b $CI_JOB_ID -clean
     - |
       # Glob rather than hardcode: uv lays out lib/ and symlinks lib64/ only on 64-bit Linux.
-      PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+      if [ "$[[ inputs.translation-mode ]]" = "full" ]; then
+        PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+        echo "translation-mode=full: following imports into site-packages. This can take HOURS."
+      else
+        PYPATH=""
+      fi
       # SCA bundles only a subset of the stdlib and ignores PYTHONPATH, so the interpreter's own
       # stdlib dir must be on -python-path or imports like logging/json/textwrap stay unresolved.
       # sysconfig reports the base interpreter's path even from inside the venv.
       STDLIB=$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')
-      [ -d "$STDLIB" ] && PYPATH="$PYPATH:$STDLIB"
+      # Bare && as the last command in the block would abort the step under set -e.
+      if [ -d "$STDLIB" ]; then PYPATH="${PYPATH:+$PYPATH:}$STDLIB"; fi
       echo "SCA python-path: $PYPATH"
       # Template dirs are opt-in: SCA's autodiscover only looks in the project root and ignores
       # Django's own TEMPLATE_DIRS setting, so an app with templates elsewhere needs them named.
@@ -236,6 +269,20 @@ $[[ inputs.job-name ]]-python:
         set --
       fi
       sourceanalyzer -b $CI_JOB_ID -debug-verbose -python-path "$PYPATH" -python-version 3 "$@" $[[ inputs.source-path ]]
+
+    # Coverage guard. A scan can burn its whole budget following imports and
+    # translate almost none of the project's own code while still exiting 0 --
+    # that is exactly how a 3h timeout went unnoticed. -show-files lists the
+    # files actually in the build, so compare it against what is on disk.
+    - |
+      WANT=$(find "$[[ inputs.source-path ]]" -name '*.py' | wc -l)
+      GOT=$(sourceanalyzer -b $CI_JOB_ID -show-files 2>/dev/null | grep -c '\.py$' || true)
+      echo "Translated $GOT of $WANT .py file(s) under $[[ inputs.source-path ]]"
+      if [ "${WANT:-0}" -gt 0 ] && [ "${GOT:-0}" -lt "${WANT:-0}" ]; then
+        echo "WARNING: translation did not cover the whole source tree ($GOT of $WANT)."
+        echo "WARNING: findings will be incomplete. In full mode this usually means SCA spent"
+        echo "WARNING: its budget inside site-packages -- try translation-mode: normal."
+      fi
     - *fortify_scan_and_report
 
 # For JS

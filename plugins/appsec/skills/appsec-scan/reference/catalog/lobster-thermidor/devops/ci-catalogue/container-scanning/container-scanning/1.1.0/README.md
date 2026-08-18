@@ -1,4 +1,4 @@
-<!-- Vendored snapshot: fetched 2026-08-16 from https://gitlab.com CI/CD Catalog (component tag 1.1.0, commit e35c9f26) -->
+<!-- Vendored snapshot: fetched 2026-08-19 from https://gitlab.com CI/CD Catalog (component tag 1.1.0, commit e35c9f26) -->
 # Container Scanning
 
 This is a version of Gitlab Container Scan v5.2.0  prepared for our platform

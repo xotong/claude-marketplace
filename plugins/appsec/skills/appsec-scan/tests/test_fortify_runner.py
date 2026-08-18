@@ -130,22 +130,46 @@ class FortifyRunnerTest(unittest.TestCase):
         )
 
 
-    def test_python_without_uv_settings_declares_itself_degraded(self) -> None:
-        """The failure being fixed is a QUIET shortfall, not a missing scan: with
-        no mirror configured the scan still runs, finds less than CI, and used to
-        say nothing at all. Upstream measured the same code at 28 vs 46."""
+    def test_normal_mode_is_not_reported_as_degraded(self) -> None:
+        """translation-mode=normal is the component's DEFAULT, not a shortfall.
+
+        The component added the input precisely because full mode "CAN TAKE
+        HOURS" — on a 230-package service it exceeded 3h and produced no report.
+        Calling the default degraded would cry wolf on every run and train people
+        to ignore the one message that matters."""
         result = self._run(self._repo("d"), language="python")
+        output = result.stdout + result.stderr
+        self.assertNotIn("APPSEC-PY-DEGRADED", output)
+        self.assertIn("translation-mode=normal", output)
+        # Still names the stdlib: upstream measured that as both more accurate
+        # AND faster (349s -> 259s), and normal mode wants it too.
+        self.assertIn("-python-path", result.stdout)
+
+    def test_full_mode_that_cannot_be_honoured_is_degraded(self) -> None:
+        """This is the real degraded case: a thinner result than the mode asked
+        for, which now disagrees with a CI pipeline running full."""
+        result = self._run(self._repo("f"), language="python",
+                           FORTIFY_TRANSLATION_MODE="full")
         output = result.stdout + result.stderr
         self.assertIn("APPSEC-PY-DEGRADED:", output)
         self.assertIn("python_runtime", output)
-        # Degraded still beats nothing: the stdlib is named either way, which
-        # upstream measured as both more accurate AND faster (349s -> 259s).
-        self.assertIn("-python-path", result.stdout)
+
+    def test_normal_mode_never_installs_uv_even_when_configured(self) -> None:
+        """Normal mode needs no venv, so it must not spend time or network on one
+        just because the full-mode settings happen to be present."""
+        result = self._run(self._repo("n2"), language="python",
+                           FORTIFY_TRANSLATION_MODE="normal",
+                           UV_VERSION="0.0.0",
+                           UV_INSTALLER_BASE="https://mirror.invalid/uv")
+        output = result.stdout + result.stderr
+        self.assertNotIn("installing uv", output)
+        self.assertNotIn("uv-installer.sh", output)
 
     def test_python_never_reaches_the_public_internet_to_close_the_gap(self) -> None:
         """An unconfigured airgapped host must degrade, not silently fetch uv
         from astral.sh — the component's own default points there."""
-        result = self._run(self._repo("n"), language="python")
+        result = self._run(self._repo("n"), language="python",
+                           FORTIFY_TRANSLATION_MODE="full")
         output = result.stdout + result.stderr
         self.assertNotIn("astral.sh", output)
         self.assertNotIn("uv-installer.sh", output)
@@ -215,6 +239,7 @@ class UvTlsLadderTest(unittest.TestCase):
             APP_NAME="demo",
             UV_VERSION="0.0.0",
             UV_INSTALLER_BASE="https://mirror.invalid/uv",
+            FORTIFY_TRANSLATION_MODE="full",
         )
         env.update(extra)
         return subprocess.run(["sh", str(RUNNER)], cwd=repo, env=env,

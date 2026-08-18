@@ -3,7 +3,7 @@
 # Scanner      : Fortify SAST
 # Target       : Source tree in analyzer workspace
 # CI component : lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast@~latest
-# Last synced  : 2026-08-12
+# Last synced  : 2026-08-19
 # Image env var: FORTIFY_SAST_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Languages    : maven, gradle, python, javascript, go
 # Output       : fortify-sast.fpr
@@ -86,13 +86,23 @@ case "${FORTIFY_LANGUAGE}" in
     # empty venv 28 vulnerabilities, populated venv 46. This arm used to pass no
     # -python-path at all — thinner than the component, and silent about it.
     #
-    # Two tiers, and never a third that quietly reaches the public internet:
-    #   uv settings configured -> replicate CI exactly (uv, interpreter and
-    #                             packages all from the configured mirror)
-    #   not configured         -> stdlib only, and SAY the scan is degraded
-    PY_RESOLUTION=stdlib-only
+    # translation-mode mirrors the component input of the same name.
+    #   normal (default)  translate only our own code. No install, no venv, no uv,
+    #                     no network. The component's own description: seconds to
+    #                     minutes, complete coverage of your code, no dataflow
+    #                     through third-party libraries.
+    #   full              also follow imports into dependencies. The component
+    #                     warns this "CAN TAKE HOURS" and on a 230-package service
+    #                     "exceeded 3h and produced no report".
+    #
+    # Normal is NOT a degraded scan -- it is a mode CI runs too, and reporting it
+    # as degraded would cry wolf on every default run. Only `full` that could not
+    # be honoured is degraded, because then the result is thinner than the one
+    # that was asked for.
+    TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}"
+    PY_RESOLUTION="$TRANSLATION_MODE"
     PYPATH=
-    if [ -n "${UV_INSTALLER_BASE:-}" ] && [ -n "${UV_VERSION:-}" ]; then
+    if [ "$TRANSLATION_MODE" = full ] && [ -n "${UV_INSTALLER_BASE:-}" ] && [ -n "${UV_VERSION:-}" ]; then
       echo "[fortify] installing uv ${UV_VERSION} from ${UV_INSTALLER_BASE}" >&2
       UV_URL="${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh"
       UV_SH=$(mktemp)
@@ -188,7 +198,7 @@ case "${FORTIFY_LANGUAGE}" in
             uv pip install "${SOURCE_PATH}" >&2 || echo "[fortify] project install failed" >&2
           fi
           PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
-          [ -z "$PYPATH" ] || PY_RESOLUTION=full
+          [ -z "$PYPATH" ] || PY_RESOLUTION=full-achieved
         fi
       else
         echo "[fortify] uv install failed — falling back to stdlib-only resolution" >&2
@@ -211,9 +221,18 @@ case "${FORTIFY_LANGUAGE}" in
       PYPATH="${PYPATH:+$PYPATH:}$STDLIB"
     fi
 
-    if [ "$PY_RESOLUTION" != full ]; then
-      echo "APPSEC-PY-DEGRADED: third-party imports were NOT resolved, so this scan finds less than CI will. Set settings.python_runtime.{uv_version,uv_installer_base,uv_python_install_mirror} to your mirror." >&2
-    fi
+    case "$TRANSLATION_MODE:$PY_RESOLUTION" in
+      normal:*)
+        echo "[fortify] translation-mode=normal: own code only, dependencies not translated (matches the component default)." >&2
+        ;;
+      full:full-achieved) ;;
+      full:*)
+        # Asked for full, could not deliver it. THIS is the degraded case: the
+        # result is thinner than the mode that was requested, and if CI runs full
+        # the two now disagree.
+        echo "APPSEC-PY-DEGRADED: translation-mode=full was requested but dependencies could not be resolved, so this scan finds less than a full CI scan will. Set settings.python_runtime.{uv_version,uv_installer_base,uv_python_install_mirror} to your mirror, or set translation_mode: normal to match." >&2
+        ;;
+    esac
 
     # Opt-in and all-or-nothing: -disable-template-autodiscover REPLACES
     # discovery, so naming one directory in a repo with two loses the second.

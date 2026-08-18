@@ -379,6 +379,7 @@ END {
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
   print "SETTING\tpython.install_url\t" settings["python.install_url"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
+  print "SETTING\tpython_runtime.translation_mode\t" settings["python_runtime.translation_mode"]
   print "SETTING\tpython_runtime.uv_version\t" settings["python_runtime.uv_version"]
   print "SETTING\tpython_runtime.uv_installer_base\t" settings["python_runtime.uv_installer_base"]
   print "SETTING\tpython_runtime.uv_python_install_mirror\t" settings["python_runtime.uv_python_install_mirror"]
@@ -435,6 +436,7 @@ pip_index_url=
 maven_settings=
 # Default to the names the CI component itself uses, so an estate that already
 # sets those needs no config at all.
+translation_mode=normal
 uv_version=
 uv_installer_base=
 uv_python_install_mirror=
@@ -512,6 +514,7 @@ while IFS="$tab" read -r record field1 field2 field3; do
         ca_bundle) ca_bundle=$field2 ;;
         pip_index_url) pip_index_url=$field2 ;;
         maven_settings) maven_settings=$field2 ;;
+        python_runtime.translation_mode) [ -z "$field2" ] || translation_mode=$field2 ;;
         python_runtime.uv_version) uv_version=$field2 ;;
         python_runtime.uv_installer_base) uv_installer_base=$field2 ;;
         python_runtime.uv_python_install_mirror) uv_python_install_mirror=$field2 ;;
@@ -731,6 +734,7 @@ emit CA_BUNDLE "$ca_bundle"
 # and break every unrelated `pip install` in that terminal.
 emit APPSEC_PIP_INDEX_URL "$pip_index_url"
 emit MAVEN_SETTINGS "$maven_settings"
+emit FORTIFY_TRANSLATION_MODE "$translation_mode"
 emit UV_VERSION "$uv_version"
 emit UV_INSTALLER_BASE "$uv_installer_base"
 emit UV_PYTHON_INSTALL_MIRROR "$uv_python_install_mirror"

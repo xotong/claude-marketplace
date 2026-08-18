@@ -9,20 +9,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- **Local Python SAST no longer under-reports in silence.** Fortify SCA does not run your
-  code, it resolves imports statically, so an unresolved import is dataflow it cannot
-  follow — upstream measured the same crAPI code at **28** vulnerabilities with an empty
-  venv and **46** with a populated one. This runner passed no `-python-path` at all. It now
-  has two tiers and never a third: with `settings.python_runtime.{uv_version,
-  uv_installer_base,uv_python_install_mirror}` set it replicates CI exactly, fetching uv,
-  the interpreter and the packages **from your mirror**; unset, it resolves the stdlib only
-  and prints `APPSEC-PY-DEGRADED:` naming the settings to fix. It never reaches the public
-  internet to close the gap, which is where the component's own defaults point. Even the
-  degraded tier names the stdlib, which upstream measured as both more accurate and faster
-  (349s → 259s). `FORTIFY_PYTHON_TEMPLATE_DIRS` maps to the component's
-  `python-template-dirs`, all-or-nothing on purpose: it implies
-  `-disable-template-autodiscover`, which REPLACES discovery, so naming one directory in a
-  repo with two loses the second.
+- **Python SAST now mirrors the component's `translation-mode`, defaulting to `normal`.**
+  The component gained the input after measuring what following imports into dependencies
+  actually costs: "CAN TAKE HOURS", and on a 230-package service it "exceeded 3h and
+  produced no report". `normal` translates only your own code — no dependency install, no
+  venv, **no uv and no network** — and reads the stdlib path from the scanner image's own
+  `python3`. `full` keeps the uv path, for estates whose pipelines set it.
+  `APPSEC-PY-DEGRADED` means exactly one thing: `full` was requested and could not be
+  delivered, so the result is thinner than the mode asked for and disagrees with a full CI
+  scan. `normal` reports what it did and nothing more — announcing the default as degraded
+  would train people to ignore the one message that matters.
+
+- **The Python arm passes `-python-path` at all.** It previously passed none, so even the
+  stdlib went unresolved and imports like `logging`/`json`/`textwrap` logged as warnings —
+  thinner than the component in every mode. SCA bundles only a subset of the stdlib and
+  ignores `PYTHONPATH`, so the interpreter's own path has to be named; upstream measured
+  naming it as both more accurate **and faster** (349s → 259s). In `full` mode
+  site-packages joins it. Neither path reaches the public internet, which is where the
+  component's own defaults point.
+- `FORTIFY_PYTHON_TEMPLATE_DIRS` maps to the component's `python-template-dirs`,
+  all-or-nothing on purpose: it implies `-disable-template-autodiscover`, which REPLACES
+  discovery, so naming one directory in a repo with two loses the second.
 - **`~latest` now means what GitLab means by it.** Version selection reads `/releases`
   rather than git tags. GitLab resolves `@~latest` to the latest *released* catalog
   version; a tag with no release is not one. fortify-sast sat at tag 25.2.0 with zero
@@ -46,8 +53,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Known upstream
 
-- The vendored `dependency-scanning@1.2.0` template contains `curl -k` in its uv installer
-  step (TLS verification disabled). Deferred upstream as part 2 of the catalogue's issue #1.
+- The vendored `dependency-scanning@1.3.1` template contains `curl -k` in its uv installer
+  step (TLS verification disabled). Tracked upstream at `dependency-scanning#3` — it was "part 2" of that project's #1, which
+  was closed while the defect remained.
   It is **not** edited here: a vendored snapshot that differs from upstream would make the
   drift gate lie, which is the same false-clean these snapshots exist to prevent. This
   skill's own runner uses `curl -LsSf` without `-k`.

@@ -113,25 +113,47 @@ settings:
 
   # How the Fortify python scan resolves imports.
   #
+  # MIRROR YOUR CI. The component takes a translation-mode input, so this setting
+  # exists to match whatever your .gitlab-ci.yml passes — not to be tuned
+  # independently. A local scan in a different mode than CI is exactly the
+  # disagreement this skill exists to prevent.
+  #
+  #   normal (the component's default, and ours)
+  #       Translate only your own code. Dependencies are neither installed nor
+  #       placed on -python-path. Seconds to minutes. Complete coverage of your
+  #       code; no dataflow THROUGH third-party libraries, whose imports log as
+  #       warnings. Needs no uv, no venv and no network.
+  #   full
+  #       Also follow imports into installed dependencies. The component's own
+  #       description is blunt about the cost: "CAN TAKE HOURS and may exceed the
+  #       job timeout on a large dependency tree - on a 230-package service it
+  #       exceeded 3h and produced no report." For a pre-push scan that is
+  #       usually the wrong trade; set it only if your pipeline sets it.
+  translation_mode: normal
+  #
+  # The settings below apply to `full` ONLY. In normal mode the skill reads the
+  # stdlib path from the scanner image's own python3 and never touches uv, so all
+  # of this can stay empty.
+  #
   # Fortify SCA does not run your code; it resolves imports statically, and an
   # import it cannot resolve is dataflow it cannot follow. Upstream measured the
   # difference on crAPI: an empty venv reported 28 vulnerabilities, a populated
-  # one reported 46. So a python scan with no dependencies installed does not
-  # merely run "a bit thinner" — it under-reports, and it used to do so silently.
+  # one reported 46. In `full` mode a venv that failed to populate is therefore a
+  # broken scan pretending to be a thin one.
   #
   # The component builds that venv with uv, which needs THREE separate artifacts,
-  # each from a different place. Empty (the shipped default) means the component's
-  # own defaults apply, and those point at the public internet:
+  # each from a different place. Empty means the component's own defaults apply,
+  # and those point at the public internet:
   #
   #   uv_version              which uv to install; also pins reproducibility
   #   uv_installer_base       where uv itself comes from  (default: astral.sh)
   #   uv_python_install_mirror where the CPython build comes from (default: github)
   #
-  # Set all three to your internal mirror and the local scan replicates CI's
-  # resolution exactly. Leave them empty on an airgapped host and the scan still
-  # runs, but with STDLIB-ONLY resolution — third-party imports stay unresolved
-  # and the summary says so rather than passing the thinner result off as a scan.
-  # It never silently reaches the public internet to close the gap.
+  # Set all three to your internal mirror and a `full` scan replicates CI exactly.
+  # Leave them empty and `full` cannot be honoured: the scan falls back to normal
+  # resolution and says so, rather than passing a thinner result off as the full
+  # one you asked for. It never silently reaches the public internet to close the
+  # gap. In normal mode none of this is consulted and nothing is reported.
   #
   # NOTE: with these set, the scanner container makes network calls (to your
   # mirror only). That is the one exception to "no network inside the containers"

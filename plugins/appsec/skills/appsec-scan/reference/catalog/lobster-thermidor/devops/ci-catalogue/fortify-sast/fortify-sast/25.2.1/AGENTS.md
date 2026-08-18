@@ -33,7 +33,8 @@ summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, Java
 | `srm-branch` | no | `$CI_COMMIT_REF_NAME` | Branch name created in SRM |
 | `git-branch-name` | no | `$CI_COMMIT_REF_NAME` | Git branch used for SRM analysis. SRM does not support tags as branch names |
 | `maven-setting-path` | no | `settings.xml` | Maven settings file (maven only). The file must exist in the repo or the maven build fails |
-| `pip-index-url` | no | `https://jfrog.com/artifactory/api/pypi/pypi/simple` | Python package index (python only). Applied as `UV_DEFAULT_INDEX` and `PIP_INDEX_URL`. Must include the scheme |
+| `pip-index-url` | no | `https://pypi.org/simple/` | Python package index (python only, `full` mode). Applied as `UV_DEFAULT_INDEX` and `PIP_INDEX_URL`. Must include the scheme |
+| `translation-mode` | no | `normal` | `normal` translates only the project's own code; `full` also follows imports into installed dependencies (python only). **`full` can take hours and may not finish** — see *Python translation mode* below |
 | `python-version` | no | `3.12` | Python version (python only). One of `3.10`–`3.14` |
 | `python-template-dirs` | no | *(empty)* | Colon-separated Django/Jinja2 template directories, relative to the repo root (python only). Set this if the scan logs *unable to discover any Django/Jinja2 template directories* |
 | `uv-version` | no | `0.11.28` | Pinned uv version to install (python only) |
@@ -49,15 +50,43 @@ summary: Fortify SCA static analysis of source code (Maven, Gradle, Python, Java
 
 ## Python environment
 
-The python job builds a virtualenv with `uv` before running `sourceanalyzer`, so that SCA can resolve
-third-party imports via `-python-path`. `uv` and the managed Python interpreter are fetched from the
-public internet by default; for air-gapped runners, point `uv-installer-base` and
-`uv-python-install-mirror` at internal JFrog mirrors.
+What the python job does depends on `translation-mode`.
 
-SCA is given both the venv's `site-packages` **and** the interpreter's standard-library
-directory on `-python-path`. SCA bundles only a subset of the stdlib and ignores `PYTHONPATH`, so
-without the stdlib path, imports such as `logging`, `json` and `textwrap` resolve as unknown and
-taint through them is lost.
+In **`normal`** (the default) no dependencies are installed and only the interpreter's
+standard-library directory goes on `-python-path`. Third-party imports log as warnings. This is the
+mode to use in CI.
+
+In **`full`** the job builds a virtualenv with `uv` and puts the venv's `site-packages` on
+`-python-path` as well. `uv` and the managed Python interpreter are fetched from the public internet
+by default; for air-gapped runners, point `uv-installer-base` and `uv-python-install-mirror` at
+internal JFrog mirrors.
+
+Either way the interpreter's standard-library directory is on `-python-path`. SCA bundles only a
+subset of the stdlib and ignores `PYTHONPATH`, so without it, imports such as `logging`, `json` and
+`textwrap` resolve as unknown and taint through them is lost.
+
+## Python translation mode
+
+SCA translates whatever `-python-path` resolves; there is no resolve-without-translate mode for
+Python. So `full` does not merely *read* dependencies, it translates the whole transitive closure.
+
+Measured on a 230-package langchain service:
+
+| mode | result |
+| --- | --- |
+| `normal` | 64s, all 21 project files translated, report produced |
+| `full` | exceeded a 3h job timeout having translated 6,100 dependency files and **1 of 21** project files, producing no report |
+
+A 60-package Django service completes `full` in ~4 minutes and gains genuine signal — `django` and
+`jwt` resolve, so taint traces through request handling, the ORM and auth. Pick per source, not per
+platform.
+
+Every run prints `Translated N of M .py file(s) under <source-path>`. If N is far below M, the scan
+spent its budget inside `site-packages`; switch to `normal`.
+
+`-exclude '**/site-packages/**'` and `-Dcom.fortify.sca.follow.imports=false` do **not** work for
+Python — both were measured and are inert (the `-exclude` run translated *more* site-packages files
+than the baseline). They are documented for JavaScript/TypeScript only.
 
 Template scanning is opt-in via `python-template-dirs`. SCA autodiscovers templates only in the
 project root and does **not** read Django's `TEMPLATE_DIRS` setting, so an app whose templates live
