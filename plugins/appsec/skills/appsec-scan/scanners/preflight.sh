@@ -45,6 +45,18 @@ if [ "${APPSEC_AIRGAP:-}" = "true" ] && [ "${gitlab_instance%/}" = "https://gitl
   ERRORS+=("profile '${APPSEC_PROFILE:-catalog}' targets gitlab.com and is not allowed when airgap=true")
 fi
 
+# curl has to actually BE curl. Found on a real machine: a 21-byte shell script
+# (`printf 000`) had been written over conda's curl and sat ahead of /usr/bin on
+# PATH. It exits 0 for everything, so `command -v curl` is satisfied and every
+# call returns "000" — catalog fetches fail to the vendored snapshot, every
+# registry probe answers `unknown`, and nothing anywhere says the tool is broken.
+# A wedged Docker daemon taught the same lesson: presence is not usability.
+if command -v curl >/dev/null 2>&1; then
+  if ! curl --version 2>/dev/null | head -n 1 | grep -qi '^curl '; then
+    ERRORS+=("the 'curl' on PATH ($(command -v curl)) is not curl — it does not identify itself to 'curl --version'. Something is shadowing the real binary; every catalog fetch and registry probe would silently fail through it.")
+  fi
+fi
+
 # A path that is configured but unreadable fails every scanner request from
 # inside the container, and does it in a way that reads like a network outage
 # rather than a trust problem — which is why it used to cost a day to diagnose.

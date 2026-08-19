@@ -174,7 +174,12 @@ misconfigured mirror produced a scan that read like a result.
 ### Step 1 — Mirror the analyzer images to your registry
 
 Mirror these four images into your internal JFrog (their scan rules and
-vulnerability DBs are baked in — **no network happens inside the containers**):
+vulnerability DBs are baked in — **scanning itself needs no network inside the
+containers**). The one exception is the Fortify Python arm: if you configure
+`settings.python_runtime`, it fetches uv, an interpreter and the project's
+packages **from your mirror** to resolve imports. Leave it unset and the scan
+degrades to stdlib-only resolution and says so — it never reaches the public
+internet to close the gap:
 
 ```
 registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sca:25.2.0-jdk17-review  → <your-registry>/security/fortify-sca:25.2.0-jdk17-review

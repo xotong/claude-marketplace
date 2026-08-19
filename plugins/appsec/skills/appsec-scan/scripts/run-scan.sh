@@ -804,7 +804,7 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
       if $DRY_RUN; then
         while IFS='|' read -r u_path u_lang; do
           [ -n "$u_path" ] || continue
-          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e FORTIFY_TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}" -e UV_VERSION="${UV_VERSION:-}" -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
         done <"$SAST_UNITS_FILE"
       else
         # Units run sequentially inside ONE background job: a Fortify container
@@ -845,6 +845,15 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
               -e SOURCE_PATH="$u_path" \
               -e FORTIFY_LANGUAGE="$u_lang" \
               -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
+              -e FORTIFY_TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}" \
+              -e UV_VERSION="${UV_VERSION:-}" \
+              -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" \
+              -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" \
+              -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" \
+              -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" \
+              -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" \
+              -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" \
+              -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}" \
               -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
               -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
               "${FORTIFY_SAST_IMAGE}" \
@@ -988,6 +997,18 @@ if ! $DRY_RUN; then
     if [ -n "$unscanned" ]; then
       warning "[Fortify SCA] No report for:$unscanned"
       record_skip sast "Fortify produced no report for:$unscanned — that source was NOT analysed, even though other units in this repository were. Read .appsec-results/fortify-sast.log for the per-unit cause, fix it, then re-run this skill."
+    fi
+    # Only fires when translation_mode: full was asked for and not delivered.
+    # `normal` is the component's default and a legitimate mode CI runs too, so
+    # reporting it here would cry wolf on every run. A report still exists either
+    # way, so this is NOT a coverage gap — it is a result thinner than the mode
+    # that was requested, which is the quiet shortfall worth surfacing.
+    if grep -q '^APPSEC-PY-DEGRADED:' .appsec-results/fortify-sast.log 2>/dev/null; then
+      warning "[Fortify SCA] translation_mode: full was requested but could not be honoured —"
+      warning "  dependencies were not resolved, so this scan finds less than a full CI scan will."
+      warning "  It is not a coverage gap: the scanner ran and produced a report."
+      warning "  Fix: point settings.python_runtime.{uv_version,uv_installer_base,uv_python_install_mirror}"
+      warning "  at your mirror, or set translation_mode: normal to match. Details in .appsec-results/fortify-sast.log"
     fi
   fi
 

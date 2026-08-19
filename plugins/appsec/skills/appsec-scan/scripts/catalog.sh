@@ -107,6 +107,42 @@ curl_get() {
   return "$curl_status"
 }
 
+# Which versions exist, normalised to [{name, commit}].
+#
+# Read from RELEASES, not tags. `~latest` means "the latest RELEASED catalog
+# version" to GitLab, and a tag with no release behind it is not one: fortify-sast
+# sat at tag 25.2.0 with zero catalog versions while this resolver called it
+# healthy and [online], so a pipeline using @~latest would have failed on a
+# version the skill had just approved. The component READMEs tell consumers to
+# use @~latest, so that is the meaning this has to match.
+#
+# Tags stay as a fallback rather than a hard failure: an instance whose
+# components are tagged but never released still resolves, and says so. Exact
+# pins are unaffected either way — a tag is a valid git ref with or without a
+# release — but see the not-published warning in fetch_online.
+CATALOG_VERSION_SOURCE=
+versions_json() {
+  local instance_url encoded_project token_env releases_url tags_url raw count
+  instance_url=$1
+  encoded_project=$2
+  token_env=${3:-}
+
+  releases_url="${instance_url%/}/api/v4/projects/${encoded_project}/releases?per_page=100"
+  if raw=$(curl_get "$releases_url" "$token_env" 2>/dev/null); then
+    count=$(printf '%s' "$raw" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo 0)
+    if [ "${count:-0}" -gt 0 ]; then
+      CATALOG_VERSION_SOURCE=releases
+      printf '%s' "$raw" | jq '[.[] | {name: .tag_name, commit: (.commit.id // "")}]'
+      return 0
+    fi
+  fi
+
+  tags_url="${instance_url%/}/api/v4/projects/${encoded_project}/repository/tags?per_page=100"
+  raw=$(curl_get "$tags_url" "$token_env" 2>/dev/null) || return 1
+  CATALOG_VERSION_SOURCE=tags
+  printf '%s' "$raw" | jq '[.[] | {name: .name, commit: (.commit.id // "")}]'
+}
+
 # Tag policy: strip one leading "v", exclude prereleases containing "-", then
 # keep dotted numeric segments and choose the highest one numerically.
 stable_release_tags() {
@@ -137,6 +173,15 @@ is_newer_tag() {
   newer=$2
   highest=$(printf '%s\n%s\n' "$older" "$newer" | highest_tag)
   [ "$older" != "$newer" ] && [ "$highest" = "$newer" ]
+}
+
+# The commit a vendored snapshot was taken from, or "" for snapshots predating
+# the stamp. Empty is not an error: it only means the move check cannot run.
+snapshot_commit_of() {
+  local file
+  file="$(skill_dir)/reference/catalog/$1/$2/.commit"
+  [ -f "$file" ] || return 0
+  tr -d ' \t\n' <"$file" 2>/dev/null || true
 }
 
 fallback_tag_dir() {
@@ -190,7 +235,7 @@ fetch_optional_agents() {
 fetch_online() {
   local instance_url component_path version cache_dir token_env project_path component_name encoded_project tags_url
   local tags_json stable_tags candidate_tags chosen_tag excluded_tags cache_path readme_url newest_stable
-  local tags_available
+  local tags_available chosen_commit snapshot_commit
 
   instance_url=$1
   component_path=$2
@@ -201,11 +246,10 @@ fetch_online() {
   project_path=${component_path%/*}
   component_name=${component_path##*/}
   encoded_project=$(urlencode_path "$project_path")
-  tags_url="${instance_url%/}/api/v4/projects/${encoded_project}/repository/tags?per_page=100"
 
   tags_json=
   tags_available=false
-  if tags_json=$(curl_get "$tags_url" "$token_env" 2>/dev/null); then
+  if tags_json=$(versions_json "$instance_url" "$encoded_project" "$token_env"); then
     tags_available=true
     stable_tags=$(printf '%s' "$tags_json" | stable_release_tags) || return 1
     candidate_tags=$(printf '%s\n' "$stable_tags" | sort_tags_desc) || return 1
@@ -249,6 +293,27 @@ fetch_online() {
 
   if [ "$version" != "~latest" ] && [ -n "$newest_stable" ] && is_newer_tag "$version" "$newest_stable"; then
     echo "ADVISORY: ${component_path} pinned ${version}, newer stable ${newest_stable} available" >&2
+  fi
+
+  # An instance whose components are tagged but never released still resolves —
+  # falling back rather than failing — but `include: ...@~latest` in a real
+  # pipeline reads the catalog, not the tag list, so say which one answered.
+  if [ "$CATALOG_VERSION_SOURCE" = tags ]; then
+    echo "DRIFT: ${component_path} resolved from git tags — this project publishes no releases, so it has no CI/CD Catalog versions and '@~latest' will not resolve in a pipeline. Create a release for the tag." >&2
+  fi
+
+  # The tag a snapshot was taken at can be MOVED. fortify-sast 25.2.0 was
+  # re-tagged onto new content while the vendored snapshot kept the old, and
+  # nothing could tell: same tag, same filenames, different component. Record the
+  # commit so the comparison below is possible at all.
+  chosen_commit=$(printf '%s' "$tags_json" | jq -r --arg t "$chosen_tag" \
+    '.[] | select((.name // "" | sub("^v"; "")) == $t or .name == $t) | .commit' 2>/dev/null | head -n 1)
+  if [ -n "${chosen_commit:-}" ] && [ "$chosen_commit" != "null" ]; then
+    printf '%s\n' "$chosen_commit" >"$cache_path/.commit"
+    snapshot_commit=$(snapshot_commit_of "$component_path" "$chosen_tag")
+    if [ -n "$snapshot_commit" ] && [ "$snapshot_commit" != "$chosen_commit" ]; then
+      echo "DRIFT: ${component_path}@${chosen_tag} moved — the vendored snapshot came from ${snapshot_commit:0:8}, the instance now serves ${chosen_commit:0:8}. Offline runs would use the OLD component under the same tag. Re-vendor: bash scripts/revendor.sh ${instance_url} [token_env]" >&2
+    fi
   fi
 
   printf '%s@%s [online]\n' "$component_path" "$chosen_tag"

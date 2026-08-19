@@ -9,6 +9,62 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- **Python SAST now mirrors the component's `translation-mode`, defaulting to `normal`.**
+  The component gained the input after measuring what following imports into dependencies
+  actually costs: "CAN TAKE HOURS", and on a 230-package service it "exceeded 3h and
+  produced no report". `normal` translates only your own code — no dependency install, no
+  venv, **no uv and no network** — and reads the stdlib path from the scanner image's own
+  `python3`. `full` keeps the uv path, for estates whose pipelines set it.
+  `APPSEC-PY-DEGRADED` means exactly one thing: `full` was requested and could not be
+  delivered, so the result is thinner than the mode asked for and disagrees with a full CI
+  scan. `normal` reports what it did and nothing more — announcing the default as degraded
+  would train people to ignore the one message that matters.
+
+- **The Python arm passes `-python-path` at all.** It previously passed none, so even the
+  stdlib went unresolved and imports like `logging`/`json`/`textwrap` logged as warnings —
+  thinner than the component in every mode. SCA bundles only a subset of the stdlib and
+  ignores `PYTHONPATH`, so the interpreter's own path has to be named; upstream measured
+  naming it as both more accurate **and faster** (349s → 259s). In `full` mode
+  site-packages joins it. Neither path reaches the public internet, which is where the
+  component's own defaults point.
+- `FORTIFY_PYTHON_TEMPLATE_DIRS` maps to the component's `python-template-dirs`,
+  all-or-nothing on purpose: it implies `-disable-template-autodiscover`, which REPLACES
+  discovery, so naming one directory in a repo with two loses the second.
+- **`~latest` now means what GitLab means by it.** Version selection reads `/releases`
+  rather than git tags. GitLab resolves `@~latest` to the latest *released* catalog
+  version; a tag with no release is not one. fortify-sast sat at tag 25.2.0 with zero
+  catalog versions while this resolver called it `[online]` and healthy, so a pipeline
+  using the syntax the component README documents would have failed on a version the skill
+  had just approved. An instance publishing no releases still resolves from tags — a
+  fallback, not a failure — and says so.
+- **A moved tag is detectable.** Snapshots record the commit behind the tag. fortify-sast
+  25.2.0 was re-tagged onto new content (11075 bytes vs the vendored 5955) while the
+  snapshot kept the old component; same tag, same filenames, different component, and
+  nothing could tell. A live resolve whose commit differs now reports `DRIFT:` naming both.
+  Snapshots predating the stamp have no `.commit` and skip the check — absent is not a
+  mismatch.
+
+### Changed
+
+- Re-vendored all four component snapshots from gitlab.com. This is what makes the drift
+  gate honest: it compares runners against the snapshots, so stale snapshots made "No
+  contract drift" true and meaningless. fortify-sast 25.2.0 now carries the merged uv work;
+  dependency-scanning moves 1.1.0 → 1.2.0.
+
+### Known upstream
+
+- The vendored `dependency-scanning@1.3.1` template contains `curl -k` in its uv installer
+  step (TLS verification disabled). Tracked upstream at `dependency-scanning#3` — it was "part 2" of that project's #1, which
+  was closed while the defect remained.
+  It is **not** edited here: a vendored snapshot that differs from upstream would make the
+  drift gate lie, which is the same false-clean these snapshots exist to prevent. This
+  skill's own runner uses `curl -LsSf` without `-k`.
+- Issue #12 remains open and is **not** fixed by the component MR: `-python-path` resolves
+  imports for the front end but does not add the library to the build, so a taint path
+  routing *through* a dependency is still missed. Recovering it needs site-packages as a
+  translation target too — adding that locally alone would make the local scan find things
+  CI does not, breaking the mirror in the other direction.
+
 - **Fortify now fans out one scan per build tree, the way CI does.** CI includes
   the component once per service, each with its own `source-path`. Locally there are no
   includes to read, so run-scan.sh detected ONE language from the repo root and scanned

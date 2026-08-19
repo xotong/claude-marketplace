@@ -462,13 +462,50 @@ def _unit_prefix(path):
         return ""
     entries = [line.split("|", 1)[0].strip() for line in lines if "|" in line]
     entries = [entry for entry in entries if entry]
-    if len(entries) <= 1:
+    if not entries:
         return ""
+    # Verified against fortify-sca 25.2.0: a scan of `src` reports `app.py`, not
+    # `src/app.py`. Paths are relative to the tree sourceanalyzer was pointed at,
+    # so the prefix is needed even with ONE unit — this used to return "" there
+    # and left every finding pointing at a path that does not exist in the repo.
+    if len(entries) == 1:
+        return "" if entries[0] == "." else entries[0].rstrip("/")
     for source_path in entries:
         slug = re.sub(r"[^A-Za-z0-9._-]", "-", source_path) if source_path != "." else "root"
         if path.name == "fortify-sast-" + slug + ".fpr":
             return "" if source_path == "." else source_path.rstrip("/")
     return ""
+
+
+def _fvdl_primary_location(vulnerability):
+    """(file, line) for a real Fortify vulnerability, or (None, None).
+
+    Two shapes, in order of how specific they are:
+      <Def key="PrimaryLocation.file" value="app.py"/>  — the reported location
+      <FunctionDeclarationSourceLocation path=".." line=".."/> — enclosing function
+    Both are attributes, which is why an element-text search never saw them.
+    """
+    definitions = {}
+    for node in vulnerability.iter():
+        if strip_ns(node.tag).lower() != "def":
+            continue
+        key = node.get("key")
+        if key:
+            definitions[key] = node.get("value")
+    file_name = definitions.get("PrimaryLocation.file")
+    line = definitions.get("PrimaryLocation.line")
+    if file_name and line:
+        return file_name, line
+
+    for node in vulnerability.iter():
+        tag = strip_ns(node.tag).lower()
+        if tag not in ("functiondeclarationsourcelocation", "sourcelocation"):
+            continue
+        candidate_file = node.get("path")
+        candidate_line = node.get("line")
+        if candidate_file:
+            return file_name or candidate_file, line or candidate_line
+    return file_name, line
 
 
 def parse_fvdl_root(root, path, prefix=""):
@@ -492,6 +529,19 @@ def parse_fvdl_root(root, path, prefix=""):
             instance_info,
             ["LineStart", "FunctionDeclarationSourceLocation/Line", "Line"],
         )
+        # Real Fortify output keeps none of that under InstanceInfo. Verified
+        # against fortify-sca 25.2.0: InstanceInfo holds only InstanceID,
+        # InstanceSeverity, Confidence and MetaInfo, while the location lives in
+        # AnalysisInfo as <Def key="PrimaryLocation.file"> and as ATTRIBUTES on
+        # SourceLocation/FunctionDeclarationSourceLocation. The element-based
+        # lookup above matched the hand-written test fixtures and nothing else,
+        # so every real Fortify finding fell through to the fallback and was
+        # reported at the .fpr file itself — no source file, no line, and every
+        # finding sharing one location for fingerprinting.
+        if not file_name or not line:
+            found_file, found_line = _fvdl_primary_location(vulnerability)
+            file_name = file_name or found_file
+            line = line or found_line
         rule_id = first_text(class_info, ["ClassID", "RuleID"])
         if prefix and file_name:
             file_name = prefix + "/" + file_name.lstrip("/")

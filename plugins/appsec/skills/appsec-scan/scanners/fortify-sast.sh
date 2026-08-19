@@ -3,7 +3,7 @@
 # Scanner      : Fortify SAST
 # Target       : Source tree in analyzer workspace
 # CI component : lobster-thermidor/devops/ci-catalogue/fortify-sast/fortify-sast@~latest
-# Last synced  : 2026-08-12
+# Last synced  : 2026-08-19
 # Image env var: FORTIFY_SAST_IMAGE (full ref — set from the profile's image: by load-prefs.sh)
 # Languages    : maven, gradle, python, javascript, go
 # Output       : fortify-sast.fpr
@@ -81,9 +81,174 @@ case "${FORTIFY_LANGUAGE}" in
     sourceanalyzer -b "${FORTIFY_BUILD_ID}" "${SOURCE_PATH}"
     ;;
   python)
+    # SCA does not run the code, it resolves imports statically, so an import it
+    # cannot resolve is dataflow it cannot follow. Upstream measured it on crAPI:
+    # empty venv 28 vulnerabilities, populated venv 46. This arm used to pass no
+    # -python-path at all — thinner than the component, and silent about it.
+    #
+    # translation-mode mirrors the component input of the same name.
+    #   normal (default)  translate only our own code. No install, no venv, no uv,
+    #                     no network. The component's own description: seconds to
+    #                     minutes, complete coverage of your code, no dataflow
+    #                     through third-party libraries.
+    #   full              also follow imports into dependencies. The component
+    #                     warns this "CAN TAKE HOURS" and on a 230-package service
+    #                     "exceeded 3h and produced no report".
+    #
+    # Normal is NOT a degraded scan -- it is a mode CI runs too, and reporting it
+    # as degraded would cry wolf on every default run. Only `full` that could not
+    # be honoured is degraded, because then the result is thinner than the one
+    # that was asked for.
+    TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}"
+    PY_RESOLUTION="$TRANSLATION_MODE"
+    PYPATH=
+    if [ "$TRANSLATION_MODE" = full ] && [ -n "${UV_INSTALLER_BASE:-}" ] && [ -n "${UV_VERSION:-}" ]; then
+      echo "[fortify] installing uv ${UV_VERSION} from ${UV_INSTALLER_BASE}" >&2
+      UV_URL="${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh"
+      UV_SH=$(mktemp)
+
+      # Trust the internal CA for EVERY tool, not just this one curl call.
+      #
+      # `update-ca-trust` is the usual way to install a CA, and it cannot run
+      # here: verified against fortify-sca 25.2.0, the container is uid 1000 and
+      # /etc/pki/ca-trust/source/anchors is not writable. Concatenating the
+      # system bundle with ours into a writable file and exporting the standard
+      # variables reaches the same end without root — and unlike `curl --cacert`
+      # it also covers uv's OWN downloads, the interpreter and every package.
+      # Passing --cacert to the installer fetch alone left uv itself untrusting.
+      appsec_trust_ca() {
+        [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] || return 1
+        _b=/tmp/appsec-ca-bundle.pem
+        : >"$_b" || return 1
+        for _sys in /etc/pki/tls/certs/ca-bundle.crt \
+                    /etc/ssl/certs/ca-certificates.crt \
+                    /etc/ssl/cert.pem; do
+          [ -r "$_sys" ] && cat "$_sys" >>"$_b" && break
+        done
+        cat "${ADDITIONAL_CA_CERT_BUNDLE}" >>"$_b" || return 1
+        # curl, python/requests and uv each read a different one of these.
+        export SSL_CERT_FILE="$_b" CURL_CA_BUNDLE="$_b" REQUESTS_CA_BUNDLE="$_b"
+        return 0
+      }
+
+      # Ask before assuming: if TLS already verifies, there is nothing to fix and
+      # nothing to weaken.
+      #
+      # Deliberately WITHOUT -f. With it, an HTTP 404 exits 22 and is
+      # indistinguishable from a certificate failure — so a mirror that is
+      # perfectly trusted but simply does not carry this uv version would be
+      # diagnosed as "TLS could not be verified", and on an estate with
+      # allow_insecure_uv_download set that would disable verification to solve a
+      # missing file. Without -f, a non-zero exit means the transport itself
+      # failed; the real fetch below still uses -f and reports the 404 as a 404.
+      tls_ok() { curl -sS --max-time 30 -o /dev/null "$UV_URL" 2>/dev/null; }
+
+      UV_GOT=false
+      UV_TLS=verified
+      if tls_ok; then
+        UV_GOT=true
+      elif appsec_trust_ca && tls_ok; then
+        UV_TLS=ca-bundle
+        echo "[fortify] TLS verified via settings.ca_bundle; exported for uv and pip too" >&2
+        UV_GOT=true
+      elif [ "${ALLOW_INSECURE_UV_DOWNLOAD:-false}" = true ]; then
+        UV_TLS=insecure
+        UV_GOT=true
+      else
+        echo "[fortify] TLS to ${UV_INSTALLER_BASE} could not be verified." >&2
+        echo "[fortify]   Set settings.ca_bundle to your internal CA. If it genuinely cannot" >&2
+        echo "[fortify]   verify, settings.python_runtime.allow_insecure_uv_download: true" >&2
+        echo "[fortify]   permits an unverified download — read what that means first." >&2
+      fi
+
+      if $UV_GOT; then
+        if [ "$UV_TLS" = insecure ]; then
+          echo "APPSEC-INSECURE-TLS: uv is being downloaded with certificate verification DISABLED (-k) and piped to sh." >&2
+          echo "APPSEC-INSECURE-TLS:   Anything able to intercept that request could run arbitrary code in this scanner." >&2
+          echo "APPSEC-INSECURE-TLS:   Fix settings.ca_bundle, then set allow_insecure_uv_download: false." >&2
+          curl -LsSf -k "$UV_URL" -o "$UV_SH" || UV_GOT=false
+        else
+          curl -LsSf "$UV_URL" -o "$UV_SH" || UV_GOT=false
+        fi
+      fi
+
+      if $UV_GOT && sh "$UV_SH" >&2 && . "$HOME/.local/bin/env" 2>/dev/null; then
+        rm -f "$UV_SH"
+        [ -z "${FORTIFY_PYTHON_VERSION:-}" ] || uv python install "${FORTIFY_PYTHON_VERSION}" >&2 || true
+        if uv venv >&2 && . .venv/bin/activate; then
+          if [ -f "${SOURCE_PATH}/requirements.txt" ]; then
+            REQ="${SOURCE_PATH}/requirements.txt"
+            # Bulk install is atomic: one unbuildable package (psycopg2 wants
+            # pg_config, which a scanner image has no reason to ship) must
+            # degrade the venv, not empty it and take the scan with it.
+            uv pip install -r "$REQ" >&2 || {
+              echo "[fortify] bulk install failed; retrying per-package" >&2
+              UNRESOLVED=0
+              while read -r pkg; do
+                pkg=$(printf '%s' "$pkg" | sed 's/#.*//; s/[[:space:]]*$//')
+                case "$pkg" in ''|-*) continue ;; esac
+                uv pip install "$pkg" >/dev/null 2>&1 || {
+                  echo "[fortify]   unresolvable: $pkg" >&2
+                  UNRESOLVED=$((UNRESOLVED + 1))
+                }
+              done <"$REQ"
+              [ "$UNRESOLVED" -eq 0 ] || echo "[fortify] ${UNRESOLVED} package(s) unresolvable — resolution is partial" >&2
+            }
+          elif [ -f "${SOURCE_PATH}/pyproject.toml" ]; then
+            uv pip install "${SOURCE_PATH}" >&2 || echo "[fortify] project install failed" >&2
+          fi
+          PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+          [ -z "$PYPATH" ] || PY_RESOLUTION=full-achieved
+        fi
+      else
+        echo "[fortify] uv install failed — falling back to stdlib-only resolution" >&2
+      fi
+    fi
+
+    # SCA bundles only a subset of the stdlib and ignores PYTHONPATH, so the
+    # interpreter's own stdlib must be named or logging/json/textwrap stay
+    # unresolved. Worth it even in the degraded tier: upstream saw the scan get
+    # both more accurate AND faster (349s -> 259s).
+    # `python` exists only inside an activated venv; the bare fortify-sca image
+    # ships python3 and no python at all. The component's own template gets away
+    # with `python` because it always runs after `activate` — the degraded tier
+    # here does not, and using `python` made this silently resolve nothing, which
+    # is the entire value of the degraded tier.
+    PY_BIN=python
+    command -v "$PY_BIN" >/dev/null 2>&1 || PY_BIN=python3
+    STDLIB=$("$PY_BIN" -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])' 2>/dev/null || true)
+    if [ -n "$STDLIB" ] && [ -d "$STDLIB" ]; then
+      PYPATH="${PYPATH:+$PYPATH:}$STDLIB"
+    fi
+
+    case "$TRANSLATION_MODE:$PY_RESOLUTION" in
+      normal:*)
+        echo "[fortify] translation-mode=normal: own code only, dependencies not translated (matches the component default)." >&2
+        ;;
+      full:full-achieved) ;;
+      full:*)
+        # Asked for full, could not deliver it. THIS is the degraded case: the
+        # result is thinner than the mode that was requested, and if CI runs full
+        # the two now disagree.
+        echo "APPSEC-PY-DEGRADED: translation-mode=full was requested but dependencies could not be resolved, so this scan finds less than a full CI scan will. Set settings.python_runtime.{uv_version,uv_installer_base,uv_python_install_mirror} to your mirror, or set translation_mode: normal to match." >&2
+        ;;
+    esac
+
+    # Opt-in and all-or-nothing: -disable-template-autodiscover REPLACES
+    # discovery, so naming one directory in a repo with two loses the second.
+    set --
+    if [ -n "${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" ]; then
+      set -- -django-template-dirs "${FORTIFY_PYTHON_TEMPLATE_DIRS}" \
+             -jinja-template-dirs "${FORTIFY_PYTHON_TEMPLATE_DIRS}" \
+             -disable-template-autodiscover
+    fi
+
+    echo "[fortify] python-path: ${PYPATH:-<none>} (resolution: ${PY_RESOLUTION})" >&2
     sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \
+      ${PYPATH:+-python-path "$PYPATH"} \
       -python-version 3 \
+      "$@" \
       "${SOURCE_PATH}"
     ;;
   javascript)
