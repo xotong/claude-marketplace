@@ -1,0 +1,64 @@
+stages:
+  - scan
+
+variables:
+  GITLAB_FEATURES: "dependency_scanning"
+  # SBOM_SCAN_ID is passed via trigger: -F 'variables[SBOM_SCAN_ID]=scan-YYYYMMDD-HHMMSS-user'
+  # SBOM_FILE is passed via trigger, defaults to first matching SBOM file
+  SBOM_FILE_PATTERN: "gl-sbom-*.cdx.json"
+
+# Download SBOM from package registry and run analyzer
+dependency-scan:
+  stage: scan
+  image: docker-cdc.artifactory.<YOUR_DOMAIN>/gitlab-scanners/dependency-scanning:2
+  script:
+    # Validate SBOM_SCAN_ID is provided
+    - |
+      if [ -z "$SBOM_SCAN_ID" ]; then
+        echo "ERROR: SBOM_SCAN_ID is required"
+        echo "Trigger with: -F 'variables[SBOM_SCAN_ID]=scan-YYYYMMDD-HHMMSS-user'"
+        exit 1
+      fi
+
+    # Determine SBOM filename - use provided variable or find first match
+    - |
+      if [ -n "$SBOM_FILE" ]; then
+        echo "Using provided SBOM_FILE: ${SBOM_FILE}"
+      else
+        echo "SBOM_FILE not provided, finding first matching file..."
+        SBOM_FILE=$(ls -1 ${SBOM_FILE_PATTERN} 2>/dev/null | head -1)
+        if [ -z "$SBOM_FILE" ]; then
+          echo "ERROR: No SBOM file found matching pattern: ${SBOM_FILE_PATTERN}"
+          exit 1
+        fi
+        echo "Found: ${SBOM_FILE}"
+      fi
+
+    # Download SBOM from package registry
+    - |
+      echo "Downloading SBOM from package registry..."
+      curl --fail --location --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+        "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/local-sboms/${SBOM_SCAN_ID}/${SBOM_FILE}" \
+        -o "${SBOM_FILE}"
+
+      if [ ! -f "${SBOM_FILE}" ]; then
+        echo "ERROR: Failed to download SBOM file: ${SBOM_FILE}"
+        echo "Check that SBOM_SCAN_ID '${SBOM_SCAN_ID}' and SBOM_FILE '${SBOM_FILE}' are correct"
+        exit 1
+      fi
+      echo "SBOM downloaded successfully: ${SBOM_FILE}"
+
+    # Run the analyzer on the downloaded SBOM
+    - /analyzer run
+  artifacts:
+    reports:
+      cyclonedx: "${SBOM_FILE}"
+    paths:
+      - "${SBOM_FILE}"
+  rules:
+    # Allow pipeline trigger via API with variables
+    - if: $CI_PIPELINE_SOURCE == "api"
+      when: always
+    # Allow manual trigger from UI
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual

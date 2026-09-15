@@ -1,0 +1,130 @@
+# static-appsec-scan scanner preferences — admin-owned (Platform Team via CODEOWNERS).
+#
+# This skill uses glci to run static security scans locally.
+# NOTE: This skill does NOT perform dependency scanning.
+# Configure your GitLab instance, authentication, and where to download prerequisites if missing.
+#
+# ─────────────────────────────────────────────────────────────────────────
+# Settings
+# ─────────────────────────────────────────────────────────────────────────
+settings:
+  # GitLab instance URL for glci operations.
+  # This is where glci will fetch pipeline components and authenticate.
+  gitlab_instance: "https://gitlab.<YOUR_GITLAB_INSTANCE>"
+
+  # Environment variable NAME (not the value) holding your GitLab private token.
+  # Token needs: read_api scope for component resolution, read_repository for pipeline runs.
+  # Leave empty for anonymous access (only works if your instance allows it).
+  auth_token_env: "GITLAB_TOKEN"
+
+  # Container runtime: auto, docker, or podman.
+  # auto = detect docker first, then podman.
+  container_runtime: "auto"
+
+  # Default Docker image for glci jobs (fallback if job has no image).
+  default_image: "alpine:latest"
+
+  # Prerequisites download configuration.
+  # If glci binary or required images are missing, these URLs are used to fetch them.
+  # Set to empty string to skip auto-download and just error if missing.
+  prerequisites:
+    # glci binary download.
+    # Supported placeholders: {os} (linux, darwin), {arch} (amd64, arm64)
+    # Leave empty if glci is already in PATH or install manually.
+    glci_download_url: ""
+    # e.g. "https://gitlab.com/api/v4/projects/12345/packages/generic/glci/latest/glci-{os}-{arch}"
+
+    # Helper script to run after downloading glci (e.g. chmod +x, move to PATH).
+    # Empty = just download to ~/.glci/bin/glci
+    glci_post_install: ""
+    # e.g. "chmod +x ~/.glci/bin/glci && ln -sf ~/.glci/bin/glci /usr/local/bin/glci"
+
+    # Docker images to pre-pull before running scans.
+    # These are pulled automatically by glci, but pre-pulling ensures they exist.
+    # Each entry: {image: "repo:tag", download_url: "alternative-pull-url"}
+    # download_url is optional — used if your registry needs a different pull path.
+    images:
+      - image: "alpine:latest"
+        download_url: ""  # Uses image field if empty
+      - image: "gitlab/gitlab-runner:latest"
+        download_url: ""
+      - image: "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:x86_64-v19.2.1"
+        download_url: ""
+
+    # Where to store downloaded glci binary.
+    # Default: ~/.glci/bin/glci
+    glci_install_path: "~/.glci/bin/glci"
+
+  # Pipeline component configuration.
+  # These are the GitLab CI/CD Catalog components included in the generated pipeline.
+  # Modify version pins if you need specific versions instead of ~latest.
+  # NOTE: dependency_scanning is explicitly disabled for this skill.
+  components:
+    secret_detection:
+      component: "pipeline-component/secret-detection/secret-detection"
+      version: "@main"  # or "~latest" or "1.2.3"
+      enabled: true
+
+    dependency_scanning:
+      component: "pipeline-component/dependency-scanning/dependency-scanning"
+      version: "@~latest"
+      enabled: false  # Explicitly disabled for static-appsec-scan
+
+    container_scanning:
+      component: "pipeline-component/container-scanning/container-scanning"
+      version: "@main"
+      enabled: true
+      # Custom container scanning image (cs_image input).
+      # Set to your internal registry image.
+      cs_image: "customdocker.artifactory.<YOUR_DOMAIN>/flatris:<TAG>"
+
+    fortify_sast:
+      component: "pipeline-component/fortify-sast/fortify-sast"
+      version: "@main"
+      enabled: true
+      # Fortify SAST specific settings.
+      # Language is asked at runtime per project.
+      # Source path is asked at runtime per project.
+      registry: "customdocker.artifactory.<YOUR_DOMAIN>/"
+      upload_srm_option: "false"
+
+  # glci executor: docker or kubernetes.
+  executor: "docker"
+
+  # CI context for pipeline runs.
+  # Options: branch=NAME (default: branch=main), tag=NAME, env=NAME, preset, merge_request
+  context: "branch=main"
+
+  # Path to env file for CI variables (default: .env in project root).
+  # The file should contain KEY=VALUE pairs, one per line.
+  # Empty string = no env file used.
+  env_file: ".env"
+
+  # Severity threshold for scan results reporting.
+  # Options: critical, high, medium, low, none
+  # This affects reporting only — all findings are still shown.
+  severity_threshold: "high"
+
+  # Output directory for scan artifacts.
+  # Default: glci-artifacts/ in the project root.
+  artifacts_dir: "glci-artifacts"
+
+  # Whether to clean up artifacts after scan completes.
+  # true = delete artifacts dir after displaying summary.
+  # false = keep artifacts for inspection.
+  cleanup_artifacts: false
+
+  # Timeout for individual scan jobs.
+  # Examples: "30m", "1h", "3600s"
+  # Empty = use job's default timeout from pipeline.
+  timeout: ""
+
+  # Enable verbose output from glci.
+  # true = show detailed job logs during execution.
+  # false = show summary only.
+  verbose: false
+
+  # Dry-run mode default.
+  # true = validate pipeline and show what would run, but don't execute.
+  # false = actually run the scans.
+  dry_run: false

@@ -1,0 +1,89 @@
+stages:
+  - build
+  - scans
+
+variables:
+  LANGUAGE: javascript
+  SOURCE_PATH: .
+  GITLAB_FEATURES: dependency_scanning
+  SECRET_DETECTION_HISTORIC_SCAN: "true"
+  DOCKERFILE_PATH: ${DOCKERFILE_PATH:-Dockerfile}
+  JFROG_USER: ${JFROG_USER:-}
+  JFROG_TOKEN: ${JFROG_TOKEN:-}
+  IMAGE_ARTIFACT_PATH: glci-artifacts/docker-image.tar
+
+include:
+  - component: $CI_SERVER_FQDN/pipeline-component/secret-detection/secret-detection@main
+    inputs:
+      stage: scans
+
+  - component: $CI_SERVER_FQDN/pipeline-component/dependency-scanning/dependency-scanning@1.0.2
+    inputs:
+      stage: scans
+      language: ${LANGUAGE}
+
+  - component: $CI_SERVER_FQDN/pipeline-component/fortify-sast/fortify-sast@1.0.5
+    inputs:
+      job-name: fortify-sast
+      stage: scans
+      upload-srm-option: "false"
+      language: ${LANGUAGE}
+      source-path: ${SOURCE_PATH}
+
+  - component: $CI_SERVER_FQDN/pipeline-component/container-scanning/container-scanning@main
+    inputs:
+      stage: scans
+      JFROG_TOKEN: ${JFROG_TOKEN}
+      cs_dockerfile_path: ${DOCKERFILE_PATH}
+
+# Build job: builds and pushes the Docker image
+# Must complete before container_scanning job runs
+build_job:
+  stage: build
+  image: customdocker.artifactory.<YOUR_DOMAIN>/docker-dind:25
+  services:
+    - name: customdocker.artifactory.<YOUR_DOMAIN>/docker-dind:25
+      alias: docker
+
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+
+  before_script:
+    - echo "Dockerfile: $DOCKERFILE_PATH"
+    - echo "Context: $SOURCE_PATH"
+    - |
+      if [[ -n "$JFROG_TOKEN" ]]; then
+        echo "Logging in to JFrog registry with provided token..."
+        docker login customdocker.artifactory.<YOUR_DOMAIN> -u "$JFROG_USER" -p "$JFROG_TOKEN"
+      fi
+
+  script:
+    - docker build -t "glci-built-image:1" -f "$DOCKERFILE_PATH" "$SOURCE_PATH"
+    - docker save glci-built-image:1 -o glci-built-image.tar
+    - echo "Image built and saved as artifact: glci-built-image.tar
+
+  artifacts:
+    paths:
+      - glci-built-image.tar
+    expire_in: 3 hour
+
+  rules:
+    - when: always
+
+# Container scanning job - depends on build_job completing first
+# Loads the image from artifact instead of pulling from registry
+container_scanning:
+  stage: scans
+  needs:
+    - job: build_job
+      artifacts: true
+
+  before_script:
+
+  variables:
+    CS_IMAGE: "archive://glci-built-image.tar"
+
+  rules:
+    - when: always

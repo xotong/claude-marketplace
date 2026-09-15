@@ -1,0 +1,4 @@
+{
+  "name": "static-appsec-scan",
+  "description": "Run static security scans locally using glci (SAST, secret detection, container scanning) - no dependency scanning"
+}
