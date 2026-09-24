@@ -571,6 +571,106 @@ class NormalizeTests(unittest.TestCase):
             ["APPSEC-REPORT-MISSING", "APPSEC-REPORT-MISSING"],
         )
 
+    def test_glci_raw_artifacts_are_ignored(self):
+        # glci-run.sh's own pipeline yaml / job event logs / unzipped job
+        # dirs live under glci/ — not reports; its canonical report copies
+        # already sit at the top level under their normal names.
+        glci_dir = self.results / "glci" / "secret_detection"
+        glci_dir.mkdir(parents=True)
+        (glci_dir / "gl-secret-detection-report.json").write_text(
+            '{"vulnerabilities": []}', encoding="utf-8"
+        )
+        (self.results / "glci" / "secret_detection.events.jsonl").write_text(
+            "not json findings\n", encoding="utf-8"
+        )
+
+        findings = normalize.normalize_reports(self.results)
+        coverage, missing = normalize.coverage_findings(self.results, ["secret_detection"])
+
+        self.assertEqual(findings, [])
+        self.assertEqual(missing, ["secret_detection"])
+
+    def test_remote_ds_bookkeeping_is_ignored_but_its_report_is_not(self):
+        # remote-match.sh writes result.json (status bookkeeping) and
+        # bundle-manifest.txt (the uploaded file list) beside the real
+        # evidence, gl-dependency-scanning-report.json, in the same
+        # directory. Only the two bookkeeping files are not reports —
+        # result.json in particular must never become an "unsupported
+        # report schema" HIGH finding.
+        lang_dir = self.results / "remote-ds" / "javascript"
+        lang_dir.mkdir(parents=True)
+        (lang_dir / "result.json").write_text(
+            json.dumps({"language": "javascript", "status": "ok"}), encoding="utf-8"
+        )
+        (lang_dir / "bundle-manifest.txt").write_text("package-lock.json\n", encoding="utf-8")
+        (lang_dir / "gl-dependency-scanning-report.json").write_text(
+            json.dumps(
+                {
+                    "vulnerabilities": [
+                        {
+                            "id": "CVE-1",
+                            "severity": "HIGH",
+                            "identifiers": [{"value": "CVE-1"}],
+                            "location": {"dependency": {"package": {"name": "lodash"}}},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        findings = normalize.normalize_reports(self.results)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["category"], "dependency_scanning")
+        self.assertNotIn("unsupported_report", [f["rule_id"] for f in findings])
+
+    def test_multi_dockerfile_container_scanning_report_is_classified(self):
+        self.write_json(
+            "gl-container-scanning-report-services-web-dockerfile.json",
+            {
+                "vulnerabilities": [
+                    {
+                        "name": "CVE in base image",
+                        "severity": "HIGH",
+                        "identifiers": [{"value": "CVE-2"}],
+                        "location": {"image": "appsec-local/app:appsec-scan"},
+                    }
+                ]
+            },
+        )
+
+        findings = normalize.normalize_reports(self.results)
+        coverage, missing = normalize.coverage_findings(self.results, ["container_scanning"])
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["category"], "container_scanning")
+        self.assertEqual(missing, [])
+
+    def test_exact_duplicate_findings_collapse(self):
+        # The crAPI javascript remote-matcher report is the real-world case
+        # this pins: 146 raw entries, 115 unique. Two entries that agree on
+        # identifier+package+version+file (as well as category/scanner/
+        # name/severity/location) are the SAME finding reported twice.
+        dup_vuln = {
+            "id": "CVE-DUP",
+            "name": "Duplicate finding",
+            "severity": "HIGH",
+            "identifiers": [{"value": "CVE-DUP"}],
+            "location": {
+                "dependency": {"package": {"name": "lodash"}, "version": "4.17.15"},
+                "file": "package-lock.json",
+            },
+        }
+        self.write_json(
+            "gl-dependency-scanning-report.json",
+            {"vulnerabilities": [dup_vuln, dict(dup_vuln)]},
+        )
+
+        findings = normalize.normalize_reports(self.results)
+
+        self.assertEqual(len(findings), 1)
+
     def test_registry_availability_output_is_ignored(self):
         self.write_json(
             "registry-availability.json",
@@ -1154,6 +1254,46 @@ class ScopedRescanCoverageTest(unittest.TestCase):
         self.assertTrue(coverage["coverage_complete"])
         self.assertEqual(rc, 0)
 
+    def test_dependency_scanning_source_is_not_defaulted_to_offline_trivy(self) -> None:
+        # dependency_scanning ran (a clean report is on disk) but run-scan.sh
+        # recorded no engine-info source (the SBOM+Trivy match never actually
+        # happened this run, e.g. it was skipped or degraded) -- previously
+        # this silently defaulted to "offline-trivy", claiming a match that
+        # never ran. No source should be reported at all in that case.
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "gl-dependency-scanning-report.json").write_text(
+                '{"version":"15.0.4","vulnerabilities":[],"dependency_files":[]}'
+            )
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                normalize.main(
+                    [str(results), "--gate", "high", "--ran", "dependency_scanning"]
+                )
+            coverage = self._coverage(tmp)
+
+        self.assertNotIn("dependency_scanning", coverage)
+        self.assertNotIn("Dependency Scanning source:", output.getvalue())
+
+    def test_dependency_scanning_source_reported_when_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "gl-dependency-scanning-report.json").write_text(
+                '{"version":"15.0.4","vulnerabilities":[],"dependency_files":[]}'
+            )
+            engine_info = results / "scan-engine-info"
+            engine_info.write_text("dependency_scanning\tsource\toffline-trivy\n")
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                normalize.main(
+                    [str(results), "--gate", "high", "--ran", "dependency_scanning",
+                     "--engine-info", str(engine_info)]
+                )
+            coverage = self._coverage(tmp)
+
+        self.assertEqual(coverage["dependency_scanning"]["source"], "offline-trivy")
+        self.assertIn("Dependency Scanning source: offline-trivy", output.getvalue())
+
     def test_scoped_rescan_of_a_category_it_did_not_run_keeps_the_gap(self) -> None:
         # `--only sast` cleared sast's recorded gap on the strength of the flag
         # alone, even when --ran says sast was not among the categories this
@@ -1367,6 +1507,26 @@ class CleanReportAndDurabilityTests(unittest.TestCase):
                     ["APPSEC-REPORT-UNPARSEABLE"],
                 )
 
+    def test_secret_detection_summary_excludes_coverage_findings(self) -> None:
+        # APPSEC-REPORT-* findings (missing/unparseable/incomplete report) are
+        # already surfaced by the coverage section (scan-coverage.json /
+        # verdict line). Listing them again under "Secret Detection findings
+        # (redacted)" duplicated them and read like an actual leaked secret.
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            (results / "gl-secret-detection-report.json").write_text("{}")
+            output = io.StringIO()
+            with mock.patch("sys.stdout", output):
+                normalize.main(
+                    [str(results), "--gate", "none", "--ran", "secret_detection"]
+                )
+            findings = json.loads((results / "findings.triaged.json").read_text())
+
+        self.assertEqual(
+            [item["rule_id"] for item in findings], ["APPSEC-REPORT-UNPARSEABLE"]
+        )
+        self.assertNotIn("Secret Detection findings (redacted)", output.getvalue())
+
     def test_unreadable_report_is_incomplete_coverage_at_every_gate(self) -> None:
         # A report we cannot read is a COVERAGE fact, not a finding severity.
         # The parse failure is only a HIGH, so `--gate critical` and `--gate
@@ -1579,3 +1739,109 @@ class CleanReportAndDurabilityTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), [{"category": "sast"}])
             # The abandoned temp file must not be read as a scanner report.
             self.assertEqual(normalize.normalize_reports(Path(tmp)), [])
+
+
+class DisabledByProfileCoverageTest(unittest.TestCase):
+    """A category the admin disabled (enabled: false) must show up as its own
+    thing in scan-coverage.json and the summary -- never silently absent,
+    never folded into missing_report/gate_passed."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.results = Path(self.temporary.name)
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def write_disabled_file(self, rows):
+        path = self.results / "scan-disabled"
+        path.write_text(
+            "\n".join(f"{category}\t{reason}" for category, reason in rows) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_disabled_category_recorded_and_not_folded_into_missing(self) -> None:
+        disabled_path = self.write_disabled_file(
+            [("sast", "disabled_by_profile: fortify-sast has no release or tag yet")]
+        )
+        # The three enabled categories all ran clean.
+        for name in (
+            "gl-dependency-scanning-report.json",
+            "gl-secret-detection-report.json",
+            "gl-container-scanning-report.json",
+        ):
+            (self.results / name).write_text(
+                json.dumps({"vulnerabilities": []}), encoding="utf-8"
+            )
+
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            exit_code = normalize.main(
+                [
+                    str(self.results),
+                    "--gate", "high",
+                    "--ran", "dependency_scanning,secret_detection,container_scanning",
+                    "--disabled", str(disabled_path),
+                ]
+            )
+
+        coverage = json.loads((self.results / "scan-coverage.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            coverage["disabled_by_profile"],
+            {"sast": "disabled_by_profile: fortify-sast has no release or tag yet"},
+        )
+        # Never read as clean, and never a coverage gap of its own: sast is
+        # simply absent from missing_report (it was never expected to run),
+        # and the three categories that DID run are all clean.
+        self.assertNotIn("sast", coverage["missing_report"])
+        self.assertTrue(coverage["coverage_complete"])
+        self.assertTrue(coverage["gate_passed"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Disabled by profile (1):", output.getvalue())
+        self.assertIn("sast:", output.getvalue())
+        self.assertIn("fortify-sast has no release", output.getvalue())
+
+    def test_disabled_category_does_not_flip_an_otherwise_passing_gate(self) -> None:
+        """Disabling a category is an admin decision, not a scan failure -- it
+        must never turn a clean run into a failing one."""
+        disabled_path = self.write_disabled_file([("sast", "disabled_by_profile")])
+        (self.results / "gl-secret-detection-report.json").write_text(
+            json.dumps({"vulnerabilities": []}), encoding="utf-8"
+        )
+
+        exit_code = normalize.main(
+            [
+                str(self.results),
+                "--gate", "high",
+                "--ran", "secret_detection",
+                "--disabled", str(disabled_path),
+            ]
+        )
+
+        self.assertEqual(exit_code, 0)
+
+    def test_unrecognized_category_in_disabled_file_is_dropped_with_warning(self) -> None:
+        disabled_path = self.write_disabled_file([("not_a_real_category", "whatever")])
+
+        errors = io.StringIO()
+        with mock.patch("sys.stderr", errors):
+            exit_code = normalize.main(
+                [str(self.results), "--gate", "none", "--disabled", str(disabled_path)]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("not_a_real_category", errors.getvalue())
+        coverage = json.loads((self.results / "scan-coverage.json").read_text(encoding="utf-8"))
+        self.assertEqual(coverage["disabled_by_profile"], {})
+
+    def test_no_disabled_flag_yields_empty_field(self) -> None:
+        exit_code = normalize.main([str(self.results), "--gate", "none"])
+
+        self.assertEqual(exit_code, 0)
+        coverage = json.loads((self.results / "scan-coverage.json").read_text(encoding="utf-8"))
+        self.assertEqual(coverage["disabled_by_profile"], {})
+
+
+if __name__ == "__main__":
+    unittest.main()

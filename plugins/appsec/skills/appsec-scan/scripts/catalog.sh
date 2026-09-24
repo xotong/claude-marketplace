@@ -7,11 +7,15 @@
 # =============================================================================
 set -euo pipefail
 
+# shellcheck source=scripts/lib-token.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib-token.sh"
+
 usage() {
   echo "ERROR: usage: catalog.sh resolve [--offline] <instance_url> <component_path> <version> <cache_dir> [token_env] [--offline]" >&2
   echo "ERROR:    or: catalog.sh check-drift <component_path> <cache_dir> <runner_script_path|none> [configured_image]" >&2
   echo "ERROR:    or: catalog.sh contract <component_path> <cache_dir>" >&2
   echo "ERROR:    or: catalog.sh template-image <component_path> <cache_dir>" >&2
+  echo "ERROR:    or: catalog.sh resolved-tag <component_path> <cache_dir>" >&2
   echo "ERROR:    or: catalog.sh self-test" >&2
   exit 1
 }
@@ -41,19 +45,22 @@ urlencode_path() { printf '%s' "$1" | sed 's/\//%2F/g'; }
 # after a failure. A healthy run issues no additional traffic at all, and the
 # fetch itself keeps its exact previous behaviour.
 CATALOG_LAST_HTTP=
+# Whether the LAST curl_status_probe call actually sent a token, so resolve_cmd
+# can tell "404, no credential offered" (needs a token at all) apart from "404,
+# a token WAS sent" (wrong path, or this identity cannot see the project).
+CATALOG_LAST_TOKEN_SENT=false
 curl_status_probe() {
-  local url token_env token_value _tmpf code timeout
+  local url token_env _tmpf code timeout
   url=$1
   token_env=${2:-}
   timeout=$3
-  if [ -n "$token_env" ]; then
-    token_value=$(printenv "$token_env" 2>/dev/null || true)
-  else
-    token_value=
-  fi
-  if [ -n "$token_value" ]; then
+  appsec_resolve_token "$url" "$token_env"
+  CATALOG_LAST_TOKEN_SENT=false
+  if [ -n "$APPSEC_RESOLVED_TOKEN" ]; then
+    CATALOG_LAST_TOKEN_SENT=true
     _tmpf=$(mktemp) || { printf '000'; return 0; }
-    printf 'header = "PRIVATE-TOKEN: %s"\n' "$token_value" >"$_tmpf" || {
+    chmod 600 "$_tmpf"
+    printf 'header = "Authorization: Bearer %s"\n' "$APPSEC_RESOLVED_TOKEN" >"$_tmpf" || {
       rm -f "$_tmpf"
       printf '000'
       return 0
@@ -68,22 +75,24 @@ curl_status_probe() {
   printf '%s' "$code"
 }
 
+CATALOG_LAST_CURL_EXIT=
+# Set true by fetch_online when the releases AND tags APIs both answered with
+# zero entries — a reachable, correctly-authenticated project that simply has
+# nothing published yet, distinct from every failure-to-reach/auth case above.
+CATALOG_EMPTY_CATALOG=false
 curl_get() {
-  local url token_env token_value _tmpf curl_status timeout retries
+  local url token_env _tmpf curl_status timeout retries probe_file
   url=$1
   token_env=${2:-}
   timeout=${APPSEC_CATALOG_TIMEOUT:-15}
   case "$timeout" in ''|*[!0-9]*) timeout=15 ;; esac
   retries=${APPSEC_CATALOG_RETRIES:-2}
   case "$retries" in ''|*[!0-9]*) retries=2 ;; esac
-  if [ -n "$token_env" ]; then
-    token_value=$(printenv "$token_env" 2>/dev/null || true)
-  else
-    token_value=
-  fi
-  if [ -n "$token_value" ]; then
+  appsec_resolve_token "$url" "$token_env"
+  if [ -n "$APPSEC_RESOLVED_TOKEN" ]; then
     _tmpf=$(mktemp) || return 1
-    printf 'header = "PRIVATE-TOKEN: %s"\n' "$token_value" >"$_tmpf" || {
+    chmod 600 "$_tmpf"
+    printf 'header = "Authorization: Bearer %s"\n' "$APPSEC_RESOLVED_TOKEN" >"$_tmpf" || {
       rm -f "$_tmpf"
       return 1
     }
@@ -101,8 +110,18 @@ curl_get() {
     fi
   fi
   CATALOG_LAST_HTTP=
+  CATALOG_LAST_CURL_EXIT=$curl_status
   if [ "$curl_status" -ne 0 ]; then
-    CATALOG_LAST_HTTP=$(curl_status_probe "$url" "$token_env" "$timeout")
+    # File-redirected, not `CATALOG_LAST_HTTP=$(curl_status_probe ...)`: that
+    # form forks a subshell, and CATALOG_LAST_TOKEN_SENT (set inside
+    # curl_status_probe) would evaporate with it — the 404 "with a token" vs
+    # "no credential attached" distinction in resolve_cmd needs it to survive.
+    probe_file=$(mktemp) || probe_file=
+    if [ -n "$probe_file" ]; then
+      curl_status_probe "$url" "$token_env" "$timeout" >"$probe_file"
+      CATALOG_LAST_HTTP=$(cat "$probe_file")
+      rm -f "$probe_file"
+    fi
   fi
   return "$curl_status"
 }
@@ -122,23 +141,39 @@ curl_get() {
 # release — but see the not-published warning in fetch_online.
 CATALOG_VERSION_SOURCE=
 versions_json() {
-  local instance_url encoded_project token_env releases_url tags_url raw count
+  local instance_url encoded_project token_env releases_url tags_url raw count raw_file
   instance_url=$1
   encoded_project=$2
   token_env=${3:-}
 
+  # curl_get is called via a FILE redirect here, never `raw=$(curl_get ...)`.
+  # Command substitution forks a subshell, and CATALOG_LAST_HTTP /
+  # CATALOG_LAST_CURL_EXIT / CATALOG_LAST_TOKEN_SENT (and CATALOG_VERSION_SOURCE
+  # below) are globals curl_get sets for THIS caller to read — a subshell's copy
+  # of them evaporates the moment it exits, so resolve_cmd's CONFIG-ERROR
+  # classification silently saw empty values for the single most common
+  # failure shape: the instance refusing the very first (releases/tags) call.
+  raw_file=$(mktemp) || return 1
+
   releases_url="${instance_url%/}/api/v4/projects/${encoded_project}/releases?per_page=100"
-  if raw=$(curl_get "$releases_url" "$token_env" 2>/dev/null); then
+  if curl_get "$releases_url" "$token_env" >"$raw_file" 2>/dev/null; then
+    raw=$(cat "$raw_file")
     count=$(printf '%s' "$raw" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo 0)
     if [ "${count:-0}" -gt 0 ]; then
       CATALOG_VERSION_SOURCE=releases
       printf '%s' "$raw" | jq '[.[] | {name: .tag_name, commit: (.commit.id // "")}]'
+      rm -f "$raw_file"
       return 0
     fi
   fi
 
   tags_url="${instance_url%/}/api/v4/projects/${encoded_project}/repository/tags?per_page=100"
-  raw=$(curl_get "$tags_url" "$token_env" 2>/dev/null) || return 1
+  if ! curl_get "$tags_url" "$token_env" >"$raw_file" 2>/dev/null; then
+    rm -f "$raw_file"
+    return 1
+  fi
+  raw=$(cat "$raw_file")
+  rm -f "$raw_file"
   CATALOG_VERSION_SOURCE=tags
   printf '%s' "$raw" | jq '[.[] | {name: .name, commit: (.commit.id // "")}]'
 }
@@ -235,7 +270,7 @@ fetch_optional_agents() {
 fetch_online() {
   local instance_url component_path version cache_dir token_env project_path component_name encoded_project tags_url
   local tags_json stable_tags candidate_tags chosen_tag excluded_tags cache_path readme_url newest_stable
-  local tags_available chosen_commit snapshot_commit
+  local tags_available chosen_commit snapshot_commit catalog_total_versions tags_json_file
 
   instance_url=$1
   component_path=$2
@@ -247,15 +282,33 @@ fetch_online() {
   component_name=${component_path##*/}
   encoded_project=$(urlencode_path "$project_path")
 
+  # Reset per call: a caller may resolve several components in one process
+  # (resolve-components.sh), and a stale true from an earlier component must
+  # never leak into this one's verdict.
+  CATALOG_EMPTY_CATALOG=false
+
   tags_json=
   tags_available=false
-  if tags_json=$(versions_json "$instance_url" "$encoded_project" "$token_env"); then
+  catalog_total_versions=0
+  # Same subshell hazard as inside versions_json itself: `tags_json=$(versions_json
+  # ...)` would run versions_json (and therefore curl_get, and therefore every
+  # CATALOG_LAST_* / CATALOG_VERSION_SOURCE assignment) inside a forked subshell,
+  # discarding them the moment it exits — resolve_cmd would then classify a
+  # totally unreachable/refused instance as if curl_get had never been called at
+  # all. File-redirect instead, so versions_json runs directly in THIS shell.
+  tags_json_file=$(mktemp) || return 1
+  if versions_json "$instance_url" "$encoded_project" "$token_env" >"$tags_json_file"; then
+    tags_json=$(cat "$tags_json_file")
+    rm -f "$tags_json_file"
     tags_available=true
     stable_tags=$(printf '%s' "$tags_json" | stable_release_tags) || return 1
     candidate_tags=$(printf '%s\n' "$stable_tags" | sort_tags_desc) || return 1
     excluded_tags=$(printf '%s' "$tags_json" | prerelease_tags) || return 1
     newest_stable=$(printf '%s\n' "$stable_tags" | highest_tag) || return 1
+    catalog_total_versions=$(printf '%s' "$tags_json" | jq 'if type == "array" then length else 0 end' 2>/dev/null || echo 0)
+    case "$catalog_total_versions" in ''|*[!0-9]*) catalog_total_versions=0 ;; esac
   else
+    rm -f "$tags_json_file"
     stable_tags=
     candidate_tags=
     excluded_tags=
@@ -264,6 +317,14 @@ fetch_online() {
 
   if [ "$version" = "~latest" ]; then
     [ "$tags_available" = true ] || return 1
+    # The API answered (this was reached, not an outage) with an empty list on
+    # BOTH the releases and the tags fallback: there is nothing to resolve
+    # ~latest against, ever, until the platform team tags and releases the
+    # project. That is a config fact, not a transient failure.
+    if [ "$catalog_total_versions" -eq 0 ]; then
+      CATALOG_EMPTY_CATALOG=true
+      return 1
+    fi
     chosen_tag=$newest_stable
     [ -n "$chosen_tag" ] || return 1
   else
@@ -320,7 +381,7 @@ fetch_online() {
 }
 
 resolve_cmd() {
-  local instance_url component_path version cache_dir token_env offline snapshot_root snapshot_tag fallback_label
+  local instance_url component_path version cache_dir token_env offline snapshot_root snapshot_tag fallback_label host
   fallback_label=offline-fallback
   instance_url=$1
   component_path=$2
@@ -337,18 +398,45 @@ resolve_cmd() {
     fi
     # A refusal is not an outage. The snapshot still gets used below — it is all
     # there is — but it must never be reported as a live check that passed, so
-    # say which of the two happened.
-    case "${CATALOG_LAST_HTTP:-}" in
-      401|403)
-        echo "CONFIG-ERROR: ${instance_url} refused our catalogue credentials (HTTP ${CATALOG_LAST_HTTP}) for ${component_path} — the token named by settings.catalog.auth_token_env${token_env:+ (\$$token_env)} is missing, expired, or lacks read_api. The vendored snapshot below is NOT a substitute: it cannot tell you the component has changed." >&2
-        # Carried into the resolution table Step 2.5 shows the user verbatim, so
-        # the distinction survives past this one stderr line.
-        fallback_label="offline-fallback: unauthorized"
-        ;;
-      *)
-        echo "WARN: catalog resolve failed online for ${component_path}; trying vendored snapshot" >&2
-        ;;
-    esac
+    # say which of the two happened. Every branch that still falls back below
+    # labels the resolution "config-error" (never plain offline-fallback, never
+    # "online") so Step 2.5's table can never read a config problem as a live
+    # check that passed.
+    if [ "${CATALOG_EMPTY_CATALOG:-false}" = true ]; then
+      # fetch_online reached the API fine and got a real (empty) answer — there
+      # is no HTTP failure to classify below, so this has to be checked first.
+      echo "CONFIG-ERROR: ${component_path} has no releases or tags on ${instance_url}; ~latest cannot resolve — ask the platform team to tag and release it" >&2
+      fallback_label="offline-fallback: config-error"
+    else
+      case "${CATALOG_LAST_CURL_EXIT:-}" in
+        60|77)
+          echo "CONFIG-ERROR: TLS verification failed talking to ${instance_url} for ${component_path} (curl exit ${CATALOG_LAST_CURL_EXIT}). This usually means corporate TLS inspection (a proxy re-signing with an internal CA curl does not trust) rather than an outage. Set settings.ca_bundle to that CA's PEM file and retry. The vendored snapshot below is NOT a substitute: it cannot tell you the component has changed." >&2
+          fallback_label="offline-fallback: config-error"
+          ;;
+        *)
+          case "${CATALOG_LAST_HTTP:-}" in
+            401|403)
+              echo "CONFIG-ERROR: ${instance_url} refused our catalogue credentials (HTTP ${CATALOG_LAST_HTTP}) for ${component_path} — the token named by settings.catalog.auth_token_env${token_env:+ (\$$token_env)} is missing, expired, or lacks read_api. The vendored snapshot below is NOT a substitute: it cannot tell you the component has changed." >&2
+              # Carried into the resolution table Step 2.5 shows the user verbatim, so
+              # the distinction survives past this one stderr line.
+              fallback_label="offline-fallback: unauthorized"
+              ;;
+            404)
+              if [ "${CATALOG_LAST_TOKEN_SENT:-false}" = true ]; then
+                echo "CONFIG-ERROR: ${instance_url} returned HTTP 404 for ${component_path} even with a token attached — either the component path is wrong, or this token's user cannot see ${component_path%/*}. The vendored snapshot below is NOT a substitute: it cannot tell you the component has changed." >&2
+              else
+                host=$(appsec_host_of "$instance_url")
+                echo "CONFIG-ERROR: ${instance_url} returned HTTP 404 for ${component_path} with no credential attached — internal/private CI/CD Catalog projects return 404 (not 401) to anonymous reads. Export \$${token_env:-<the env var named by settings.catalog.auth_token_env>} with a read_api token, or run 'glab auth login --hostname ${host}' so the glab fallback can supply one. The vendored snapshot below is NOT a substitute: it cannot tell you the component has changed." >&2
+              fi
+              fallback_label="offline-fallback: config-error"
+              ;;
+            *)
+              echo "WARN: catalog resolve failed online for ${component_path}; trying vendored snapshot" >&2
+              ;;
+          esac
+          ;;
+      esac
+    fi
   fi
 
   snapshot_root="$(skill_dir)/reference/catalog/${component_path}"
@@ -509,6 +597,7 @@ template_contract() {
 # option being added to fortify-sast without any runner support.
 contract_drift() {
   local template_path expected_path label actual_file expected_file only_upstream only_local
+  local line input_name
   template_path=$1
   expected_path=$2
   label=$3
@@ -522,11 +611,44 @@ contract_drift() {
 
   only_upstream=$(LC_ALL=C comm -23 "$actual_file" "$expected_file")
   only_local=$(LC_ALL=C comm -13 "$actual_file" "$expected_file")
-  rm -f "$actual_file" "$expected_file"
 
   if [ -n "$only_upstream" ]; then
     printf '%s\n' "$only_upstream" | while IFS= read -r line; do
-      [ -n "$line" ] && printf 'CONTRACT-DRIFT: %s: component now declares %s\n' "$label" "$line"
+      [ -n "$line" ] || continue
+      case "$line" in
+        input.*.default=* | input.*.option=*)
+          # A BRAND-NEW input name — the checked-in contract has never heard
+          # of it under ANY key, whether this line is its default= or one of
+          # its option= choices — is backward compatible: the runner never
+          # reads it, so it cannot mishandle a value it never sees, and the
+          # component applies its own default/behaviour exactly as if the
+          # input were still absent. This is what lets one shared
+          # secret-detection.contract stay accurate for a catalogue instance
+          # whose secret-detection@1.0.0 added `historic_scan` and one whose
+          # 1.0.0 never did, and what lets one shared
+          # gitlab-dependency-scanning.contract stay accurate for a catalogue
+          # instance whose dependency-scanning@1.2.0 added a `language` input
+          # (options only, no default) that the local runner's own
+          # file-detection logic never consults.
+          #
+          # A new VALUE on an input the runner already partially knows about
+          # (matched below by the input name existing under some OTHER key in
+          # the checked-in contract) stays blocking: that is the fortify-sast
+          # `go` case this mechanism exists to catch — a value the runner DOES
+          # read and dispatch on (a `case` arm per language) can silently gain
+          # a choice it has no arm for.
+          input_name=${line#input.}
+          input_name=${input_name%%.*}
+          if grep -q "^input\.${input_name}\." "$expected_file"; then
+            printf 'CONTRACT-DRIFT: %s: component now declares %s\n' "$label" "$line"
+          else
+            echo "ADVISORY: ${label}: component declares a new input (${line}) not yet consumed by the runner — additive, not reported as drift" >&2
+          fi
+          ;;
+        *)
+          printf 'CONTRACT-DRIFT: %s: component now declares %s\n' "$label" "$line"
+          ;;
+      esac
     done
   fi
   if [ -n "$only_local" ]; then
@@ -534,6 +656,7 @@ contract_drift() {
       [ -n "$line" ] && printf 'CONTRACT-DRIFT: %s: contract expects %s but the component no longer declares it\n' "$label" "$line"
     done
   fi
+  rm -f "$actual_file" "$expected_file"
 }
 
 date_to_epoch() {
@@ -563,6 +686,23 @@ template_image_cmd() {
   tag=$(fallback_tag_dir "$base_dir" || true)
   [ -n "$tag" ] || return 0
   template_image_ref "$base_dir/$tag/template.yml"
+}
+
+# Print the tag this run already resolved for component_path (same cache/
+# vendored-snapshot lookup template_image_cmd uses), with nothing printed and
+# exit 1 when no resolution is cached anywhere. This is a read of a prior
+# `resolve` call's side effect (the cache dir it populated), not a fresh
+# resolution — callers that need "what did we actually pick" (glci-run.sh's
+# --component ref) read this instead of re-deriving it.
+resolved_tag_cmd() {
+  local component_path cache_dir base_dir tag
+  component_path=$1
+  cache_dir=$2
+  base_dir="${cache_dir%/}/${component_path}"
+  [ -d "$base_dir" ] || base_dir="$(skill_dir)/reference/catalog/${component_path}"
+  tag=$(fallback_tag_dir "$base_dir" || true)
+  [ -n "$tag" ] || return 1
+  printf '%s\n' "$tag"
 }
 
 check_drift_cmd() {
@@ -653,6 +793,9 @@ self_test_cmd() {
 
   mkdir -p "$root/scripts" "$root/reference/catalog/$component/1.0.0" "$tmp/bin" "$cache"
   cp "$0" "$script"
+  # catalog.sh sources lib-token.sh from its own directory; the copy above
+  # only copies itself, so the sibling has to come along too.
+  cp "$(dirname "$0")/lib-token.sh" "$root/scripts/lib-token.sh"
   # Fixture shape mirrors the real secret-detection template: a literal job
   # image, NOT a synthetic image_tag input. A fixture that does not look like
   # the catalogue is how drift detection stayed green while doing nothing.
@@ -751,6 +894,21 @@ self_test_cmd() {
   drift=$(bash "$script" check-drift "$component" "$tmp/contract" "$tmp/c-runner.sh" 2>/dev/null)
   if printf '%s\n' "$drift" | grep -q 'CONTRACT-DRIFT'; then return 1; fi
 
+  # A component declaring an input the runner has NEVER seen (under any key)
+  # is additive, not drift: no CONTRACT-DRIFT, and the ADVISORY: prefix (not
+  # INFO:) so SKILL.md's prefix table surfaces it.
+  mkdir -p "$tmp/newinput/$component/9.9.9"
+  printf '%s\n' 'spec:' '  inputs:' '    language:' '      default: "javascript"' \
+    '      options:' '        - javascript' '        - go' '    historic_scan:' '      default: false' \
+    '    stage:' '      default: test' '---' 'scan:' '  image: "registry.example/secrets:7"' \
+    '  artifacts:' '    reports:' '      sast: gl-sast-report.json' \
+    >"$tmp/newinput/$component/9.9.9/template.yml"
+  stderr=$(bash "$script" check-drift "$component" "$tmp/newinput" "$tmp/c-runner.sh" 2>&1 >/dev/null)
+  drift=$(bash "$script" check-drift "$component" "$tmp/newinput" "$tmp/c-runner.sh" 2>/dev/null)
+  if printf '%s\n' "$drift" | grep -q 'CONTRACT-DRIFT'; then return 1; fi
+  printf '%s\n' "$stderr" | grep -q '^ADVISORY: .*component declares a new input (input\.historic_scan\.default=false)' || return 1
+  if printf '%s\n' "$stderr" | grep -q '^INFO: .*component declares a new input'; then return 1; fi
+
   printf '%s\n' \
     'self-test: online path ok' \
     'self-test: pinned path advisory ok' \
@@ -761,6 +919,7 @@ self_test_cmd() {
     'self-test: image drift inputs-interpolation ok' \
     'self-test: image drift underivable reported ok' \
     'self-test: contract extraction ok' \
+    'self-test: additive input ADVISORY prefix ok' \
     'self-test: contract drift on new option ok' \
     'self-test: contract match silent ok'
 }
@@ -795,6 +954,10 @@ main() {
     template-image)
       [ $# -eq 3 ] || usage
       template_image_cmd "$2" "$3"
+      ;;
+    resolved-tag)
+      [ $# -eq 3 ] || usage
+      resolved_tag_cmd "$2" "$3"
       ;;
     contract)
       [ $# -eq 3 ] || usage

@@ -14,17 +14,27 @@ esac
 
 ERRORS=()
 
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../scripts/lib-token.sh
+. "$SKILL_DIR/scripts/lib-token.sh"
+
 # A named token var is always required: resolution is always attempted online,
 # and a tokenless run would degrade to the vendored snapshots while looking like
 # a live check. Profiles on instances that allow anonymous reads set
-# auth_token_env: "" and skip this entirely.
+# auth_token_env: "" and skip this entirely. The resolver also tries the glab
+# fallback (settings.catalog.glab_fallback) before giving up, so a developer
+# already `glab auth login`-ed against the instance passes without exporting a
+# separate PAT; either way only the SOURCE is named below, never the token.
 if [ -n "${CATALOG_AUTH_ENV:-}" ]; then
-  catalog_auth_value="$(printenv "$CATALOG_AUTH_ENV" 2>/dev/null || true)"
-  [ -z "$catalog_auth_value" ] && \
-    ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by settings.catalog.auth_token_env) is not set")
+  appsec_resolve_token "${GITLAB_INSTANCE:-}" "$CATALOG_AUTH_ENV"
+  case "$APPSEC_TOKEN_SOURCE" in
+    env) : ;;
+    glab) echo "INFO: catalog auth: \$$CATALOG_AUTH_ENV is unset; using a token from glab (settings.catalog.glab_fallback)" >&2 ;;
+    none)
+      ERRORS+=("catalog auth: env var $CATALOG_AUTH_ENV (named by settings.catalog.auth_token_env) is not set, and no glab fallback token was available")
+      ;;
+  esac
 fi
-
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Self-load preferences when the caller passed only the catalog vars, so the
 # checks below need no new arguments in SKILL.md Step 2. Same pattern as

@@ -17,14 +17,21 @@ LOAD_PREFS = SKILL_DIR / "scripts" / "load-prefs.sh"
 _spec = importlib.util.spec_from_file_location("check_appsec_drift", DRIFT_CHECK)
 assert _spec is not None and _spec.loader is not None
 check_appsec_drift = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(check_appsec_drift)
+try:
+    _spec.loader.exec_module(check_appsec_drift)
+except ImportError as exc:  # pragma: no cover - environment dependent
+    # check-appsec-drift.py itself `import yaml`s at module level; without it
+    # exec_module raises before this test module can even collect.
+    raise unittest.SkipTest("pyyaml not installed - pip install pyyaml") from exc
 
 
 class AppsecDriftTargetsTest(unittest.TestCase):
     def test_shipped_config_loads_all_enabled_targets_with_runners(self) -> None:
         targets = check_appsec_drift.load_targets()
 
-        self.assertEqual(len(targets), 8)
+        # 2 original profiles (catalog, company) x 4 categories, plus
+        # platform-engineering's 3 enabled categories (sast ships disabled).
+        self.assertEqual(len(targets), 12)
         for target in targets:
             with self.subTest(profile=target["profile"], category=target["category"]):
                 self.assertTrue(target["runner"])

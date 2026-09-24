@@ -55,7 +55,7 @@ class LoadPrefsTest(unittest.TestCase):
             tmp.close()
 
     def test_shipped_config_defaults(self) -> None:
-        result = self.run_loader(PREFERENCES_PATH)
+        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(
@@ -134,7 +134,7 @@ class LoadPrefsTest(unittest.TestCase):
         temp_path = self.write_temp_config(modified)
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
-        result = self.run_loader(temp_path)
+        result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, "RUN_FORTIFY_SAST", "ENABLED_COMPONENTS")
@@ -154,7 +154,7 @@ class LoadPrefsTest(unittest.TestCase):
         temp_path = self.write_temp_config(modified)
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
-        result = self.run_loader(temp_path)
+        result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, "RUN_GITLAB_CS", "ENABLED_COMPONENTS")
@@ -174,7 +174,7 @@ class LoadPrefsTest(unittest.TestCase):
         temp_path = self.write_temp_config(modified)
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
-        result = self.run_loader(temp_path)
+        result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, "RUN_FORTIFY_SAST", "ENABLED_COMPONENTS")
@@ -194,7 +194,7 @@ class LoadPrefsTest(unittest.TestCase):
         temp_path = self.write_temp_config(modified)
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
-        result = self.run_loader(temp_path)
+        result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, "ENABLED_COMPONENTS")
@@ -214,7 +214,7 @@ class LoadPrefsTest(unittest.TestCase):
         temp_path = self.write_temp_config(modified)
         self.addCleanup(lambda: temp_path.unlink(missing_ok=True))
 
-        result = self.run_loader(temp_path)
+        result = self.run_loader(temp_path, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("WARNING: unknown category key 'container_scaning'", result.stderr)
 
@@ -236,7 +236,7 @@ class LoadPrefsTest(unittest.TestCase):
         )
 
     def test_enabled_components_pair_each_component_with_its_own_runner(self) -> None:
-        result = self.run_loader(PREFERENCES_PATH)
+        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, "ENABLED_COMPONENTS")
@@ -258,7 +258,7 @@ class LoadPrefsTest(unittest.TestCase):
 
     def test_enabled_components_carry_their_category_as_field_five(self) -> None:
         """run-scan.sh needs the category so it stops hardcoding component paths."""
-        result = self.run_loader(PREFERENCES_PATH)
+        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, "ENABLED_COMPONENTS")
@@ -289,7 +289,7 @@ class LoadPrefsTest(unittest.TestCase):
         resolve-components.sh feeds garbage to catalog.sh check-drift — the exact
         bogus-DRIFT failure its file header was written about.
         """
-        result = self.run_loader(PREFERENCES_PATH)
+        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
         values = self.eval_output(result.stdout, "ENABLED_COMPONENTS")
 
@@ -331,7 +331,7 @@ class LoadPrefsTest(unittest.TestCase):
 
     def test_shipped_config_leaves_airgap_plumbing_disabled(self) -> None:
         """Empty means disabled: nothing is mounted and nothing is overridden."""
-        result = self.run_loader(PREFERENCES_PATH)
+        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, *self.AIRGAP_VARS)
@@ -426,7 +426,7 @@ class LoadPrefsTest(unittest.TestCase):
     def test_settings_scalars_do_not_leak_into_the_next_nested_block(self) -> None:
         """The new indent-2 scalars sit between nested blocks; a stale block name
         would file the following indent-4 key under the wrong parent."""
-        result = self.run_loader(PREFERENCES_PATH)
+        result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(

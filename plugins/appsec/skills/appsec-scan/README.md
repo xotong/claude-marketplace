@@ -45,22 +45,69 @@ You need two things:
 > gate degrade to raw counts with `UNKNOWN` status. Your platform admin can point
 > `settings.python.install_url` at an internal tarball to auto-provision it.
 
-Then ask your platform admin which **profile** you should use. Profiles decide which
-GitLab instance and which image registry the skill talks to:
+### One-time setup on gitlab.example.com (`platform-engineering` profile)
+
+1. **Log in once with `glab`.** The skill reuses this login for catalogue lookups and
+   for GitLab-native dependency matching. Nothing else to export.
+   ```bash
+   glab auth login --hostname gitlab.example.com
+   ```
+   Prefer a personal access token instead? Put it in `APPSEC_GITLAB_TOKEN` with the
+   **`api`** scope. `read_api` is enough for catalogue lookups but not for the matcher,
+   which uploads your manifests and starts a pipeline.
+2. **Make sure your team's group has Developer access** to
+   `platform-engineering/skillshub/appsec-sbom-matcher` (the platform team invites whole
+   groups, not individuals — ask once per team). Dependency scanning sends only
+   your lockfiles/manifests there (never source), gets GitLab's own findings back, and
+   deletes the upload. Without access, or with `APPSEC_REMOTE_MATCH=off`, the skill
+   falls back to an offline Trivy match and labels the results as not GitLab's.
+3. **SAST (Fortify) only, until the internal container registry is live:** log Docker
+   in to registry.gitlab.com with the read-only token the platform team gives you
+   through the password manager. Once the images move to the self-hosted registry, run
+   `docker logout registry.gitlab.com`; no login is needed after that.
+   ```bash
+   docker login registry.gitlab.com -u <deploy-token-username>
+   ```
+   On Apple Silicon the Fortify image runs under emulation, so expect a few minutes
+   per build unit.
+4. **Check it works** from a repo you want to scan:
+   ```bash
+   bash <path-to-skill>/scripts/run-scan.sh --only dependency_scanning
+   ```
+   Look for `REMOTE-MATCH: language=... status=ok`. A `REMOTE-MATCH-REASON` with 401 or
+   403 means step 1 or step 2 is missing.
+
+**`glci` is optional.** It is only used by profiles that set `engine: glci` (the
+shipped `platform-engineering` default does, for secret detection and container
+scanning) to run the CI/CD Catalog component's real job locally instead of this
+skill's own docker-based runner script. Without it, or if it is unhealthy, those
+categories fall back to the docker engine automatically and say so
+(`ADVISORY:`) — nothing fails. Install it from
+[gitlab.org/gitlab-org/ci-cd/runner-tools/glci](https://gitlab.com/gitlab-org/ci-cd/runner-tools/glci)
+if you want the closer-to-CI local run; it needs Docker or Podman itself.
+
+The skill ships pointed at the **`platform-engineering`** profile by default
+(`gitlab.example.com`). Ask your platform admin whether that is right for you, or
+switch profiles explicitly:
 
 ```bash
 export APPSEC_PROFILE=company     # internal GitLab + internal registry
 ```
 
-If your profile's catalogue needs authentication, you also need a `read_api` token:
+If your profile's catalogue needs authentication, export a `read_api` token under the
+name it expects (`APPSEC_GITLAB_TOKEN` for `platform-engineering`,
+`GITLAB_READ_TOKEN` for `catalog`):
 
 ```bash
-export GITLAB_READ_TOKEN=glpat-xxxxxxxxxxxx
+export APPSEC_GITLAB_TOKEN=glpat-xxxxxxxxxxxx
 ```
 
-Whether you need that token depends on your profile — see
-[Do I need a token?](#do-i-need-a-token) below. Put both exports in your shell profile
-(`~/.bashrc` / `~/.zshrc`) so you set them once.
+If you skip this and already run `glab auth login --hostname <your-instance>`, the
+skill falls back to `glab`'s own stored token automatically
+(`settings.catalog.glab_fallback`, on by default) — nothing else to export. Whether
+you need a token at all depends on your profile — see
+[Do I need a token?](#do-i-need-a-token) below. Put the export in your shell profile
+(`~/.bashrc` / `~/.zshrc`) so you set it once.
 
 ---
 
@@ -79,7 +126,9 @@ The skill will:
 3. Run them — SAST, dependency scanning, and secret detection in parallel; container
    scanning after.
 4. Print a severity summary.
-5. Offer to fix what it can, on a new branch, after asking you once.
+5. Offer to fix what it can, on a new branch, after asking you once — you choose
+   whether it fixes everything actionable automatically (up to 5 iterations) or
+   walks you through each fix one at a time.
 6. Write `.appsec-results/TRIAGE.md` for anything it couldn't fix.
 
 Nothing is committed, pushed, or changed on your current branch without you saying yes.
@@ -104,16 +153,33 @@ The one thing worth internalising:
 > no report, that becomes a HIGH-severity coverage finding and fails the gate. "No
 > findings" and "didn't scan" are deliberately not the same outcome.
 
-One caveat worth knowing before you act on the dependency numbers:
+One thing worth knowing before you act on the dependency numbers — check which source
+produced them, printed as `Dependency Scanning source:` in the summary and recorded in
+`scan-coverage.json`'s `dependency_scanning.source`:
 
-> **Local dependency findings come from Trivy, not from GitLab.** GitLab matches your
-> SBOM against its own advisory database server-side, behind an API that only accepts a
-> real CI job token — no local runner (this skill, `glci`, `gitlab-ci-local`,
-> `gitlab-runner exec`) can reproduce it. So the skill matches the SBOM offline with the
-> Trivy bundled in the container-scanning image. Treat those findings and their fix
-> versions as an early triage signal; they will **not** match the post-push Vulnerability
-> Report exactly, in content or in count. Every other category is byte-for-byte the CI
-> scanner.
+> **`offline-trivy`** (every profile without `remote_match_project` configured, e.g.
+> `catalog`/`company`): GitLab matches your SBOM against its own advisory database
+> server-side, behind an API that only accepts a real CI job token, so a plain local run
+> cannot reproduce it. Instead the skill matches the SBOM offline with the Trivy bundled
+> in the container-scanning image. Treat those findings and their fix versions as an
+> early triage signal; they will **not** match the post-push Vulnerability Report
+> exactly, in content or in count.
+>
+> **`gitlab-native`** (profiles with `remote_match_project` set, e.g.
+> `platform-engineering`, unless `APPSEC_REMOTE_MATCH=off`): the skill uploads only your
+> dependency manifests/lockfiles (never source) to a pre-configured helper GitLab
+> project and triggers a real pipeline there with a real `CI_JOB_TOKEN`, so this result
+> **is** GitLab's own server-side match — no Trivy caveat applies. See
+> [`reference/remote-matcher/README.md`](reference/remote-matcher/README.md) for what
+> that helper project is and how it is set up. If the matcher is unusable before any
+> pipeline runs (no token, project unreachable, wrong access), the whole category falls
+> back to `offline-trivy` instead and says so. Once at least one pipeline has run, a
+> single language whose matcher pipeline then fails does **not** fall back to Trivy for
+> that language — it is a coverage gap instead (the languages that did succeed keep
+> their GitLab-native report).
+>
+> Every other category is byte-for-byte the CI scanner (or, with `engine: glci`, the CI
+> component's own job run locally).
 
 Findings carry a `verification_status`:
 
@@ -164,10 +230,30 @@ FORTIFY_VARIANT=jdk17-review /appsec-scan
 SOURCE_PATH=services/api /appsec-scan
 ```
 
+**Pick which Dockerfile(s)** container scanning builds and scans — the skill otherwise
+finds every Dockerfile/Containerfile in the repo on its own (so a monorepo with
+Dockerfiles only under `services/*` is no longer skipped):
+
+```bash
+DOCKERFILE=services/api/Dockerfile /appsec-scan            # exactly one
+APPSEC_DOCKERFILES=services/api/Dockerfile,services/web/Dockerfile /appsec-scan  # a subset
+```
+
+More than one Dockerfile in scope gets its own report
+(`gl-container-scanning-report-<slug>.json`); exactly one keeps the plain name.
+
 **Switch profile for one run:**
 
 ```bash
 APPSEC_PROFILE=catalog /appsec-scan
+```
+
+**Force the offline dependency match** even on a profile with GitLab-native matching
+configured (e.g. to sanity-check the two against each other, or when the helper
+project is unreachable):
+
+```bash
+APPSEC_REMOTE_MATCH=off /appsec-scan
 ```
 
 ### Running the scanner directly
@@ -238,6 +324,21 @@ the exact setting or env var. Nothing else is tried on purpose — a rejected cr
 not fixed by another image, tag or endpoint, and every alternative fails the same way,
 leaving you with a scan that reads like a result. Fix what the line names and re-run.
 
+Catalog resolution (`catalog.sh`) reports four specific shapes of this:
+
+- **404, no credential attached** — internal/private CI/CD Catalog projects answer `404`
+  to an anonymous read (not `401`), which looks like a missing project rather than a
+  missing token. Export the token named by `settings.catalog.auth_token_env`, or run
+  `glab auth login --hostname <your-instance>` so the `glab` fallback can supply one.
+- **404, even with a token attached** — the component path is wrong, or this identity
+  cannot see it. Check the path and the token owner's access.
+- **TLS verification failed** — almost always corporate TLS inspection (a proxy
+  re-signing with an internal CA `curl` does not trust), not an outage. Set
+  `settings.ca_bundle` to that CA's PEM file.
+- **No releases or tags** — `version: ~latest` cannot resolve on an instance where the
+  component was never tagged/released. Ask the platform team to tag and release it, or
+  pin an exact `version:` once one exists.
+
 ### SAST was skipped
 Fortify needs a recognisable project. It looks for `pom.xml`, `build.gradle`,
 `package.json`, `requirements.txt` / `pyproject.toml`, or `go.mod` at the repo root.
@@ -256,13 +357,22 @@ ask your admin to set `settings.python.install_url`.
 Only if your profile's GitLab instance requires authentication to read the CI/CD
 Catalog. Check `auth_token_env` for your profile in `config/scanner-preferences.yaml`:
 
-- **Named env var** (e.g. `GITLAB_READ_TOKEN`) → you need a `read_api` PAT in that
-  variable. Preflight fails fast if it's unset, so a run can never quietly fall back to
-  vendored snapshots and look like a live check.
+- **Named env var** (e.g. `APPSEC_GITLAB_TOKEN` for `platform-engineering`,
+  `GITLAB_READ_TOKEN` for `catalog`) → you need a `read_api` PAT (or OAuth token) in
+  that variable. If it's unset, the skill falls back to `glab config get token` for
+  that instance's host (`settings.catalog.glab_fallback`, on by default) before
+  preflight fails — so a host already `glab auth login`-ed against the instance needs
+  no separate export.
 - **Empty (`""`)** → your instance serves the catalogue anonymously. No token needed.
 
-The token is used for the **GitLab API only** — never for pulling images. Image
-registry credentials are separate (`settings.container_registry.*`).
+The dependency matcher (`remote_match_project`) is the exception: it always needs a
+login, because it uploads a bundle and starts a pipeline. `glab auth login` covers it;
+a personal token needs the `api` scope, not just `read_api`.
+
+The token is used for the **GitLab API only** (sent as `Authorization: Bearer`) —
+never for pulling images. Image registry credentials are separate
+(`settings.container_registry.*`), and `engine: glci` never forwards this token into
+the job it runs (`--no-token --secrets none`) — only reads catalogue metadata with it.
 
 ---
 
@@ -302,4 +412,5 @@ registry credentials are separate (`settings.container_registry.*`).
 | [`config/PREFERENCES.md`](config/PREFERENCES.md) | Admins: every config key and how to change it |
 | [`UPDATE-GUIDE.md`](UPDATE-GUIDE.md) | Maintainers: keeping runners in sync with the CI components |
 | [`MIGRATION.md`](MIGRATION.md) | Admins: moving from the public catalogue to an internal instance |
+| [`reference/remote-matcher/README.md`](reference/remote-matcher/README.md) | Admins: setting up the helper project for GitLab-native dependency-scanning matching |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |

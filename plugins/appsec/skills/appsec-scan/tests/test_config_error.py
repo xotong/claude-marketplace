@@ -251,6 +251,44 @@ class PreflightProbeTest(unittest.TestCase):
             [BASH, str(PREFLIGHT)], capture_output=True, text=True, env=env
         )
 
+    def test_catalog_token_check_passes_when_glab_supplies_a_token(self) -> None:
+        """settings.catalog.glab_fallback: preflight must pass on a glab
+        credential alone, and must name the SOURCE, never the token value."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stub(root / "bin", "docker", "exit 0\n")
+            stub(
+                root / "bin",
+                "glab",
+                'case "$*" in\n'
+                '  "config get token --host gitlab.example.com") printf "%s" "glab-preflight-secret-token" ;;\n'
+                "  *) exit 1 ;;\n"
+                "esac\n",
+            )
+            env = dict(
+                os.environ,
+                PATH=f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                CATALOG_AUTH_ENV="APPSEC_MISSING_TOKEN_VAR",
+                CATALOG_GLAB_FALLBACK="true",
+                GITLAB_INSTANCE="https://gitlab.example.com",
+                APPSEC_AIRGAP="false",
+                APPSEC_PROFILE="catalog",
+                CONTAINER_RUNTIME="docker",
+                PACKAGE_REGISTRIES="{}",
+                PACKAGE_REGISTRY_AUTH_ENV="",
+                CA_BUNDLE="",
+                MAVEN_SETTINGS="",
+            )
+            env.pop("APPSEC_MISSING_TOKEN_VAR", None)
+            result = subprocess.run(
+                [BASH, str(PREFLIGHT)], capture_output=True, text=True, env=env
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = result.stdout + result.stderr
+        self.assertIn("glab", output)
+        self.assertNotIn("glab-preflight-secret-token", output)
+
     def test_refused_registry_fails_preflight_and_names_the_setting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             proc = self._preflight(

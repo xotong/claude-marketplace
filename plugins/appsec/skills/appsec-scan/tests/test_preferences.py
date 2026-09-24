@@ -88,8 +88,13 @@ class SettingsBlockTest(unittest.TestCase):
 
 
 class ScannerPreferencesTest(unittest.TestCase):
-    def test_default_profile_is_catalog(self) -> None:
-        self.assertEqual(PREFERENCES.get("default_profile"), "catalog")
+    def test_default_profile_is_platform_engineering(self) -> None:
+        # Out of the box the skill now targets the self-hosted instance
+        # (gitlab.example.com) rather than gitlab.com; catalog/company stay
+        # available (and unchanged) for whoever wants them explicitly via
+        # APPSEC_PROFILE.
+        self.assertEqual(PREFERENCES.get("default_profile"), "platform-engineering")
+        self.assertIn("platform-engineering", PREFERENCES.get("profiles", {}))
         self.assertIn("catalog", PREFERENCES.get("profiles", {}))
 
     def test_every_profile_has_expected_categories(self) -> None:
@@ -100,7 +105,9 @@ class ScannerPreferencesTest(unittest.TestCase):
     def test_category_requires_component_version_enabled(self) -> None:
         """image: and runner: are optional overrides; the other three are not."""
         required = {"component", "version", "enabled"}
-        optional = {"image", "runner"}
+        # note: free-text, shown verbatim whenever the category is disabled
+        # (see scripts/load-prefs.sh CATEGORY_NOTE_*). Optional like image/runner.
+        optional = {"image", "runner", "note"}
         for profile_name, profile in PREFERENCES["profiles"].items():
             for category_name, category in profile["categories"].items():
                 with self.subTest(profile=profile_name, category=category_name):
@@ -173,6 +180,23 @@ class ScannerPreferencesTest(unittest.TestCase):
     def test_catalog_and_company_profiles_exist(self) -> None:
         self.assertIn("catalog", PREFERENCES["profiles"])
         self.assertIn("company", PREFERENCES["profiles"])
+
+    def test_platform_engineering_profile_shape(self) -> None:
+        profile = PREFERENCES["profiles"]["platform-engineering"]
+        self.assertEqual(profile["gitlab_instance"], "https://gitlab.example.com")
+        self.assertEqual(profile["auth_token_env"], "APPSEC_GITLAB_TOKEN")
+
+        categories = profile["categories"]
+        for category_name in ("sast", "dependency_scanning", "secret_detection", "container_scanning"):
+            with self.subTest(category=category_name):
+                self.assertTrue(categories[category_name]["enabled"])
+                self.assertTrue(
+                    categories[category_name]["component"].startswith("platform-engineering/ci-catalogue/")
+                )
+
+
+    def test_platform_engineering_glab_fallback_documented(self) -> None:
+        self.assertTrue(PREFERENCES["settings"]["catalog"]["glab_fallback"])
 
     def test_catalog_profile_ships_public_base_image_templates(self) -> None:
         """Real public values, so an internet-connected run exercises the same

@@ -19,6 +19,14 @@ read_iteration() {
 
 case "${1:-}" in
   --init)
+    # SKILL.md Step 5: "Ask for approval once before making changes — it will
+    # create a new branch." --init is the side-effecting step (git checkout
+    # -b), so it must not run on its own say-so: ask the user first, then
+    # re-invoke with --approved once they say yes.
+    if [ "${2:-}" != --approved ]; then
+      error "fix-branch.sh --init creates a new branch — ask the user for approval first (SKILL.md Step 5), then re-run: fix-branch.sh --init --approved"
+      exit 2
+    fi
     status="$(git status --porcelain 2>/dev/null)" || {
       error "not inside a Git worktree"
       exit 1

@@ -1,0 +1,61 @@
+spec:
+  inputs:
+    language:
+      type: string
+      description: "Manifest language in the uploaded bundle."
+      options:
+        - maven
+        - gradle
+        - python
+        - javascript
+        - go
+    bundle:
+      type: string
+      description: "Generic package version id of the uploaded bundle.tar.gz (appsec-bundles package)."
+    ds_version:
+      type: string
+      default: "1.2.0"
+      description: "dependency-scanning CI/CD component version to include."
+---
+
+include:
+  - component: $CI_SERVER_FQDN/platform-engineering/ci-catalogue/dependency-scanning/dependency-scanning@$[[ inputs.ds_version ]]
+    inputs:
+      language: $[[ inputs.language ]]
+
+fetch-bundle:
+  stage: .pre
+  image: curlimages/curl:8.11.0
+  variables:
+    GIT_STRATEGY: fetch
+  script:
+    - >
+      curl --fail --silent --show-error --location
+      -H "JOB-TOKEN: $CI_JOB_TOKEN"
+      -o bundle.tar.gz
+      "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/appsec-bundles/$[[ inputs.bundle ]]/bundle.tar.gz"
+    - tar -xzf bundle.tar.gz
+    - rm -f bundle.tar.gz
+    - echo "Bundle extracted, contents:"
+    - find . -type f -not -path "./.git/*"
+  artifacts:
+    expire_in: 1 hour
+    paths:
+      - "**/*"
+
+# ponytail: reports are other teams' dependency CVEs; the skill downloads them within seconds.
+dependency-scanning:
+  artifacts:
+    expire_in: 1 hour
+
+dependency-scanning-maven:   # resolution job (always defined; rules pick the language)
+  artifacts:
+    expire_in: 1 hour
+
+dependency-scanning-gradle:   # resolution job (always defined; rules pick the language)
+  artifacts:
+    expire_in: 1 hour
+
+dependency-scanning-python:   # resolution job (always defined; rules pick the language)
+  artifacts:
+    expire_in: 1 hour

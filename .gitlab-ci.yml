@@ -3,10 +3,24 @@
 #
 # Jobs:
 #   validate-json       — Ensures marketplace.json and all plugin.json files parse cleanly.
-#   validate-yaml       — Ensures the skill-scanner-component spec YAML is valid.
 #   lint-shell          — shellcheck on all bash/sh scripts in plugins/ (hooks, bin, scripts).
 #   check-essentials    — Verifies bundled skills in essentials/ match their source plugin dirs.
-#   skill-safety-scan   — LLM-as-judge on changed skills, agents, and commands across all plugins.
+#   skillspector        — SkillSpector static security scan across plugins (report-only; see below).
+#
+# workflow: MR and main-branch pipelines behave as before. web/schedule pipelines additionally
+# set SKILLSPECTOR_SCOPE=all so SkillSpector does a full scan instead of a changed-files-only scan.
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      variables:
+        SKILLSPECTOR_SCOPE: "all"
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      variables:
+        SKILLSPECTOR_SCOPE: "all"
+    - when: always
 
 stages:
   - validate
@@ -33,26 +47,6 @@ validate-json:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == "main"'
 
-# ── YAML validation for component spec ───────────────────────────────────────
-# Uses the pre-built scanner image so no runtime pip install is needed —
-# pyyaml is already installed in the image from requirements.lock.
-
-validate-yaml:
-  stage: validate
-  image:
-    name: registry.gitlab.company.com/skillshub/claude-marketplace/skill-scanner:latest
-    entrypoint: [""]
-  variables:
-    COMPONENT_SPEC: "skill-scanner-component/templates/skill-scanner-component.yml"
-  script:
-    - python3 ci/validate-component-spec.py
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - skill-scanner-component/templates/skill-scanner-component.yml
-        - ci/validate-component-spec.py
-    - if: '$CI_COMMIT_BRANCH == "main"'
-
 # ── Shell script linting ─────────────────────────────────────────────────────
 # Runs shellcheck (error severity only) on every bash/sh script across plugins/.
 # Covers hooks, skill scripts, and bin/ helpers. Python and JSON files are skipped.
@@ -60,9 +54,9 @@ validate-yaml:
 
 lint-shell:
   stage: validate
-  image: alpine:3.20
-  before_script:
-    - apk add --no-cache shellcheck file
+  # koalaman/shellcheck-alpine ships shellcheck preinstalled — the runner can't
+  # reach OS package mirrors to `apk add` it at job time.
+  image: koalaman/shellcheck-alpine:stable
   script:
     - |
       set -e
@@ -182,58 +176,17 @@ check-essentials:
         - plugins/anthropic-pr-review/**/*
     - when: never
 
-# ── Skill safety scan across all plugins ─────────────────────────────────────
-# Scans all skills, agents, and commands across every plugin directory.
-# On MRs, only changed instruction files are scanned. On push to main, full scan.
+# ── Skill security scan across all plugins ───────────────────────────────────
+# SkillSpector static scan of skills/agents/commands across every plugin directory.
+# MR pipelines scan only changed instruction files (scope: changed). web/schedule
+# pipelines scan everything (workflow: above sets SKILLSPECTOR_SCOPE=all, which
+# overrides the `scope` input per the component's runtime-env contract).
+# fail_on: none — report-only while SkillSpector's accuracy is under review.
 
 include:
-  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner-component/skill-scanner-component@~latest
+  - component: $CI_SERVER_FQDN/platform-engineering/ci-catalogue/skillspector/skillspector@~latest
     inputs:
-      stage: "scan"
-      skills_dir: "plugins"
-      fail_on_review: true
-      threshold: 0.90
-
-# Note: GitLab CI variables: does not evaluate shell commands — SCANNER_FILES
-# must be set inside the script: block, not via variables:.
-skill-safety-scan:
-  variables:
-    # Ensure a full clone so git diff against the target branch ref works.
-    GIT_DEPTH: "0"
-  script:
-    - |
-      # On MR pipelines, restrict to only the instruction files touched in this MR.
-      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
-        # Fetch the target branch so the diff ref resolves.
-        git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
-        # Match skills/agents/commands in any plugin directory under plugins/.
-        # Prepend CI_PROJECT_DIR so paths are absolute — scanner.py resolves relative
-        # paths against SCANNER_SKILLS_DIR, which would otherwise double-up the prefix.
-        CHANGED=$(git diff --name-only \
-          "origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}...HEAD" \
-          | grep -E '^plugins/[^/]+/(skills/.*\.md|agents/.*\.md|commands/.*\.md)$' \
-          | sed "s|^|${CI_PROJECT_DIR}/|" \
-          | tr '\n' ',' | sed 's/,$//')
-        if [ -n "$CHANGED" ]; then
-          export SCANNER_FILES="$CHANGED"
-          echo "Targeted scan: $SCANNER_FILES"
-        else
-          echo "No changed instruction files detected — nothing to scan."
-          exit 0
-        fi
-      else
-        echo "Push to main — running full scan of skills, agents, and commands."
-      fi
-      python /scanner/scanner.py
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - plugins/*/skills/**/*.md
-        - plugins/*/agents/**/*.md
-        - plugins/*/commands/**/*.md
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - plugins/*/skills/**/*.md
-        - plugins/*/agents/**/*.md
-        - plugins/*/commands/**/*.md
-    - when: never
+      stage: scan
+      scan_root: plugins
+      scope: changed
+      fail_on: none        # report-only while SkillSpector's accuracy is being reviewed

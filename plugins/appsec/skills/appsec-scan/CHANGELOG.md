@@ -5,7 +5,107 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased]
+## [3.4.0] — 2026-09-24
+
+### Added
+
+- **New default profile `platform-engineering`**, targeting the self-hosted instance
+  (`gitlab.example.com`, catalogue `platform-engineering/ci-catalogue`). SAST runs
+  against `fortify-sast` 25.2.2, released on that instance on 2026-09-24; its image is
+  pulled from registry.gitlab.com (group `DOCKER_AUTH_CONFIG` in CI, `docker login`
+  locally) until the internal container registry is enabled. A category can still be
+  switched off with `enabled: false` plus a `note:` shown verbatim wherever it is
+  reported disabled. `catalog` and `company` stay available, unchanged, for whoever
+  sets `APPSEC_PROFILE` explicitly. A category an admin disables is now recorded in
+  `scan-coverage.json` as `disabled_by_profile` and reported as **not covered** — never
+  as clean.
+- **`settings.catalog.glab_fallback`** (default `true`): when the profile's
+  `auth_token_env` var is unset, `catalog.sh`/`glci-run.sh` now fall back to `glab config
+  get token --host <instance>` before giving up — useful on a host already `glab auth
+  login`-ed against the target instance. Catalog auth now sends `Authorization: Bearer`
+  (previously `PRIVATE-TOKEN`), which works for both a PAT and an OAuth token. New
+  `CONFIG-ERROR:` cases from `catalog.sh resolve`: an HTTP 404 with no credential
+  attached (internal/private catalogue projects 404 anonymous reads instead of 401 —
+  export the token or run `glab auth login --hostname <host>`), a 404 even with a token
+  attached (wrong path, or this identity cannot see the project), a TLS verification
+  failure (corporate TLS inspection — set `settings.ca_bundle`), and a component with no
+  releases or tags at all.
+- **`engine: glci`** (profile-level; `platform-engineering` sets it). Runs the CI/CD
+  Catalog component's real job locally with GitLab's own
+  [`glci`](https://gitlab.com/gitlab-org/ci-cd/runner-tools/glci) tool — closer to what
+  the pipeline actually executes than the docker-engine runner script. Supported for
+  `secret_detection` and `container_scanning` in this release; `sast` and
+  `dependency_scanning` print an `ADVISORY:` and always run with the docker engine. `glci`
+  is invoked with `--no-token --secrets none` — the user's own token is never forwarded
+  into the job, and instance CI/CD variables are never pulled. It judges each job, not
+  the pipeline (the components set `allow_failure: true`). `glci` unavailable (not
+  installed, unhealthy) falls back to the docker engine with an `ADVISORY:`; a job that
+  runs but fails, or produces no report, is a coverage gap, never a silent pass.
+  `scan-coverage.json` records the resolved engine (`glci` | `docker` | `docker-fallback`)
+  and `glci_commit` per category.
+- **GitLab-native dependency-scanning matching** via a profile's `remote_match_project`
+  (`platform-engineering` → `platform-engineering/skillshub/appsec-sbom-matcher`). Uploads
+  only this repo's dependency manifests/lockfiles (never source), one bundle per detected
+  language, to that helper project's generic package registry; triggers a real pipeline
+  on its non-default `scan` branch (a real `CI_JOB_TOKEN`, so GitLab's own server-side
+  SBOM-to-advisory match runs); downloads `gl-dependency-scanning-report.json`; deletes
+  the uploaded bundle (needs Maintainer on the helper project — `ADVISORY:` otherwise,
+  the platform team's own cleanup removes it). `scan-coverage.json`'s
+  `dependency_scanning.source` records `gitlab-native` for these results — no Trivy
+  caveat applies. Falls back to the existing offline SBOM + bundled-Trivy match
+  (`source: offline-trivy`, caveat unchanged) when the matcher is unusable or
+  `APPSEC_REMOTE_MATCH=off`; a language whose matcher pipeline failed is a coverage gap,
+  never silently dropped. Verified on crAPI: javascript 146, python 84, gradle 19, go 26
+  findings, roughly 30-50s per language. Helper project setup:
+  `reference/remote-matcher/README.md`.
+- **Multi-Dockerfile container scanning.** `scripts/detect-dockerfiles.sh` finds every
+  Dockerfile/Containerfile in the repo (git-aware, `.gitignore`-respecting) whenever
+  `DOCKERFILE`/`APPSEC_DOCKERFILES` are unset, so a monorepo with Dockerfiles only under
+  `services/*` is no longer skipped entirely. Each discovered Dockerfile gets its own
+  build and scan; more than one produces a report per image
+  (`gl-container-scanning-report-<slug>.json`), exactly one keeps the canonical name. A
+  build or scan failure for one Dockerfile is a partial-coverage gap, not silence for the
+  rest. `APPSEC_DOCKERFILES` (comma-separated, repo-relative) selects a subset;
+  `DOCKERFILE` still pins exactly one, as before.
+- `scripts/normalize.py` now collapses exact-duplicate findings (same category, scanner,
+  rule, location, package, installed version and manifest file) and reports the count
+  collapsed — the GitLab-native dependency-scanning matcher can legitimately list the
+  same identifier more than once.
+- A component declaring a brand-new input the runner has never consumed under any key is
+  now `ADVISORY:` (additive, backward compatible) instead of `CONTRACT-DRIFT:`. A new
+  *option* on an input the runner already reads and dispatches on — the `fortify-sast`
+  `go` case this mechanism exists to catch — still blocks as `CONTRACT-DRIFT:`.
+
+### Changed
+- Image pulls retry with `--platform linux/amd64` when the only failure is a missing
+  arm64 manifest (`resolve-image.sh` `pull_ok`, `run-scan.sh` `pull_image`), so amd64-only
+  scanner images (Fortify, toolbox) run emulated on Apple Silicon instead of being
+  reported as unmirrored.
+- `scanners/fortify-sast.contract` no longer lists `git-branch-name`, `srm-branch` or
+  `upload-srm-option`: they only drive the SSC/SRM upload the skill never performs, and
+  the self-hosted component dropped them.
+
+- `fix-branch.sh --init` now requires `--approved`. It refuses to create the fix branch
+  until the agent has asked the user first (SKILL.md Step 5); re-run as
+  `fix-branch.sh --init --approved` once they say yes.
+- `default_profile` changed from `catalog` to `platform-engineering` — see MIGRATION.md.
+- **`remote-match.sh` now triggers every detected language's matcher pipeline
+  concurrently instead of one after another.** Phase 1 builds, size-checks,
+  uploads and triggers every language sequentially (fast, no waiting); phase 2
+  then polls every still-running pipeline together in one loop, one shared
+  `--timeout` measured from the start of phase 2. `REMOTE-MATCH:` stdout still
+  prints in the same per-language order once every language is done, and
+  per-language exit-code semantics are unchanged. A SIGTERM/Ctrl-C mid-poll
+  still deletes every in-flight bundle and cancels every still-running
+  pipeline, not just one. On crAPI (javascript/python/gradle/go) this took the
+  wall time from ~3m39s sequential to under a minute once pipelines get a
+  runner promptly.
+- Internal refactor, no behaviour change: `detect-dockerfiles.sh` and
+  `remote-match.sh` now share their repo-file discovery, exclude list and
+  slug logic via new `scripts/lib-files.sh`; `run-scan.sh` builds its
+  selected-Dockerfiles list once and reuses it for both the `Detected:`
+  banner and container scanning; `normalize.py`'s `load_skip_reasons` and
+  `load_disabled_reasons` share one `_load_category_tsv` helper.
 
 ### Added
 

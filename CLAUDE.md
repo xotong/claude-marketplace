@@ -24,8 +24,6 @@ plugins/
   trailofbits-skills/             Vendored: trailofbits/skills (33 skills, curated subset)
   appsec/                         Platform Team — 2 security scanning skills
   code-quality/                   Platform Team — 4 code/doc quality skills
-ci/skill-scanner/                 Scanner implementation (scanner.py, Dockerfile, config.yaml)
-skill-scanner-component/          GitLab CI component spec + tenant and platform team docs
 VENDORED.md                       Upstream SHAs, licenses, what was included/excluded
 CODEOWNERS                        Approval rules (GitLab Ultimate [Section][N] syntax)
 ```
@@ -54,13 +52,11 @@ This repo must work fully offline once cloned. Do not add:
 
 MCP SDK docs and other reference material should be vendored locally under `skills/<name>/reference/`.
 
-**Narrow exception — appsec-scan catalog integration:** the `appsec-scan` skill may make runtime HTTP calls, from its helper scripts only (`scripts/catalog.sh`), to the single GitLab instance configured in `config/scanner-preferences.yaml` (`gitlab_instance`; the `catalog` profile points at gitlab.com, the `company` profile at the internal mirror). These calls fetch CI/CD Catalog metadata (tags, component templates, READMEs, AGENTS.md) for version resolution and drift warnings. The skill must keep working fully offline via the vendored snapshots in `plugins/appsec/skills/appsec-scan/reference/catalog/lobster-thermidor/devops/ci-catalogue/` — never add WebFetch instructions to SKILL.md prose.
+**Narrow exception — appsec-scan catalog integration:** the `appsec-scan` skill's helper scripts (`scripts/catalog.sh`, `scripts/glci-run.sh`, `scripts/remote-match.sh`) may make runtime calls to the single GitLab instance configured in `config/scanner-preferences.yaml` (`gitlab_instance`; the `catalog` profile points at gitlab.com, the `company` and `platform-engineering` profiles at internal instances). `catalog.sh` fetches CI/CD Catalog metadata (tags, component templates, READMEs, AGENTS.md) for version resolution and drift warnings. `glci-run.sh` (profile `engine: glci`) additionally resolves the catalog component's own CI includes and pulls its own runner images to run the real job locally. `remote-match.sh` (profile `remote_match_project` set) uploads only dependency manifests/lockfiles to that configured helper project and pulls back its GitLab-native dependency-scanning report. The skill must keep working fully offline — via the vendored snapshots in `plugins/appsec/skills/appsec-scan/reference/catalog/lobster-thermidor/devops/ci-catalogue/`, the docker engine, and offline Trivy matching (`APPSEC_REMOTE_MATCH=off` forces this path even when `remote_match_project` is set) — never add WebFetch instructions to SKILL.md prose.
 
-## Skill safety scanner
+## Skill security scan
 
-The CI scanner evaluates SKILL.md files using an LLM-as-judge. Implementation lives in `ci/skill-scanner/` (scanner.py, Dockerfile). The GitLab CI component spec is in `skill-scanner-component/templates/skill-scanner-component.yml`. It only scans changed files on MRs (via `SCANNER_FILES` env var). Full scan runs on push to main.
-
-Requires `LITELLM_API_KEY`, `SCANNER_ENDPOINT`, and `SCANNER_API_KEY` as CI/CD variables.
+CI runs SkillSpector (NVIDIA, Apache-2.0) via the `platform-engineering/ci-catalogue/skillspector` GitLab CI/CD component — static-only analysis, no runtime LLM calls. It is report-only (`fail_on: none`) while SkillSpector's accuracy is under review. MR pipelines scan only changed skills; web and scheduled pipelines scan everything.
 
 ## Adding a new upstream source
 

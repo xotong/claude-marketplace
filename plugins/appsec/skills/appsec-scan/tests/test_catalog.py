@@ -324,8 +324,15 @@ class ContractCoverageTest(unittest.TestCase):
                 l for l in result.stdout.splitlines()
                 if l.startswith(("input.", "report."))
             )
+            text = (SCANNERS_DIR / f"{runner}.contract").read_text()
+            # Only inputs a contract explicitly names as `# ignore-input:` may be left out.
+            ignored = tuple(
+                f"input.{l.split(':', 1)[1].strip()}."
+                for l in text.splitlines() if l.startswith("# ignore-input:")
+            )
+            derived = [l for l in derived if not (ignored and l.startswith(ignored))]
             checked_in = sorted(
-                l for l in (SCANNERS_DIR / f"{runner}.contract").read_text().splitlines()
+                l for l in text.splitlines()
                 if l.strip() and not l.startswith("#")
             )
             self.assertEqual(derived, checked_in, f"{runner}.contract is stale — regenerate it")
@@ -375,3 +382,240 @@ class RevendorSafetyTest(unittest.TestCase):
         self.assertIn("REFUSED", result.stdout)
         self.assertIn("0 vendored", result.stdout)
         self.assertEqual(before, after, "refused run still modified vendored snapshots")
+
+
+class CatalogAuthDiagnosticsTest(unittest.TestCase):
+    """catalog.sh: Bearer header, glab fallback, and the new CONFIG-ERROR classes."""
+
+    COMPONENT = "platform-engineering/ci-catalogue/secret-detection/secret-detection"
+
+    def make_env(self, curl_body: str, *, glab_body: str | None = None,
+                 extra_env: dict[str, str] | None = None) -> tuple[tempfile.TemporaryDirectory[str], dict[str, str], Path]:
+        tmp = tempfile.TemporaryDirectory(prefix="appsec-catalog-auth-")
+        bin_dir = Path(tmp.name) / "bin"
+        bin_dir.mkdir()
+        curl_path = bin_dir / "curl"
+        curl_path.write_text(curl_body, encoding="utf-8")
+        curl_path.chmod(0o755)
+        if glab_body is not None:
+            glab_path = bin_dir / "glab"
+            glab_path.write_text(glab_body, encoding="utf-8")
+            glab_path.chmod(0o755)
+
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+        # Isolate from whatever the real environment happens to export.
+        for name in ("APPSEC_GITLAB_TOKEN", "GITLAB_READ_TOKEN"):
+            env.pop(name, None)
+        if extra_env:
+            env.update(extra_env)
+        return tmp, env, bin_dir
+
+    def resolve(self, env: dict[str, str], token_env: str = "", *, cache: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return run(
+            [
+                "bash", str(CATALOG_SCRIPT), "resolve",
+                "https://gitlab.example.com", self.COMPONENT, "~latest",
+                str(cache or (Path(tempfile.mkdtemp()) / "cache")),
+                token_env,
+            ],
+            cwd=REPO_ROOT, env=env, check=False,
+        )
+
+    # -- Bearer header, not PRIVATE-TOKEN -----------------------------------
+
+    def test_bearer_header_written_to_curl_config_not_private_token(self) -> None:
+        capture = Path(tempfile.mkdtemp()) / "captured-config"
+        curl = f"""#!/bin/sh
+for arg do
+  if [ "$prev" = "--config" ]; then cp "$arg" "{capture}"; fi
+  prev=$arg
+done
+exit 22
+"""
+        tmp, env, _ = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+        env["APPSEC_TEST_TOKEN"] = "glpat-deadbeef00112233"
+
+        self.resolve(env, "APPSEC_TEST_TOKEN")
+
+        self.assertTrue(capture.is_file(), "curl --config was never written")
+        config_text = capture.read_text(encoding="utf-8")
+        self.assertIn("Authorization: Bearer glpat-deadbeef00112233", config_text)
+        self.assertNotIn("PRIVATE-TOKEN", config_text)
+
+    def test_curl_config_temp_file_is_chmod_600(self) -> None:
+        # The token lives in this file (see the Bearer-header test above).
+        # mktemp already defaults to 0600 on this box, so asserting the
+        # file's final mode can't tell "explicitly chmod'd" apart from
+        # "mktemp's default happened to be 600" -- assert the chmod call
+        # itself instead (a stub that logs argv then chains to the real
+        # /bin/chmod). curl_get AND curl_status_probe (the diagnostics probe
+        # curl_get's failure path calls) each write their own --config file
+        # -- exit 22 below drives both in one resolve call, so this catches
+        # either one regressing.
+        capture = Path(tempfile.mkdtemp()) / "chmod.log"
+        chmod_stub = f"""#!/bin/sh
+printf '%s\\n' "$*" >> "{capture}"
+exec /bin/chmod "$@"
+"""
+        curl = "#!/bin/sh\nexit 22\n"
+        tmp, env, bin_dir = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+        chmod_path = bin_dir / "chmod"
+        chmod_path.write_text(chmod_stub, encoding="utf-8")
+        chmod_path.chmod(0o755)
+        env["APPSEC_TEST_TOKEN"] = "glpat-deadbeef00112233"
+
+        self.resolve(env, "APPSEC_TEST_TOKEN")
+
+        self.assertTrue(capture.is_file(), "chmod was never called on a curl --config file")
+        calls = [line for line in capture.read_text(encoding="utf-8").splitlines() if line]
+        # curl_get is retried across releases/tags, and each failure re-probes
+        # via curl_status_probe, so this is "at least the two call sites",
+        # not an exact count.
+        self.assertGreaterEqual(len(calls), 2, calls)
+        for call in calls:
+            self.assertTrue(call.startswith("600 "), call)
+
+    # -- glab fallback --------------------------------------------------------
+
+    def test_glab_fallback_supplies_token_and_never_leaks_it(self) -> None:
+        capture = Path(tempfile.mkdtemp()) / "captured-config"
+        curl = f"""#!/bin/sh
+for arg do
+  if [ "$prev" = "--config" ]; then cp "$arg" "{capture}"; fi
+  prev=$arg
+done
+exit 22
+"""
+        glab = """#!/bin/sh
+case "$*" in
+  "config get token --host gitlab.example.com") printf '%s' "glab-secret-token-xyz" ;;
+  *) exit 1 ;;
+esac
+"""
+        tmp, env, _ = self.make_env(curl, glab_body=glab)
+        self.addCleanup(tmp.cleanup)
+        env["CATALOG_GLAB_FALLBACK"] = "true"
+        # APPSEC_TEST_TOKEN is deliberately absent/empty: env source must miss
+        # before glab is even tried.
+        env["APPSEC_TEST_TOKEN"] = ""
+
+        result = self.resolve(env, "APPSEC_TEST_TOKEN")
+
+        self.assertTrue(capture.is_file(), "curl --config was never written")
+        config_text = capture.read_text(encoding="utf-8")
+        self.assertIn("Authorization: Bearer glab-secret-token-xyz", config_text)
+        # The token must never appear anywhere in this process's own captured
+        # output — only inside the curl --config temp file above.
+        # run()'s stderr=STDOUT means result.stderr is None here; the
+        # combined output already landed in result.stdout.
+        self.assertIsNone(result.stderr)
+        self.assertNotIn("glab-secret-token-xyz", result.stdout)
+
+    def test_glab_fallback_off_by_default_does_not_shell_out(self) -> None:
+        curl = "#!/bin/sh\nexit 22\n"
+        glab = '#!/bin/sh\ntouch "$GLAB_CALLED_MARKER"\nexit 1\n'
+        tmp, env, _ = self.make_env(curl, glab_body=glab)
+        self.addCleanup(tmp.cleanup)
+        marker = Path(tmp.name) / "glab-called"
+        env["GLAB_CALLED_MARKER"] = str(marker)
+        env["CATALOG_GLAB_FALLBACK"] = "false"
+        env["APPSEC_TEST_TOKEN"] = ""
+
+        self.resolve(env, "APPSEC_TEST_TOKEN")
+
+        self.assertFalse(marker.exists(), "glab must not run when glab_fallback is false")
+
+    # -- HTTP 404 classification ---------------------------------------------
+
+    def test_404_with_no_token_names_the_setup_steps(self) -> None:
+        curl = """#!/bin/sh
+case "${1:-}" in --version) echo "curl 8.0.0"; exit 0 ;; esac
+has_w=0
+for arg do [ "$arg" = "-w" ] && has_w=1; done
+if [ "$has_w" = 1 ]; then printf '404'; exit 0; fi
+exit 22
+"""
+        tmp, env, _ = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+        env["CATALOG_GLAB_FALLBACK"] = "false"
+
+        result = self.resolve(env, "")
+
+        self.assertIn("CONFIG-ERROR", result.stdout)
+        self.assertIn("no credential attached", result.stdout)
+        self.assertIn("glab auth login", result.stdout)
+        self.assertIn("offline-fallback: config-error]", result.stdout)
+
+    def test_404_with_token_names_path_or_visibility(self) -> None:
+        curl = """#!/bin/sh
+case "${1:-}" in --version) echo "curl 8.0.0"; exit 0 ;; esac
+has_w=0
+for arg do [ "$arg" = "-w" ] && has_w=1; done
+if [ "$has_w" = 1 ]; then printf '404'; exit 0; fi
+exit 22
+"""
+        tmp, env, _ = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+        env["APPSEC_TEST_TOKEN"] = "glpat-hastoken0000000"
+
+        result = self.resolve(env, "APPSEC_TEST_TOKEN")
+
+        self.assertIn("CONFIG-ERROR", result.stdout)
+        self.assertIn("even with a token attached", result.stdout)
+        self.assertIn("offline-fallback: config-error]", result.stdout)
+
+    # -- TLS verification failure --------------------------------------------
+
+    def test_tls_verify_failure_names_ca_bundle(self) -> None:
+        curl = "#!/bin/sh\nexit 60\n"
+        tmp, env, _ = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+
+        result = self.resolve(env, "")
+
+        self.assertIn("CONFIG-ERROR", result.stdout)
+        self.assertIn("TLS", result.stdout)
+        self.assertIn("ca_bundle", result.stdout)
+        self.assertIn("offline-fallback: config-error]", result.stdout)
+
+    # -- Zero releases and zero tags -----------------------------------------
+
+    def test_zero_releases_and_zero_tags_is_a_config_error(self) -> None:
+        curl = """#!/bin/sh
+for last do :; done
+url=$last
+case "$url" in
+  */releases?per_page=100) printf '[]' ;;
+  */repository/tags?per_page=100) printf '[]' ;;
+  *) exit 22 ;;
+esac
+"""
+        tmp, env, _ = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+
+        result = self.resolve(env, "")
+
+        self.assertIn("CONFIG-ERROR", result.stdout)
+        self.assertIn("has no releases or tags", result.stdout)
+        self.assertIn("~latest cannot resolve", result.stdout)
+        self.assertIn("offline-fallback: config-error]", result.stdout)
+
+    # -- 401/403 stays on its existing label (regression only) --------------
+
+    def test_401_keeps_unauthorized_label(self) -> None:
+        curl = """#!/bin/sh
+case "${1:-}" in --version) echo "curl 8.0.0"; exit 0 ;; esac
+has_w=0
+for arg do [ "$arg" = "-w" ] && has_w=1; done
+if [ "$has_w" = 1 ]; then printf '401'; exit 0; fi
+exit 22
+"""
+        tmp, env, _ = self.make_env(curl)
+        self.addCleanup(tmp.cleanup)
+
+        result = self.resolve(env, "")
+
+        self.assertIn("offline-fallback: unauthorized]", result.stdout)

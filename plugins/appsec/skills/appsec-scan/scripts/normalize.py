@@ -191,6 +191,14 @@ def new_finding(
             normalized,
             json.dumps(location, sort_keys=True, separators=(",", ":")),
             evidence.get("package"),
+            # installed_version + manifest (the file a dependency finding's
+            # location collapses away — see _gitlab_location) so two DS
+            # findings for the same identifier+package but a DIFFERENT
+            # version or file stay distinct; only an EXACT
+            # identifier+package+version+file repeat collapses (see
+            # normalize_reports' dedup pass).
+            evidence.get("installed_version"),
+            evidence.get("manifest"),
         ]
     )
     return {
@@ -228,6 +236,11 @@ def _report_category(path):
     # are variable for the same reason the two above are.
     if name.startswith("fortify-sast") and name.endswith(".fpr"):
         return "sast"
+    # container-target.sh/run-scan.sh fan out ONE report per Dockerfile when a
+    # repo has more than one (gl-container-scanning-report-<slug>.json); the
+    # canonical single-Dockerfile name is still the plain REPORT_CATEGORIES key.
+    if name.startswith("gl-container-scanning-report-") and name.endswith(".json"):
+        return "container_scanning"
     return REPORT_CATEGORIES.get(name)
 
 def _fallback_category(path):
@@ -639,11 +652,29 @@ def parse_failure_finding(path, error):
         rule_id=rule_id,
     )
 
+def _is_remote_ds_bookkeeping(path):
+    """remote-match.sh's own per-language bookkeeping under remote-ds/<lang>/ —
+    result.json (status/pipeline_id/...) and bundle-manifest.txt (the file
+    list uploaded) are not scanner reports. The real evidence sitting right
+    beside them, gl-dependency-scanning-report.json, is unaffected: only
+    these two exact names are excluded, not the whole remote-ds/ tree.
+    """
+    return "remote-ds" in path.parts and path.name.lower() in (
+        "result.json",
+        "bundle-manifest.txt",
+    )
+
 def normalize_reports(results_dir):
     """Normalize every supported report; one bad file can never stop the run."""
     findings = []
+    seen_fingerprints = set()
     for path in sorted(Path(results_dir).rglob("*")):
-        if any(part in path.parts for part in ("bin", "catalog")):
+        # glci/ holds glci-run.sh's raw job artifacts (pipeline yaml, event
+        # logs, unzipped job dirs) -- not reports; its canonical report copies
+        # already sit at the top level under their normal names.
+        if any(part in path.parts for part in ("bin", "catalog", "glci")):
+            continue
+        if _is_remote_ds_bookkeeping(path):
             continue
         if not path.is_file() or path.name in OUTPUT_FILES:
             continue
@@ -670,7 +701,28 @@ def normalize_reports(results_dir):
                     findings.append(unsupported_report_finding(path))
         except Exception as error:  # Deliberate ceiling: vendor parse failures become findings.
             findings.append(parse_failure_finding(path, error))
-    return findings
+
+    # Collapse EXACT duplicates (same fingerprint: category, scanner, rule_id,
+    # name, severity, location, package, installed_version, manifest file).
+    # A remote GitLab-native dependency-scanning report can legitimately list
+    # the same identifier+package+version+file more than once (crAPI's
+    # javascript report: 146 raw entries, 115 unique) -- report the collapse
+    # so a shrinking finding count is never mistaken for lost evidence.
+    deduped = []
+    for item in findings:
+        fp = item.get("fingerprint")
+        if fp in seen_fingerprints:
+            continue
+        seen_fingerprints.add(fp)
+        deduped.append(item)
+    dropped = len(findings) - len(deduped)
+    if dropped:
+        print(
+            f"INFO: collapsed {dropped} exact-duplicate finding(s); "
+            f"{len(deduped)} unique finding(s) normalized",
+            file=sys.stderr,
+        )
+    return deduped
 
 def unreadable_categories(findings):
     """Categories whose report normalize_reports could not read at all.
@@ -933,12 +985,13 @@ def redact_secret_findings(findings, matched_only=False):
         )
     return findings
 
-def load_skip_reasons(path):
-    """category -> actionable reason, written by run-scan.sh when a scanner bails.
+def _load_category_tsv(path, default_reason, what):
+    """category -> reason, from a TSV file of `category<TAB>reason` lines.
 
-    A coverage finding that just says "report missing" leaves the user with no
-    idea what to do. The reason names the fix (write a Dockerfile, set
-    FORTIFY_LANGUAGE) so the gap is actionable rather than merely visible.
+    Shared by load_skip_reasons and load_disabled_reasons: same "absent file
+    means empty, not an error" rule, same unrecognized-category handling,
+    same "blank reason falls back to default" rule. `what` names the kind of
+    record for the unrecognized-category warning text.
     """
     reasons = {}
     if not path:
@@ -946,12 +999,12 @@ def load_skip_reasons(path):
     try:
         text = Path(path).read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
-        # Absent is genuinely "no skips": run-scan.sh truncates this file before
-        # any scanner starts, so the file exists for the whole of a real run.
-        # Every other OSError propagates and main() turns it into exit 2. A skips
-        # file we were told to read but could not is not evidence that nothing
-        # was skipped -- swallowing it erased every recorded gap and reported
-        # full coverage.
+        # Absent is genuinely "none recorded": run-scan.sh truncates this file
+        # before any scanner starts, so it exists for the whole of a real run.
+        # Every other OSError propagates and main() turns it into exit 2. A
+        # file we were told to read but could not is not evidence that
+        # nothing was recorded -- swallowing it erased every recorded gap and
+        # reported full coverage.
         return reasons
     for line in text.splitlines():
         if not line.strip():
@@ -959,23 +1012,84 @@ def load_skip_reasons(path):
         category, _, reason = line.partition("\t")
         category = category.strip()
         if category not in CATEGORIES:
-            # The line is dropped, so say so. A typo in a future record_skip
-            # call would otherwise erase a coverage gap in complete silence.
+            # The line is dropped, so say so. A typo in a future record call
+            # would otherwise erase a coverage gap in complete silence.
             print(
-                "WARNING: ignoring recorded skip for unrecognized category: "
-                + category,
+                "WARNING: ignoring recorded " + what + ": " + category,
                 file=sys.stderr,
             )
             continue
-        # Register the skip on the category alone. Whether a category counts as
+        # Register on the category alone. Whether a category counts as
         # covered must never depend on whether the reason text survived: an
-        # empty, whitespace-only or tab-less line used to discard the skip
+        # empty, whitespace-only or tab-less line used to discard the record
         # itself, turning a recorded gap into an all-clear.
-        reasons[category] = reason.strip() or (
-            "The scanner did not complete and recorded no reason; treat this "
-            "category as unscanned."
-        )
+        reasons[category] = reason.strip() or default_reason
     return reasons
+
+def load_skip_reasons(path):
+    """category -> actionable reason, written by run-scan.sh when a scanner bails.
+
+    A coverage finding that just says "report missing" leaves the user with no
+    idea what to do. The reason names the fix (write a Dockerfile, set
+    FORTIFY_LANGUAGE) so the gap is actionable rather than merely visible.
+    """
+    return _load_category_tsv(
+        path,
+        "The scanner did not complete and recorded no reason; treat this "
+        "category as unscanned.",
+        "skip for unrecognized category",
+    )
+
+def load_disabled_reasons(path):
+    """category -> "disabled_by_profile[: note]", written by run-scan.sh for
+    every category scanner-preferences.yaml sets enabled: false on.
+
+    Distinct from load_skip_reasons: a disabled category is an admin DECISION,
+    not a scanner that tried and failed, so it must never read as either a
+    coverage gap (missing_report/coverage_complete, which drive the gate) or a
+    clean scan. It gets its own field in scan-coverage.json instead — see
+    coverage_findings' `disabled` parameter and main()'s
+    scan-coverage.json write.
+    """
+    return _load_category_tsv(
+        path,
+        "disabled_by_profile",
+        "disabled-category entry for unrecognized category",
+    )
+
+def load_engine_info(path):
+    """category -> {"engine":.., "glci_commit":.., "source":..,
+    "matcher_pipelines": [..]}, written by run-scan.sh's record_engine_info
+    for a category that used something other than the plain docker engine /
+    offline Trivy match this run (glci, a glci->docker fallback, or the
+    remote GitLab-native dependency-scanning matcher). A category absent
+    here used the default docker engine; dependency_scanning has no default
+    source — see main()'s scan-coverage.json write.
+    """
+    info = {}
+    if not path:
+        return info
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return info
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        category, field, value = (part.strip() for part in parts)
+        if category not in CATEGORIES:
+            continue
+        entry = info.setdefault(category, {})
+        if field == "matcher_pipeline":
+            if value:
+                entry.setdefault("matcher_pipelines", []).append(value)
+        elif field in ("engine", "glci_commit", "source"):
+            if value:
+                entry[field] = value
+    return info
 
 def coverage_findings(
     results_dir,
@@ -987,8 +1101,9 @@ def coverage_findings(
     unreadable = set(unreadable or ())
     reports = {category: [] for category in CATEGORIES}
     for path in Path(results_dir).rglob("*"):
-        # ponytail: cached tools and catalog payloads are not scanner evidence.
-        if any(part in path.parts for part in ("bin", "catalog")):
+        # ponytail: cached tools, catalog payloads and glci's raw job
+        # artifacts are not scanner evidence.
+        if any(part in path.parts for part in ("bin", "catalog", "glci")):
             continue
         if path.is_file():
             category = _report_category(path)
@@ -1086,7 +1201,14 @@ def _merge_category(path, new_findings, category):
     existing = _load_existing(path)
     return [item for item in existing if item.get("category") != category] + new_findings
 
-def print_summary(findings, gate, failed, coverage_incomplete=False):
+def print_summary(
+    findings,
+    gate,
+    failed,
+    coverage_incomplete=False,
+    disabled_by_profile=None,
+    dependency_scanning_source=None,
+):
     widths = (28, 8, 8, 8, 8)
     header = ("Scanner", "Critical", "High", "Medium", "Low")
     non_actionable_statuses = {
@@ -1147,7 +1269,37 @@ def print_summary(findings, gate, failed, coverage_incomplete=False):
         verdict = "PASSED"
     print(f"Gate verdict: {verdict} (threshold: {gate})")
 
-    secrets = [item for item in findings if item.get("category") == "secret_detection"]
+    # Which vulnerability-match path dependency_scanning actually used this
+    # run. gitlab-native (the remote helper project) needs no caveat: it is
+    # the same server-side match GitLab's own Vulnerability Report uses.
+    # offline-trivy is a local heuristic match and gets the caveat every time
+    # — including a clean result, which is exactly when "trust this" matters
+    # most.
+    if dependency_scanning_source == "gitlab-native":
+        print("Dependency Scanning source: gitlab-native (GitLab server-side SBOM match)")
+    elif dependency_scanning_source == "offline-trivy":
+        print(
+            "Dependency Scanning source: offline-trivy (local SBOM + bundled "
+            "Trivy match — a heuristic match, not GitLab's server-side "
+            "advisory match; confirm in the GitLab Vulnerability Report after push)"
+        )
+
+    if disabled_by_profile:
+        # Never folded into the gate verdict above: disabling a category is an
+        # admin decision (scanner-preferences.yaml enabled: false), not a
+        # scan that failed. Printed anyway so it can never be mistaken for "not
+        # configured" or "scanned clean" — see scan-coverage.json's
+        # disabled_by_profile field for the machine-readable form.
+        print(f"Disabled by profile ({len(disabled_by_profile)}):")
+        for category in sorted(disabled_by_profile):
+            print(f"  {category}: {disabled_by_profile[category]}")
+
+    secrets = [
+        item
+        for item in findings
+        if item.get("category") == "secret_detection"
+        and not str(item.get("rule_id") or "").startswith("APPSEC-REPORT-")
+    ]
     if secrets:
         print("Secret Detection findings (redacted)")
         for finding in secrets:
@@ -1179,7 +1331,9 @@ def build_parser():
     parser.add_argument("--only", choices=CATEGORIES)
     parser.add_argument("--ran", default=None)
     parser.add_argument("--skips", default=None)
+    parser.add_argument("--disabled", default=None)
     parser.add_argument("--availability", default=None)
+    parser.add_argument("--engine-info", default=None)
     return parser
 
 def _previous_coverage(results_dir, key):
@@ -1219,6 +1373,8 @@ def main(argv=None):
         if args.only:
             parsed = [item for item in parsed if item.get("category") == args.only]
         skip_reasons = load_skip_reasons(args.skips)
+        disabled_reasons = load_disabled_reasons(args.disabled)
+        engine_info = load_engine_info(args.engine_info)
         # Dedupe coverage findings against what the OUTPUT will hold, not just
         # this run's parsed findings: under --only the other categories are kept
         # from the previous file, so every rescan appended one more copy of the
@@ -1323,20 +1479,70 @@ def main(argv=None):
         if missing and gate != "none":
             failed = True
 
-        write_json(
-            results_dir / "scan-coverage.json",
-            {
-                "scanners_run": scanners_run,
-                "missing_report": missing,
-                "gate_threshold": gate,
-                "gate_passed": not failed,
-                # Separate fact from the gate verdict. `gate: none` is
-                # report-only and always passes, so gate_passed alone could read
-                # as "fully scanned and clean" while categories never ran.
-                "coverage_complete": not missing,
-            },
+        # engine: docker (the default) unless engine_info (run-scan.sh's
+        # record_engine_info) says a category used glci, fell back from glci
+        # to docker this run, or — dependency_scanning only — the remote
+        # GitLab-native matcher. ponytail: rebuilt fresh from THIS
+        # invocation's scanners_run + engine_info, not merged across a
+        # scoped --only rerun the way scanners_run/missing_report are; a
+        # category this invocation did not touch reads as the plain default
+        # rather than carrying forward an earlier run's engine. That is a
+        # cosmetic gap only — it never affects gate_passed/coverage_complete.
+        engine = {category: "docker" for category in scanners_run}
+        glci_commit = {}
+        for category in scanners_run:
+            entry = engine_info.get(category, {})
+            if entry.get("engine"):
+                engine[category] = entry["engine"]
+            if entry.get("glci_commit"):
+                glci_commit[category] = entry["glci_commit"]
+        ds_entry = engine_info.get("dependency_scanning", {})
+        # No default: only report a source run-scan.sh actually recorded this
+        # run (gitlab-native, or offline-trivy once the local SBOM + Trivy
+        # match produced evidence). A category that ran but recorded neither
+        # (e.g. the SBOM was never matched) omits the source line rather than
+        # claiming a Trivy match that never happened.
+        dependency_scanning_source = (
+            ds_entry.get("source") if "dependency_scanning" in scanners_run else None
         )
-        print_summary(triaged, gate, failed, bool(missing))
+        dependency_scanning_coverage = None
+        if dependency_scanning_source:
+            dependency_scanning_coverage = {"source": dependency_scanning_source}
+            if ds_entry.get("matcher_pipelines"):
+                dependency_scanning_coverage["matcher_pipelines"] = ds_entry[
+                    "matcher_pipelines"
+                ]
+
+        coverage_json = {
+            "scanners_run": scanners_run,
+            "missing_report": missing,
+            "gate_threshold": gate,
+            "gate_passed": not failed,
+            # Separate fact from the gate verdict. `gate: none` is
+            # report-only and always passes, so gate_passed alone could read
+            # as "fully scanned and clean" while categories never ran.
+            "coverage_complete": not missing,
+            # A category the admin disabled, never scanned by DESIGN. Kept
+            # out of missing_report/coverage_complete/gate_passed on
+            # purpose: disabling a category is a config decision, not a
+            # scan that failed, so it must never flip an otherwise-passing
+            # gate — but it must also never be simply absent from this
+            # file, which is what "reads as clean" would mean here.
+            "disabled_by_profile": disabled_reasons,
+            "engine": engine,
+            "glci_commit": glci_commit,
+        }
+        if dependency_scanning_coverage is not None:
+            coverage_json["dependency_scanning"] = dependency_scanning_coverage
+        write_json(results_dir / "scan-coverage.json", coverage_json)
+        print_summary(
+            triaged,
+            gate,
+            failed,
+            bool(missing),
+            disabled_reasons,
+            dependency_scanning_source,
+        )
         if args.only:
             print("NOTE: this was a scoped rescan of " + args.only + " only.")
             outstanding = [

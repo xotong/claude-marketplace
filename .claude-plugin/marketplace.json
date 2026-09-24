@@ -27,8 +27,8 @@
     {
       "name": "appsec",
       "source": "./plugins/appsec",
-      "version": "3.3.0",
-      "description": "[Platform Team] 2 security scanning skills: appsec-scan (catalog-driven CI mirror \u2014 single-command scan (run-scan.sh) + normalized findings/triage statuses for small-model execution; admin-managed scanner preference profiles, 4 components from the private GitLab CI/CD Catalog (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning) with per-component version pinning (~latest or exact tag); approval-gated fix loop and a guided Vulnerability Report triage plan) and appsec-dast-sim (LLM-based DAST following OWASP WSTG v4.2 \u2014 no running app required).",
+      "version": "3.4.0",
+      "description": "[Platform Team] 2 security scanning skills: appsec-scan (catalog-driven CI mirror \u2014 single-command scan (run-scan.sh) + normalized findings/triage statuses for small-model execution; admin-managed scanner preference profiles pointing at the configured instance's private GitLab CI/CD Catalog, 4 components (Fortify SCA SAST, Dependency Scanning SBOM, Secret Detection, Container Scanning) with per-component version pinning (~latest or exact tag); an optional glci engine that runs the real catalog component job locally for secret detection and container scanning, and optional GitLab-native dependency-scanning matching via a remote helper project; approval-gated fix loop and a guided Vulnerability Report triage plan) and appsec-dast-sim (LLM-based DAST following OWASP WSTG v4.2 \u2014 no running app required).",
       "author": {
         "name": "Platform Team"
       },

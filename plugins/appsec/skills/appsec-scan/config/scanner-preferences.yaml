@@ -76,6 +76,19 @@ settings:
     # Setup: MIGRATION.md step 0.
     auth_token_env: GITLAB_READ_TOKEN
 
+    # Fallback credential source when the named auth_token_env var is unset (or
+    # empty). true = ask `glab` for a token scoped to the active profile's
+    # gitlab_instance host (`glab config get token --host <host>`), the same
+    # credential `glab` itself already uses — useful when a developer is
+    # already `glab auth login`-ed against an internal instance and would
+    # rather not also export a separate PAT. Only consulted when the named
+    # env var is unset; an explicitly exported (even empty-string) override
+    # is never second-guessed. false = never shell out to glab; a missing
+    # token stays a preflight/CONFIG-ERROR as before. Requires `glab` on PATH;
+    # silently skipped (falls through to the existing unset-token error) when
+    # it is not.
+    glab_fallback: true
+
   # Where the dependency-scanning analyzer RESOLVES packages from while it builds
   # the SBOM. Both of these default, inside the component itself, to values that
   # only work with public internet — the checked-in contract records
@@ -264,7 +277,7 @@ settings:
 # ─────────────────────────────────────────────────────────────────────────
 # Profiles
 # ─────────────────────────────────────────────────────────────────────────
-default_profile: catalog
+default_profile: platform-engineering
 
 profiles:
   # catalog — gitlab.com defaults, used by the Platform Team to test against the
@@ -336,5 +349,53 @@ profiles:
         enabled: true
       container_scanning:
         component: lobster-thermidor/devops/ci-catalogue/container-scanning/container-scanning
+        version: ~latest
+        enabled: true
+
+  # platform-engineering — the self-hosted GitLab instance at
+  # gitlab.example.com. Default profile: out of the box, this skill now
+  # targets this instance rather than gitlab.com. Its ci-catalogue projects
+  # are internal (anonymous reads 404), so auth_token_env is required here;
+  # if that var is unset, catalog.sh falls back to `glab config get token`
+  # (settings.catalog.glab_fallback above) before giving up.
+  platform-engineering:
+    gitlab_instance: https://gitlab.example.com
+    auth_token_env: APPSEC_GITLAB_TOKEN
+    # engine: docker (the shipped default, every other profile) runs each
+    # category's runner script (scanners/<runner>.sh) inside the scanner
+    # image, exactly like CI. engine: glci instead runs the real CI/CD
+    # Catalog component job locally with `glci` (GLCI_BIN env, else PATH,
+    # else ~/.glci/bin/glci) — same component, same job, closer to what the
+    # pipeline actually executes. Not every category supports glci yet: sast
+    # and dependency_scanning always run docker regardless of this setting
+    # (an ADVISORY line says so) — see docs/ARCHITECTURE.md.
+    engine: glci
+    # GitLab-native dependency-scanning match: upload this repo's manifests
+    # to a helper project that already has a real CI_JOB_TOKEN and pull back
+    # its gl-dependency-scanning-report.json, instead of the offline
+    # SBOM + bundled-Trivy match. Path to that project (see
+    # reference/remote-matcher/README.md). Empty (every other profile) =
+    # disabled, offline Trivy match runs as before.
+    remote_match_project: platform-engineering/skillshub/appsec-sbom-matcher
+    categories:
+      sast:
+        component: platform-engineering/ci-catalogue/fortify-sast/fortify-sast
+        version: ~latest
+        enabled: true
+        # Released as 25.2.2 on 2026-09-24. Its image (fortify-sca:25.2.0-<variant>) is
+        # still pulled from registry.gitlab.com: CI via the platform-engineering group's
+        # DOCKER_AUTH_CONFIG, laptops via `docker login registry.gitlab.com`. When the
+        # internal container registry is enabled, only the component's registry input
+        # changes. `note:` (CATEGORY_NOTE_SAST) is shown whenever a category is disabled.
+      dependency_scanning:
+        component: platform-engineering/ci-catalogue/dependency-scanning/dependency-scanning
+        version: ~latest
+        enabled: true
+      secret_detection:
+        component: platform-engineering/ci-catalogue/secret-detection/secret-detection
+        version: ~latest
+        enabled: true
+      container_scanning:
+        component: platform-engineering/ci-catalogue/container-scanning/container-scanning
         version: ~latest
         enabled: true

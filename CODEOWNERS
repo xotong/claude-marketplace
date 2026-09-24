@@ -39,11 +39,10 @@
 /plugins/appsec/                                @skillshub/platform-team
 /plugins/code-quality/                          @skillshub/platform-team
 
-# ── Governance, CI, and scanner component ────────────────────────────────────
+# ── Governance and CI ─────────────────────────────────────────────────────────
 
 [Governance][1]
 /CODEOWNERS                                     @skillshub/platform-team
 /VENDORED.md                                    @skillshub/platform-team
 /.gitlab-ci.yml                                 @skillshub/platform-team
 /ci/                                            @skillshub/platform-team
-/skill-scanner-component/                       @skillshub/platform-team

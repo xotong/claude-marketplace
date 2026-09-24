@@ -74,6 +74,13 @@ if [ "$_ce_dir" = "${BASH_SOURCE[0]}" ]; then _ce_dir=.; fi
 pull_ok() {
   if [ "$PULL_MODE" = no-pull ]; then return 0; fi
   if pull_err=$("$RUNTIME" pull -q "$1" 2>&1); then return 0; fi
+  # CI scanner images are built for amd64 runners; on an arm64 laptop the plain pull
+  # fails with "no matching manifest" although the image exists. Emulate instead of
+  # reporting a mirroring gap.
+  case "$pull_err" in
+    *"no matching manifest"*|*"no match for platform"*)
+      if pull_err=$("$RUNTIME" pull -q --platform linux/amd64 "$1" 2>&1); then return 0; fi ;;
+  esac
   if is_auth_error "$pull_err"; then
     echo "CONFIG-ERROR: the registry refused our credentials for $1, so no scanner image could be resolved — run '$RUNTIME login <registry-host>', or set the credentials named by settings.container_registry in scanner-preferences.yaml" >&2
     exit 2

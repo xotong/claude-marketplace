@@ -9,11 +9,16 @@
 # rather than running the component's gl-sast-report.json converter) — that
 # divergence is intentional; this file exists to catch upstream RENAMES.
 #
+# Deliberately absent (SSC/SRM upload only; this skill never uploads, and the self-hosted
+# component removed them). tests/test_catalog.py reads these lines:
+# ignore-input: git-branch-name
+# ignore-input: srm-branch
+# ignore-input: upload-srm-option
+#
 # Regenerate after a component bump (UPDATE-GUIDE.md Scenario 6):
 #   bash scripts/catalog.sh contract fortify-sast/fortify-sast <cache> > scanners/fortify-sast.contract
 input.allow-failure.default=true
 input.downloaded-scan-report-name.default=scan.fpr
-input.git-branch-name.default=$CI_COMMIT_REF_NAME
 input.image-tag.default=25.2.0
 input.image.default=fortify-sca
 input.job-name.default=fortify-scan
@@ -34,12 +39,10 @@ input.python-version.option=3.13
 input.python-version.option=3.14
 input.registry.default=registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/
 input.source-path.default=src
-input.srm-branch.default=$CI_COMMIT_REF_NAME
 input.stage.default=sast
 input.translation-mode.default=normal
 input.translation-mode.option=full
 input.translation-mode.option=normal
-input.upload-srm-option.default=false
 input.uv-installer-base.default=https://releases.astral.sh/github/uv/releases/download
 input.uv-python-install-mirror.default=https://github.com/astral-sh/python-build-standalone/releases/download
 input.uv-version.default=0.11.28

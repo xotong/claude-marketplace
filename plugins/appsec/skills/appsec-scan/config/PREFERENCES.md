@@ -28,12 +28,50 @@ install them in the environment (on WSL2/Linux the `install_url` path works).
 export APPSEC_PROFILE=catalog   # one env var — the whole switch
 ```
 
-Unset → the `default_profile` at the top of the file applies.
+Unset → the `default_profile` at the top of the file applies — shipped as
+`platform-engineering` (was `catalog` before 3.4.0).
 
 | Profile | Purpose |
 |---|---|
-| `catalog` | Default: resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet **and a `read_api` PAT in `$GITLAB_READ_TOKEN`** — that catalogue is private, so anonymous reads 404. Setup: MIGRATION.md step 0. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
+| `platform-engineering` | **Default (3.4.0+).** Self-hosted instance `gitlab.example.com`, catalogue `platform-engineering/ci-catalogue`. Needs a `read_api` PAT in `$APPSEC_GITLAB_TOKEN` (or the `glab` fallback below). `sast` is enabled against `fortify-sast` 25.2.2 — see "SAST on `platform-engineering`" below. `engine: glci` for secret_detection/container_scanning; `remote_match_project` set for GitLab-native dependency-scanning matching. |
+| `catalog` | Resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet **and a `read_api` PAT in `$GITLAB_READ_TOKEN`** — that catalogue is private, so anonymous reads 404. Setup: MIGRATION.md step 0. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
 | `company` | Production preferences: internal GitLab mirror. Edit the placeholder `gitlab_instance` (and `component:` if your paths differ) — images come from your own catalogue's templates once you re-vendor. Airgap-safe. |
+
+### SAST on `platform-engineering`
+
+`fortify-sast` was released on `gitlab.example.com` as **25.2.2** (2026-09-24). Its
+template pulls `fortify-sca:25.2.0-<variant>` from the private gitlab.com project
+`lobster-thermidor/devops/ci-catalogue/docker-images` until the internal container
+registry is enabled:
+
+- **CI**: the `platform-engineering` group's `DOCKER_AUTH_CONFIG` holds a `read_registry`
+  deploy token. Projects outside that group need their own until the switch.
+- **Laptops**: `docker login registry.gitlab.com` with the same kind of token.
+- **Apple Silicon**: the image is amd64-only; the skill retries the pull with
+  `--platform linux/amd64` and Docker runs it emulated (a small Python unit took ~3.5 min).
+
+When the internal registry is enabled, only the component's `registry` input changes —
+the skill derives the image from the template, so no preference edit is needed.
+
+To take a category out of a profile, set `enabled: false` and add a free-text `note:`;
+it is surfaced verbatim in `scan-coverage.json` and the scan summary:
+
+```yaml
+sast:
+  component: platform-engineering/ci-catalogue/fortify-sast/fortify-sast
+  version: ~latest
+  enabled: false
+  note: "why it is off, and what turns it back on"
+```
+
+A category with `enabled: false` is never silently absent: `load-prefs.sh` lists it in
+`DISABLED_CATEGORIES`, and `run-scan.sh`/`normalize.py` record it in
+`scan-coverage.json.disabled_by_profile` (category → `"disabled_by_profile: <note>"`).
+It is kept out of `missing_report`/`coverage_complete`/`gate_passed` — disabling a
+category is an admin decision, not a scan that failed, so it must never flip an
+otherwise-passing gate — but it is also never reported as clean. `note:` is optional on
+any category on any profile; omit it and the category is just reported disabled with no
+extra text.
 
 ## Global `settings:` block
 
@@ -55,6 +93,7 @@ settings:
   image_policy: follow-component   # follow-component | pinned
   catalog:
     auth_token_env: ""        # env var NAME holding a read_api PAT (blank = anonymous)
+    glab_fallback: true       # fall back to `glab config get token` when the named var is unset
   package_registries:         # URL TEMPLATES; all empty = upgrade check disabled
     npm: ""
     pypi: ""
@@ -178,6 +217,18 @@ settings:
   fails for any reason, `catalog.sh` falls back to the vendored snapshots in
   `../reference/catalog/` and says `[offline-fallback]`.
 
+  A failure that is a misconfiguration, not an outage, is reported as a
+  `CONFIG-ERROR:` and never masked by the snapshot fallback (see
+  ARCHITECTURE.md "Configuration errors vs environment failures"). Four specific
+  shapes, beyond the pre-existing 401/403 "credentials refused" case:
+
+  | Shape | Meaning | Fix |
+  |---|---|---|
+  | HTTP 404, no token attached | Internal/private CI/CD Catalog projects answer `404` to an anonymous read, not `401` | export the token named by `auth_token_env`, or `glab auth login --hostname <host>` |
+  | HTTP 404, even with a token attached | Wrong component path, or this identity cannot see it | check the path and the token owner's access |
+  | TLS verification failed (curl exit 60/77) | Almost always corporate TLS inspection, not an outage | set `settings.ca_bundle` to that inspection CA's PEM |
+  | No releases or tags at all | `version: ~latest` has nothing to resolve to | ask the platform team to tag/release the component, or pin an exact `version:` once one exists |
+
   A forced-offline setting was removed on 2026-07-25 because it provided nothing
   the rest of the design did not already give — exact `version:` pins provide
   reproducibility, and the automatic fallback provides airgap resilience — while
@@ -204,13 +255,17 @@ settings:
   ```
 
   `200` → set `auth_token_env: ""`. `401`/`404` → keep a PAT.
-  Ships as `GITLAB_READ_TOKEN` because the `lobster-thermidor` catalogue is
-  private on gitlab.com: anonymous reads return `404`. Whenever this names a
-  var, preflight requires that var to be non-empty — deliberately, so a
-  tokenless run cannot quietly fall back to vendored snapshots and look like a
-  live catalog test. Set it to `""` when the instance serves the components
-  anonymously — that is how the `company` profile ships. Token setup:
-  MIGRATION.md step 0.
+  Ships as `APPSEC_GITLAB_TOKEN` for `platform-engineering` and `GITLAB_READ_TOKEN`
+  for `catalog`, because both those catalogues are private: anonymous reads return
+  `404`, not `401` — internal/private CI/CD Catalog projects behave the same way as a
+  missing project to an anonymous caller, which is why `catalog.sh` calls that out as
+  its own `CONFIG-ERROR:` case rather than a generic failure. Whenever this names a
+  var, preflight requires either that var to be non-empty OR the `glab` fallback below
+  to supply a token — deliberately, so a tokenless, `glab`-less run cannot quietly fall
+  back to vendored snapshots and look like a live catalog test. Set it to `""` when the
+  instance serves the components anonymously — that is how the `company` profile
+  ships. Token setup: MIGRATION.md step 0. Sent as `Authorization: Bearer` (works for
+  both a PAT and an OAuth token).
 
   **Per profile.** `auth_token_env` may be set inside a profile block, next to
   `gitlab_instance`, because it is a property of that instance. A profile value
@@ -218,12 +273,102 @@ settings:
   which remains the default for profiles that do not set one. This is what lets
   the gitlab.com `catalog` profile require a PAT while the internal `company`
   profile reads anonymously.
+- **catalog.glab_fallback** (default `true`) — when the var named by
+  `auth_token_env` is unset (or explicitly exported empty), fall back to
+  `glab config get token --host <host-of-gitlab_instance>` before failing —
+  the same credential `glab` itself already uses, so a developer who has already
+  run `glab auth login --hostname <instance>` needs no separate export. Only
+  consulted when the named var is genuinely unset; an explicitly exported
+  override (even `""`) is never second-guessed. Requires `glab` on `PATH`;
+  silently skipped (falls through to the ordinary missing-token error) when it
+  is not. Set `false` to disable and require the named var every time. Used by
+  both `scripts/catalog.sh` (catalog metadata reads) and, when `engine: glci`,
+  `scripts/glci-run.sh` (the same token, never forwarded into the job it runs —
+  see "Engines" below).
 - **container_registry** — env var *names* (not values) holding the **image
   registry** credentials, used when GTCS pulls a BYO image and when a local
   build must pull a `FROM` base. If your registry (e.g. a JFrog mirror) allows
   anonymous pull, simply leave those env vars unset — the names can stay as
   they are and empty values are passed through harmlessly. Unrelated to
   `catalog.auth_token_env`.
+
+## Engines: `docker` vs `glci` (profile-level)
+
+```yaml
+platform-engineering:
+  gitlab_instance: https://gitlab.example.com
+  auth_token_env: APPSEC_GITLAB_TOKEN
+  engine: glci     # docker (default; every profile but platform-engineering) | glci
+```
+
+- **`docker`** (default) — `scripts/run-scan.sh` runs each enabled category's runner
+  script (`scanners/<runner>.sh`) inside the pulled scanner image. Unchanged behaviour.
+- **`glci`** — instead runs the CI/CD Catalog component's own job **locally** with
+  GitLab's own [`glci`](https://gitlab.com/gitlab-org/ci-cd/runner-tools/glci) tool
+  (`GLCI_BIN` env, else `PATH`, else `~/.glci/bin/glci`) — the same job the pipeline
+  actually executes, rather than this skill's own runner script standing in for it.
+  - **Supported in this release: `secret_detection` and `container_scanning` only.**
+    `sast` and `dependency_scanning` always resolve to `docker` regardless of this
+    setting; if either is enabled on a profile with `engine: glci`, the skill prints an
+    `ADVISORY:` explaining why and runs docker for them anyway.
+  - Always invoked with `--no-token --secrets none`: the resolved token (env or `glab`
+    fallback) is used only to resolve the component's own CI includes, **never**
+    forwarded into the job it runs, and no instance CI/CD variable is pulled into it.
+  - Judges each **job**, not the pipeline — the catalogue components set
+    `allow_failure: true`, so "pipeline passed" proves nothing on its own. A job that
+    runs to completion with a report is success (whatever that job's own pass/fail
+    verdict was); a job that fails to run at all, or produces no report, is a coverage
+    gap, never a silent pass.
+  - `glci` unavailable (not found, or `glci doctor` reports an unhealthy environment)
+    falls back to the `docker` engine for that category and prints an `ADVISORY:` —
+    never a silent skip.
+  - Needs Docker or Podman itself (glci runs the job inside its own container), on top
+    of — not instead of — the container runtime this skill already requires.
+  - `scan-coverage.json` records the resolved engine per category (`docker` | `glci` |
+    `docker-fallback`) and, when `glci` ran, the `glci_commit` it ran against.
+
+## GitLab-native dependency-scanning matching (`remote_match_project`)
+
+```yaml
+platform-engineering:
+  ...
+  remote_match_project: platform-engineering/skillshub/appsec-sbom-matcher
+```
+
+Empty (every profile but `platform-engineering`) — the existing offline SBOM +
+bundled-Trivy match runs, as documented under "Category notes" below
+(`dependency_scanning.source: offline-trivy` in `scan-coverage.json`).
+
+Set to a helper project path/ID and `scripts/remote-match.sh` instead:
+
+1. Detects this repo's dependency manifests/lockfiles per language (javascript,
+   python, maven, gradle, go).
+2. Uploads **only those files — never source** — to that project's generic package
+   registry, one bundle per language.
+3. Triggers a real pipeline there on its non-default `scan` branch (never the default
+   branch, so results never enter the helper project's own Vulnerability Report), with
+   a real `CI_JOB_TOKEN` — the one thing a purely local scan can never reproduce, since
+   GitLab's SBOM-to-advisory match only runs server-side behind that token.
+4. Downloads `gl-dependency-scanning-report.json` from that pipeline.
+5. Deletes the uploaded bundle — needs Maintainer on the helper project; without it the
+   delete fails with an `ADVISORY:` and the platform team's own cleanup removes it
+   instead, which does not affect the scan result.
+
+Recorded as `dependency_scanning.source: gitlab-native` in `scan-coverage.json` — no
+Trivy caveat applies; this is the same match GitLab's own Vulnerability Report uses. A
+language whose matcher pipeline fails, after at least one pipeline has already run, is a
+coverage gap for that language — **not** a silent fallback to Trivy. If the matcher is
+unusable before any pipeline runs at all (no token, project unreachable, wrong access),
+the whole category falls back to the offline match instead and says so with an
+`ADVISORY:`.
+
+`APPSEC_REMOTE_MATCH=off` (per-run env override) forces the offline match even when
+`remote_match_project` is configured — useful to sanity-check the two against each
+other, or when the helper project is temporarily unusable.
+
+Setting up the helper project itself (access, CI file, branch protection) is **not**
+part of this skill's own config — see
+[`../reference/remote-matcher/README.md`](../reference/remote-matcher/README.md).
 
 ## Per-category settings
 
@@ -350,21 +495,31 @@ without touching the network.
   to mirror the licensed CI environment. A lock file is required; plain manifests
   are skipped.
 
-  **GitLab-matched dependency results cannot be produced locally, by anything.**
-  GitLab matches the SBOM server-side behind an API that accepts only a real
-  `CI_JOB_TOKEN`, so no local runner — this skill, `glci`, `gitlab-ci-local`,
-  `gitlab-runner exec` — can obtain them. Please do not re-litigate this by
-  wiring in another runner; the blocker is the token, not the runner.
+  **GitLab-matched dependency results cannot be produced from THIS repo's own
+  CI_JOB_TOKEN, by anything** — no local runner (this skill's `docker` engine, `glci`
+  run against this repo, `gitlab-ci-local`, `gitlab-runner exec`) has one, because a
+  working tree on a laptop is never a running CI job. That blocker doesn't move.
 
-  An SBOM alone normalizes to zero findings, which would read as "scanned,
-  clean". So `scanners/sbom-vuln-scan.sh` matches it offline with the Trivy
-  bundled in the *container-scanning* image, against that image's baked advisory
-  DB. **Those findings are Trivy's, not GitLab's** — different advisory source,
-  so they will not match the post-push Vulnerability Report in content or count.
-  They exist to give the fix loop real `fixed_version`s to work with and to give
-  developers a pre-push signal. Tell users which one they are looking at. If that
-  pass cannot run (container scanning disabled, or `--only dependency_scanning`
-  with no CS image), the category is recorded as a coverage skip, never as clean.
+  What changed in 3.4.0: a profile can name a `remote_match_project` (see "GitLab-native
+  dependency-scanning matching" above) — a **different**, already-deployed GitLab
+  project that *does* run a real pipeline with its own real `CI_JOB_TOKEN`. This skill
+  uploads only this repo's manifests/lockfiles there and downloads back the
+  server-side-matched report. It is still not "this repo's own CI job" (results come
+  from a separate pipeline, on a separate project, matching manifests you uploaded) —
+  but it is GitLab's real advisory match rather than a heuristic stand-in, which is
+  what `dependency_scanning.source: gitlab-native` in `scan-coverage.json` records.
+
+  Without `remote_match_project` configured (or with `APPSEC_REMOTE_MATCH=off`), an
+  SBOM alone normalizes to zero findings, which would read as "scanned, clean". So
+  `scanners/sbom-vuln-scan.sh` matches it offline with the Trivy bundled in the
+  *container-scanning* image, against that image's baked advisory DB. **Those findings
+  are Trivy's, not GitLab's** — different advisory source, so they will not match the
+  post-push Vulnerability Report in content or count (`dependency_scanning.source:
+  offline-trivy`). They exist to give the fix loop real `fixed_version`s to work with
+  and to give developers a pre-push signal. Tell users which source they are looking
+  at. If neither pass can run (container scanning disabled with no remote match either,
+  or `--only dependency_scanning` with no CS image and no remote match), the category
+  is recorded as a coverage skip, never as clean.
 - **secret_detection** — full local findings + the remediation loop.
 - **container_scanning** — see the dedicated section below.
 
@@ -377,11 +532,21 @@ So the skill uses two paths automatically:
    to your registry). GTCS pulls and scans it, using
    `settings.container_registry` creds for private registries. This is
    CI-identical.
-2. **Local Dockerfile** — if `CS_IMAGE` is unset and a `Dockerfile` is present,
-   the skill builds it (`<runtime> build`), saves it to a tarball
-   (`<runtime> save`), and scans the tarball with the analyzer image's **bundled
-   Trivy** (`--input … --offline-scan`) — no registry, no root, no socket, fully
-   offline. Set `DOCKERFILE=<path>` to choose among multiple Dockerfiles.
+2. **Local Dockerfile(s)** — if `CS_IMAGE` is unset, the skill builds and scans
+   every selected Dockerfile (`<runtime> build`, saved to a tarball with
+   `<runtime> save`, scanned with the analyzer image's **bundled Trivy**
+   — `--input … --offline-scan` — no registry, no root, no socket, fully
+   offline; or, under `engine: glci`, the real `container-scanning` job run
+   locally against the built image). Which Dockerfile(s): `$DOCKERFILE` (exactly
+   one, repo-relative path) beats `$APPSEC_DOCKERFILES` (comma-separated
+   repo-relative paths) beats every Dockerfile/Containerfile
+   `scripts/detect-dockerfiles.sh` finds in the repo — git-aware (tracked +
+   untracked-not-ignored), so a monorepo with Dockerfiles only under
+   `services/*` is no longer skipped just because none sits at the root. More
+   than one Dockerfile in scope produces one report per image
+   (`gl-container-scanning-report-<slug>.json`); exactly one keeps the plain
+   name. A build or scan failure for one Dockerfile does not stop the others —
+   it is reported as partial coverage, naming which Dockerfile(s) failed and why.
 3. Neither → container scanning is deferred to CI (an include snippet is shown).
 
 In registry mode the run also exports `CS_DOCKERFILE_PATH` when a Dockerfile is
@@ -392,15 +557,25 @@ remediation never ran locally.
 If a local build fails because a `FROM` base image cannot be pulled from your
 internal registry, the skill tells you to run `<runtime> login <registry-host>`
 (or set the `container_registry` credential env vars) and points the Dockerfile
-`FROM` at the internal mirror. Any other build error prints
-"Submit a Jira ticket under others".
+`FROM` at the internal mirror. Any other build error prints "Submit a Jira ticket under others" — including a
+Dockerfile whose own `RUN` steps download something (`go mod`, `npm install`,
+`pip install`) and fail against a network the build container cannot reach or
+trust (e.g. behind a TLS-inspecting proxy the Dockerfile's own base image was
+never told to trust). The build happens on the host, outside this skill's own
+`settings.ca_bundle`/`pip_index_url` plumbing — which covers the *scanner*
+containers, not an arbitrary Dockerfile's own build steps — so that class of
+failure is reported as the coverage gap it is, with the build log's cause, not
+silently patched around.
 
 ## Per-run env overrides (users)
 
-`CS_IMAGE`, `DOCKERFILE`, `FORTIFY_LANGUAGE`, `MAVEN_SETTINGS`, and the image env
-vars (`FORTIFY_SAST_IMAGE`, `GITLAB_DS_IMAGE`, `SECRET_DETECTION_IMAGE`,
-`GITLAB_CS_IMAGE`) override for a single run. They change *where images come
-from*, *what is scanned*, or *which Fortify language is used* — never *which
-scanner runs* (that is this file's job). An already-exported `MAVEN_SETTINGS`
-wins over `settings.maven_settings` so the shipped empty default cannot unset a
-working export mid-session.
+`CS_IMAGE`, `DOCKERFILE`, `APPSEC_DOCKERFILES`, `FORTIFY_LANGUAGE`, `MAVEN_SETTINGS`,
+`GLCI_BIN`, `APPSEC_REMOTE_MATCH`, and the image env vars (`FORTIFY_SAST_IMAGE`,
+`GITLAB_DS_IMAGE`, `SECRET_DETECTION_IMAGE`, `GITLAB_CS_IMAGE`) override for a single
+run. They change *where images/binaries come from*, *what is scanned*, *which Fortify
+language is used*, or *which dependency-match path runs* — never *which scanner runs*
+(that is this file's job). An already-exported `MAVEN_SETTINGS` wins over
+`settings.maven_settings` so the shipped empty default cannot unset a working export
+mid-session. `APPSEC_DOCKERFILES` (comma-separated, repo-relative) is ignored when
+`DOCKERFILE` is also set — `DOCKERFILE` always wins. `APPSEC_REMOTE_MATCH=off` forces
+the offline dependency match even when the profile sets `remote_match_project`.

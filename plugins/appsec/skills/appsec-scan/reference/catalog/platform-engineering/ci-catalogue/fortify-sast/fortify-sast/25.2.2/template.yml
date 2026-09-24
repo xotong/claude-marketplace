@@ -1,0 +1,294 @@
+spec:
+  inputs:
+    # Job specific Inputs
+    job-name:
+      default: fortify-scan
+      description: "Defines a job name"
+    stage:
+      default: sast
+      description: "Defines a job stage"
+    source-path:
+      default: src
+      description: "The path of the source code that you want to scan"
+    allow-failure:
+      default: true
+      type: boolean
+      description: "Allows the job to not fail if set to false"
+    downloaded-scan-report-name:
+      default: scan.fpr
+      description: "Name of scan report downloaded from SSC"
+    language:
+      default: "javascript"
+      description: "The project language used. Accepted languages: python, javascript, maven, gradle"
+      options:
+        - maven
+        - gradle
+        - python
+        - javascript
+        - go
+
+    # Registry Inputs
+    registry:
+      description: "Define image registry"
+      default: registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/
+    image:
+      default: fortify-sca
+      description: "Defines a job image"
+    image-tag:
+      default: "25.2.0"
+      description: "Defines a job image tag"
+    variant:
+      default: jdk17-review
+      description: "Define JDK version used for compilation"
+      options:
+        - jdk17-review
+        - jdk21-review
+
+    # Maven Inputs
+    maven-setting-path:
+      default: settings.xml
+      description: "Define the maven settings file"
+
+    # Python Inputs
+    pip-index-url:
+      default: "https://pypi.org/simple/"
+      description: "Define the pip index url"
+    python-version:
+      default: "3.12"
+      description: "Define the python version. Options: 3.10, 3.11, 3.12, 3.13, 3.14"
+      options:
+        - "3.10"
+        - "3.11"
+        - "3.12"
+        - "3.13"
+        - "3.14"
+    uv-version:
+      default: "0.11.28"
+      description: "Pinned uv version to install."
+    uv-installer-base:
+      default: "https://releases.astral.sh/github/uv/releases/download"
+      description: "Base URL the uv installer script is fetched from. Point at an internal JFrog mirror for air-gapped runners."
+    uv-python-install-mirror:
+      default: "https://github.com/astral-sh/python-build-standalone/releases/download"
+      description: "Base URL uv downloads the managed Python build from. Point at an internal JFrog mirror for air-gapped runners."
+
+    translation-mode:
+      type: string
+      default: "normal"
+      options:
+        - normal
+        - full
+      description: >
+       Normal: Translate only the project's source code; dependencies are neither installed nor placed on -python-path. Seconds to minutes, complete coverage of your code, no dataflow through third-party libraries (their imports log as warnings). 
+       Full: Follow imports into installed dependencies. CAN TAKE HOURS and may exceed the job timeout on a large dependency tree - on a 230-package service it exceeded 3h and produced no report.
+
+    python-template-dirs:
+      default: ""
+      description: >
+        Colon-separated Django/Jinja2 template directories, relative to the repo root. 
+        Set this if the scan logs 'unable to discover any Django/Jinja2 template directories' 
+        - SCA only autodiscovers templates in the project root and does not read Django's TEMPLATE_DIRS setting.
+        Leave empty to keep autodiscovery.
+
+---
+
+".$[[ inputs.job-name ]]-base":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.registry ]]$[[ inputs.image ]]:$[[ inputs.image-tag ]]-$[[ inputs.variant ]]
+  dependencies: []
+  script: &fortify_scan_and_report |
+    echo $[[ inputs.source-path ]]
+    sourceanalyzer -b $CI_JOB_ID -scan -f $[[ inputs.downloaded-scan-report-name ]] $(if [ -e "filter_list.txt" ]; then echo "-filter filter_list.txt"; fi)
+    BIRTReportGenerator -format HTML -output fortify.html -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "Developer Workbook"
+    BIRTReportGenerator -format PDF -output fortify.pdf -source $[[ inputs.downloaded-scan-report-name ]] -template "Developer Workbook"
+    ReportGenerator -format XML -f fortify.xml -source $[[ inputs.downloaded-scan-report-name ]] -showSuppressed -template "DeveloperWorkbook.xml"
+    result=$(FPRUtility -information -signature -search -query "[fortify priority order]:critical OR [fortify priority order]:high AND [issue age]:!removed AND suppressed:false" -filterSet "Security Auditor View" -project $[[ inputs.downloaded-scan-report-name ]]);
+    echo $result
+
+    echo "Running conversion script and uploading to gitlab vulnerability dashboard..."
+    python3 /usr/local/bin/fortify_to_gitlab_sast.py $[[ inputs.downloaded-scan-report-name ]] -o gl-sast-report.json --prepend-path "$[[ inputs.source-path ]]"
+
+  allow_failure: $[[ inputs.allow-failure ]]
+  artifacts:
+    name: fortify-results
+    reports:
+      sast: gl-sast-report.json
+    paths:
+      - fortify.html
+      - fortify.pdf
+      - fortify.xml
+      - gl-sast-report.json
+      - $[[ inputs.downloaded-scan-report-name ]]
+    when: always
+
+# For Maven
+$[[ inputs.job-name ]]-maven:
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "maven"'
+  script:
+    - sourceanalyzer -debug -verbose -b $CI_JOB_ID  -clean
+    - sourceanalyzer -debug -verbose -b $CI_JOB_ID  mvn clean install -s $[[ inputs.maven-setting-path ]] "-DskipTests"
+    - *fortify_scan_and_report
+
+# For gradle
+$[[ inputs.job-name ]]-gradle:
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "gradle"'
+  script:
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - sourceanalyzer -b $CI_JOB_ID $[[ inputs.source-path ]]/gradlew -p $[[ inputs.source-path ]] clean assemble -Partifactory_user=$ARTIFACTORY_USER -Partifactory_password=$ARTIFACTORY_PASSWORD
+    - sourceanalyzer -b $CI_JOB_ID $[[ inputs.source-path ]]
+    - *fortify_scan_and_report
+
+# For Python
+$[[ inputs.job-name ]]-python:
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "python"'
+  variables:
+    UV_DEFAULT_INDEX: $[[ inputs.pip-index-url ]]
+    UV_PYTHON_INSTALL_MIRROR: $[[ inputs.uv-python-install-mirror ]]
+  script:
+    - echo "Installing UV"
+    - curl -LsSf "$[[ inputs.uv-installer-base ]]/$[[ inputs.uv-version ]]/uv-installer.sh"  | sh
+    - source $HOME/.local/bin/env
+    - uv --version
+    - uv python install $[[ inputs.python-version ]]
+    - uv python pin --global $[[ inputs.python-version ]]
+    - uv venv
+    - source .venv/bin/activate
+    - python -v
+    - |
+      SRC="$[[ inputs.source-path ]]"
+      MODE="$[[ inputs.translation-mode ]]"
+      if [ "$MODE" = "full" ]; then
+        if [ -f "$SRC/requirements.txt" ]; then
+          REQ="$SRC/requirements.txt"
+          echo "Installing dependencies from $REQ"
+          
+          # Allows pipeline to build as many packages as possible and continue scans with partial installed dependencies if have
+          uv pip install -r "$REQ" || {
+            echo "WARNING: bulk install failed; retrying packages individually"
+
+            sed 's/#.*//; s/[[:space:]]*$//' "$REQ" |
+              while read -r pkg; do
+                case "$pkg" in
+                  ''|'-'*) continue ;;
+                esac
+
+                uv pip install "$pkg" >/dev/null 2>&1 ||
+                  echo "  unresolvable: $pkg"
+              done
+          }
+
+        elif [ -f "$SRC/pyproject.toml" ]; then
+          echo "Installing project from $SRC"
+          uv pip install "$SRC" ||
+            echo "WARNING: project install failed; continuing with available packages"
+        
+        else
+          echo "No dependency manifest found; using standard library only"
+        fi
+
+        SITE_PACKAGES=$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+        INSTALLED=$(find "$SITE_PACKAGES" -maxdepth 1 -type d -name '*.dist-info' 2>/dev/null | wc -l)
+
+        if [ "$INSTALLED" -eq 0 ] &&
+          { [ -f "$SRC/requirements.txt" ] || [ -f "$SRC/pyproject.toml" ]; }; then
+          echo "WARNING: dependencies are declared but none were installed."
+          echo "WARNING: third-party imports will not be resolved by SCA."
+          echo "WARNING: check the configured pip-index-url and repository credentials."
+        else
+          echo "Installed $INSTALLED package(s) for SCA"
+        fi
+
+        PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+      else
+        echo "translation-mode=normal: skipping dependency installation"
+        PYPATH=""
+      fi
+      
+      STDLIB=$(python -c 'import sysconfig; print(sysconfig.get_paths()["stdlib"])')
+      if [ -d "$STDLIB" ]; then 
+        PYPATH="${PYPATH:+$PYPATH:}$STDLIB"; 
+      fi
+      echo "SCA python-path: $PYPATH"
+
+      # Build optional template-related SCA arguments.
+      TPL="$[[ inputs.python-template-dirs ]]"
+      if [ -n "$TPL" ]; then
+        set -- -django-template-dirs "$TPL" -jinja-template-dirs "$TPL" -disable-template-autodiscover
+      else
+        set --
+      fi
+      
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - sourceanalyzer -b $CI_JOB_ID -debug-verbose -python-path "$PYPATH" -python-version 3 "$@" $[[ inputs.source-path ]]
+      
+    - |  
+      # Check how many Python files exist in the source tree.
+      SOURCE_PATH="$[[ inputs.source-path ]]"
+      EXPECTED_PY_FILES=$(find "$SOURCE_PATH" -type f -name '*.py' | wc -l)
+
+      TRANSLATED_PY_FILES=$(
+        sourceanalyzer -b "$CI_JOB_ID" -show-files 2>/dev/null |
+        grep -c '\.py$' || true
+      )
+
+      echo ""
+      echo "========================================"
+      echo " Fortify Python Translation Coverage"
+      echo "========================================"
+      echo "Source directory      : $SOURCE_PATH"
+      echo "Python files found    : $EXPECTED_PY_FILES"
+      echo "Python files translated: $TRANSLATED_PY_FILES"
+      echo ""
+
+      if [ "$EXPECTED_PY_FILES" -eq 0 ]; then
+        echo "RESULT: No Python files found."
+
+      elif [ "$TRANSLATED_PY_FILES" -eq "$EXPECTED_PY_FILES" ]; then
+        echo "RESULT: SUCCESS - All Python files were translated."
+
+      elif [ "$TRANSLATED_PY_FILES" -lt "$EXPECTED_PY_FILES" ]; then
+        echo "RESULT: WARNING - Incomplete Python translation."
+        echo "Coverage: $TRANSLATED_PY_FILES / $EXPECTED_PY_FILES files"
+        echo ""
+        echo "Some project files were not translated by Fortify."
+        echo "This may happen when SCA spends translation resources"
+        echo "following dependencies such as site-packages."
+        echo ""
+        echo "Recommendation: try translation-mode: normal."
+
+      else
+        echo "RESULT: INFO - Fortify translated more Python files"
+        echo "than are present directly under the source directory."
+        echo "This likely includes imported dependencies."
+      fi
+
+      echo "========================================"
+
+      
+    - *fortify_scan_and_report
+
+# For JS
+$[[ inputs.job-name ]]-javascript:
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" ==  "javascript"'
+  script:
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - sourceanalyzer -b $CI_JOB_ID -debug-verbose -Dcom.fortify.sca.follow.imports=false $[[ inputs.source-path ]]
+    - *fortify_scan_and_report
+
+$[[ inputs.job-name ]]-go:
+  extends: ".$[[ inputs.job-name ]]-base"
+  rules:
+    - if: '"$[[ inputs.language ]]" == "go"'
+  script:
+    - sourceanalyzer -b $CI_JOB_ID -clean
+    - (cd $[[ inputs.source-path ]] && go mod download)
+    - sourceanalyzer -b $CI_JOB_ID -debug-verbose $[[ inputs.source-path ]]
+    - *fortify_scan_and_report

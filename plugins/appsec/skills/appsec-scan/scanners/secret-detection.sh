@@ -26,6 +26,19 @@ cd /workspace
 mkdir -p "${RESULTS}"
 rm -f "${REPORT}" "${RESULTS}/gl-secret-detection-report.json"
 
+# historic_scan (component input, default false): false scans the incoming
+# commit only, true scans every commit ever. Normally set via run-scan.sh's -e
+# flag (which already defaults it the same way); defaulted again here so the
+# analyzer sees a value even when this runner is invoked directly. For
+# historic_scan=true to see anything beyond GIT_DEPTH's default 50 commits,
+# also set GIT_DEPTH=0 (full history) — the same pairing the component's own
+# AGENTS.md documents.
+SECRET_DETECTION_HISTORIC_SCAN="${SECRET_DETECTION_HISTORIC_SCAN:-false}"
+export SECRET_DETECTION_HISTORIC_SCAN
+if [ "${SECRET_DETECTION_HISTORIC_SCAN}" = "true" ]; then
+  echo "INFO: historic_scan enabled — scanning all commits, not just the incoming one" >&2
+fi
+
 # Mounted worktrees may be owned by a different host UID than the container user.
 # GitLab analyzer images run git internally, so mark the workspace as safe when
 # git is available. If it is not, let the analyzer report the real failure.

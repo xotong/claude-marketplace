@@ -129,7 +129,14 @@ class ContainerTargetTest(unittest.TestCase):
         self.assertEqual(len(images), 1)
         self.assertEqual(
             images[0],
-            {"raw": "node:18", "image": "node", "tag": "18", "line": 1, "alias": "build"},
+            {
+                "raw": "node:18",
+                "image": "node",
+                "tag": "18",
+                "line": 1,
+                "alias": "build",
+                "dockerfile": "./Dockerfile",
+            },
         )
 
     def test_platform_flag_is_stripped(self) -> None:

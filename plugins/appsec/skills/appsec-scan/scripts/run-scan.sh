@@ -22,7 +22,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --only)
       [ "$#" -ge 2 ] || { usage; exit 2; }
-      ONLY_CATEGORY=$2
+      # ponytail: `--only all` = no filter (SKILL.md's SCAN_SCOPE=all maps here)
+      [ "$2" = all ] || ONLY_CATEGORY=$2
       shift 2
       ;;
     --dry-run)
@@ -47,6 +48,10 @@ SCANNERS_DIR="${SCANNERS_DIR:-$SKILL_DIR/scanners}"
 
 # shellcheck source=scripts/classify-error.sh
 . "$SCRIPTS_DIR/classify-error.sh"
+# shellcheck source=scripts/lib-token.sh
+. "$SCRIPTS_DIR/lib-token.sh"
+# shellcheck source=scripts/lib-files.sh
+. "$SCRIPTS_DIR/lib-files.sh"
 
 if [ -z "${RUN_FORTIFY_SAST+x}" ] && \
    [ -z "${RUN_GITLAB_DS+x}" ] && \
@@ -89,7 +94,15 @@ selected() {
 # "no scanners ran" diagnostic, because the expected set is never empty.
 mark_executed() {
   case ",$EXECUTED_CATEGORIES," in
-    *",$1,"*) return ;;
+    # Bare `return` (no explicit code) returns the status of the last command
+    # THIS FUNCTION ran — but the case match above isn't a command, so with
+    # nothing yet run inside mark_executed, that's whatever ran right before
+    # this call was made. A caller whose first else-branch statement is
+    # mark_executed (an enclosing `if ... ; then ... ; else` test that just
+    # evaluated false, status 1) turned this "already recorded" fast path
+    # into a silent `set -e` abort. Explicit `return 0`: this function
+    # recording something it already knew is success, not a status to leak.
+    *",$1,"*) return 0 ;;
   esac
   if [ -n "$EXECUTED_CATEGORIES" ]; then
     EXECUTED_CATEGORIES="$EXECUTED_CATEGORIES,$1"
@@ -100,7 +113,7 @@ mark_executed() {
 
 mark_attempted() {
   case ",$RAN_CATEGORIES," in
-    *",$1,"*) return ;;
+    *",$1,"*) return 0 ;;  # see mark_executed's comment on the bare `return` pitfall
   esac
   if [ -n "$RAN_CATEGORIES" ]; then
     RAN_CATEGORIES="$RAN_CATEGORIES,$1"
@@ -161,6 +174,12 @@ pull_image() {
   pull_consequence=$4
   pull_log=".appsec-results/pull-${pull_category}.log"
   if run_cmd "$RUNTIME" pull "$pull_ref" 2>"$pull_log"; then
+    rm -f "$pull_log"
+    return 0
+  fi
+  # amd64-only CI images on an arm64 laptop: emulate (same rule as resolve-image.sh pull_ok).
+  if grep -qE 'no matching manifest|no match for platform' "$pull_log" 2>/dev/null &&
+     run_cmd "$RUNTIME" pull --platform linux/amd64 "$pull_ref" 2>"$pull_log"; then
     rm -f "$pull_log"
     return 0
   fi
@@ -227,6 +246,63 @@ run_cmd() {
     return 0
   fi
   "$@"
+}
+
+# call_glci_run / call_remote_match: the ONLY places APPSEC_RESOLVED_TOKEN
+# touches these two scripts — as a per-invocation env prefix, never exported
+# script-wide (see the token resolution block below) and never printed. A
+# dry run prints the redacted command and runs nothing; a real run's combined
+# stdout+stderr is returned on stdout for the caller to inspect (GLCI-RESULT /
+# GLCI-REASON / REMOTE-MATCH / REMOTE-MATCH-REASON) and to show the user.
+call_glci_run() {
+  if $DRY_RUN; then
+    printf 'DRY-RUN: APPSEC_RESOLVED_TOKEN=<redacted> APPSEC_GITLAB_URL=%q GLCI_BIN=%q bash %q' \
+      "${GITLAB_INSTANCE:-}" "${GLCI_BIN:-}" "$SCRIPTS_DIR/glci-run.sh"
+    for glci_call_arg in "$@"; do printf ' %q' "$glci_call_arg"; done
+    printf '\n'
+    return 0
+  fi
+  APPSEC_RESOLVED_TOKEN="$APPSEC_RESOLVED_TOKEN" APPSEC_GITLAB_URL="${GITLAB_INSTANCE:-}" GLCI_BIN="${GLCI_BIN:-}" \
+    bash "$SCRIPTS_DIR/glci-run.sh" "$@" 2>&1
+}
+
+call_remote_match() {
+  if $DRY_RUN; then
+    printf 'DRY-RUN: APPSEC_RESOLVED_TOKEN=<redacted> bash %q' "$SCRIPTS_DIR/remote-match.sh"
+    for remote_call_arg in "$@"; do printf ' %q' "$remote_call_arg"; done
+    printf '\n'
+    return 0
+  fi
+  APPSEC_RESOLVED_TOKEN="$APPSEC_RESOLVED_TOKEN" bash "$SCRIPTS_DIR/remote-match.sh" "$@" 2>&1
+}
+
+# glci_component_ref <component_path>: prints "<host>/<component_path>@<tag>"
+# for glci-run.sh's --component, reusing whichever tag this run already
+# resolved for that component (catalog.sh's own cache, or its vendored-
+# snapshot fallback — see catalog.sh's resolved-tag). Empty output (with a
+# non-zero return) means no resolution is available yet; callers treat that
+# the same as "glci unavailable".
+glci_component_ref() {
+  local component_path=$1 tag host
+  [ -n "$component_path" ] || return 1
+  tag=$(bash "$SCRIPTS_DIR/catalog.sh" resolved-tag "$component_path" "${CATALOG_CACHE:-.appsec-results/catalog}" 2>/dev/null) || return 1
+  [ -n "$tag" ] || return 1
+  host=$(appsec_host_of "${GITLAB_INSTANCE:-}")
+  [ -n "$host" ] || return 1
+  printf '%s/%s@%s' "$host" "$component_path" "$tag"
+}
+
+# last_glci_reason <combined glci-run.sh/remote-match.sh output>: the last
+# GLCI-REASON:/REMOTE-MATCH-REASON: line, for folding into a skip/coverage
+# message. Empty when the tool printed none.
+last_glci_reason() {
+  printf '%s\n' "$1" | sed -n 's/^GLCI-REASON: //p' | tail -1
+}
+
+# last_glci_commit <combined glci-run.sh output>: the glci_commit= field off
+# its GLCI-RESULT line, for scan-coverage.json's per-category glci_commit.
+last_glci_commit() {
+  printf '%s\n' "$1" | sed -n 's/.*glci_commit=\([^ ]*\).*/\1/p' | tail -1
 }
 
 start_watchdog() {
@@ -346,6 +422,24 @@ ARTIFACTORY_PASSWORD_ENV="${ARTIFACTORY_PASSWORD_ENV:-ARTIFACTORY_PASSWORD}"
 CS_USER_ENV="${CS_USER_ENV:-CS_REGISTRY_USER}"
 CS_PASS_ENV="${CS_PASS_ENV:-CS_REGISTRY_PASSWORD}"
 
+# --- engine selection + remote dependency-scanning match (load-prefs.sh) -----
+ENGINE_SECRET_DETECTION="${ENGINE_SECRET_DETECTION:-docker}"
+ENGINE_CONTAINER_SCANNING="${ENGINE_CONTAINER_SCANNING:-docker}"
+REMOTE_MATCH_PROJECT="${REMOTE_MATCH_PROJECT:-}"
+GLCI_BIN="${GLCI_BIN:-}"
+CATALOG_CACHE="${CATALOG_CACHE:-.appsec-results/catalog}"
+
+# Resolved ONCE for the active profile's gitlab_instance/auth_token_env, and
+# handed to glci-run.sh/remote-match.sh ONLY through call_glci_run/
+# call_remote_match's per-invocation env prefix above — never exported from
+# this script, never printed (redacted in --dry-run output). Skipped
+# entirely when nothing configured here needs it.
+APPSEC_RESOLVED_TOKEN=
+APPSEC_TOKEN_SOURCE=none
+if [ "$ENGINE_SECRET_DETECTION" = glci ] || [ "$ENGINE_CONTAINER_SCANNING" = glci ] || [ -n "$REMOTE_MATCH_PROJECT" ]; then
+  appsec_resolve_token "${GITLAB_INSTANCE:-}" "${CATALOG_AUTH_ENV:-}"
+fi
+
 # --- airgap plumbing (settings.ca_bundle / maven_settings / pip_index_url) ----
 # These are HOST paths and a HOST url. Passing a host path straight into a
 # container points the tool at a file that is not there, and the failure reads
@@ -417,7 +511,9 @@ find_dockerfile() {
   fi
 }
 
-mkdir -p .appsec-results
+# CATALOG_CACHE too: run-scan.sh is documented as safe standalone (no prior
+# resolve-components.sh run), and the live-contract probes write into it.
+mkdir -p .appsec-results "$CATALOG_CACHE"
 # Self-ignoring output dir: the "add .appsec-results/ to .gitignore"
 # reminder enforces nothing, and this directory holds the raw secret
 # detection report. A .gitignore of "*" inside it keeps git away without
@@ -430,6 +526,45 @@ SKIPS_FILE=.appsec-results/scan-skips
 record_skip() {
   printf '%s\t%s\n' "$1" "$2" >>"$SKIPS_FILE"
 }
+
+# ENGINE_INFO_FILE: which engine/source each category actually used this run
+# (only written for the non-default cases — normalize.py defaults an absent
+# category to docker/offline-trivy), so scan-coverage.json can report it.
+ENGINE_INFO_FILE=.appsec-results/scan-engine-info
+: >"$ENGINE_INFO_FILE"
+
+# record_engine_info <category> <field> <value>
+record_engine_info() {
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$ENGINE_INFO_FILE"
+}
+
+# A category the admin turned off (enabled: false) is a config fact, not
+# silence: normalize.py reads this file and records each one in
+# scan-coverage.json as disabled_by_profile (plus its note:), and the summary
+# prints it — so it can never be mistaken for "never configured" or "scanned
+# clean". This is independent of --only and of RUN_*: DISABLED_CATEGORIES
+# comes straight from the admin config (load-prefs.sh), not from what this one
+# invocation happens to execute.
+DISABLED_FILE=.appsec-results/scan-disabled
+: >"$DISABLED_FILE"
+category_note_var() {
+  case "$1" in
+    sast) printf 'CATEGORY_NOTE_SAST' ;;
+    dependency_scanning) printf 'CATEGORY_NOTE_DEPENDENCY_SCANNING' ;;
+    secret_detection) printf 'CATEGORY_NOTE_SECRET_DETECTION' ;;
+    container_scanning) printf 'CATEGORY_NOTE_CONTAINER_SCANNING' ;;
+  esac
+}
+for disabled_category in ${DISABLED_CATEGORIES:-}; do
+  note_var=$(category_note_var "$disabled_category")
+  [ -n "$note_var" ] || continue
+  eval "disabled_note=\${$note_var:-}"
+  if [ -n "$disabled_note" ]; then
+    printf '%s\t%s\n' "$disabled_category" "disabled_by_profile: $disabled_note" >>"$DISABLED_FILE"
+  else
+    printf '%s\t%s\n' "$disabled_category" "disabled_by_profile" >>"$DISABLED_FILE"
+  fi
+done
 
 # A filesystem-safe name for one SAST unit. "." is the repo root.
 unit_slug() {
@@ -614,6 +749,13 @@ FORTIFY_VARIANT="${FORTIFY_VARIANT:-}"
 
 # Word-splitting the tuple list is intentional and safe: this file is bash and
 # load-prefs.sh emits space-separated tuples with no spaces inside one.
+# Component paths the engine: glci categories need a <host>/<path>@<tag> ref
+# for (glci_component_ref above); captured in the loop below, alongside the
+# image resolution it already does per component.
+SECRET_DETECTION_COMPONENT=
+CONTAINER_SCANNING_COMPONENT=
+DEPENDENCY_SCANNING_COMPONENT=
+
 for tuple in ${ENABLED_COMPONENTS:-}; do
   # component|version|runner|image|category — take the ends, skip the middle.
   comp=${tuple%%|*}
@@ -628,6 +770,12 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
     warning "ignoring component $comp: unknown category '$cat_name'"
     continue
   fi
+
+  case "$cat_name" in
+    secret_detection) SECRET_DETECTION_COMPONENT=$comp ;;
+    container_scanning) CONTAINER_SCANNING_COMPONENT=$comp ;;
+    dependency_scanning) DEPENDENCY_SCANNING_COMPONENT=$comp ;;
+  esac
 
   eval "flag_value=\${$run_flag:-false}"
   [ "$flag_value" = true ] || continue
@@ -731,19 +879,62 @@ HAS_POM=false
 HAS_GRADLE=false
 HAS_PACKAGE_JSON=false
 HAS_REQUIREMENTS=false
-HAS_DOCKERFILE=false
 HAS_GO=false
 [ -f pom.xml ] && HAS_POM=true
 { [ -f build.gradle ] || [ -f build.gradle.kts ]; } && HAS_GRADLE=true
 [ -f package.json ] && HAS_PACKAGE_JSON=true
 { [ -f requirements.txt ] || [ -f pyproject.toml ]; } && HAS_REQUIREMENTS=true
-[ -f Dockerfile ] && HAS_DOCKERFILE=true
 [ -f go.mod ] && HAS_GO=true
 HAS_POM_NO_GRADLE=false
 { $HAS_POM && ! $HAS_GRADLE; } && HAS_POM_NO_GRADLE=true
 
+# Selection order the container-scanning section uses too ($DOCKERFILE >
+# $APPSEC_DOCKERFILES > detect-dockerfiles.sh discovery): built once, here,
+# into SELECTED_DOCKERFILES, so the banner's count matches what will
+# actually be scanned (instead of only ever checking for a root-level
+# ./Dockerfile) and the container-scanning section reuses the same array
+# rather than re-deriving it. An invalid DOCKERFILE/APPSEC_DOCKERFILES entry
+# is recorded in SELECTED_DOCKERFILES_WARNINGS rather than warned about
+# here — container scanning may never even run this scan, and today's
+# warning only ever fired from that section.
+select_dockerfiles() {
+  SELECTED_DOCKERFILES=()
+  SELECTED_DOCKERFILES_WARNINGS=()
+  if [ -n "${DOCKERFILE:-}" ]; then
+    if [ -f "$DOCKERFILE" ]; then
+      SELECTED_DOCKERFILES=("$DOCKERFILE")
+    else
+      SELECTED_DOCKERFILES_WARNINGS+=("DOCKERFILE=$DOCKERFILE does not exist")
+    fi
+    return 0
+  fi
+  if [ -n "${APPSEC_DOCKERFILES:-}" ]; then
+    local saved_ifs=$IFS candidate
+    IFS=,
+    for candidate in $APPSEC_DOCKERFILES; do
+      IFS=$saved_ifs
+      if [ -n "$candidate" ]; then
+        if [ -f "$candidate" ]; then
+          SELECTED_DOCKERFILES+=("$candidate")
+        else
+          SELECTED_DOCKERFILES_WARNINGS+=("APPSEC_DOCKERFILES entry does not exist: $candidate")
+        fi
+      fi
+      IFS=,
+    done
+    IFS=$saved_ifs
+    return 0
+  fi
+  local df_path
+  while IFS=$'\t' read -r df_path _ _; do
+    [ -n "$df_path" ] && SELECTED_DOCKERFILES+=("$df_path")
+  done < <(bash "$SCRIPTS_DIR/detect-dockerfiles.sh" . 2>/dev/null || true)
+}
+select_dockerfiles
+DOCKERFILE_COUNT=${#SELECTED_DOCKERFILES[@]}
+
 info "Project: $APP_NAME  Branch: $BRANCH"
-info "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Go=$HAS_GO Dockerfile=$HAS_DOCKERFILE HAS_POM_NO_GRADLE=$HAS_POM_NO_GRADLE"
+info "Detected: Maven=$HAS_POM Gradle=$HAS_GRADLE NPM=$HAS_PACKAGE_JSON Python=$HAS_REQUIREMENTS Go=$HAS_GO Dockerfiles=$DOCKERFILE_COUNT HAS_POM_NO_GRADLE=$HAS_POM_NO_GRADLE"
 mkdir -p .appsec-results
 grep -qxF '.appsec-results/' .gitignore 2>/dev/null || \
   info ".appsec-results/ is self-ignoring (it contains its own .gitignore); no change to your repo's .gitignore is needed"
@@ -875,7 +1066,63 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
   fi
 fi
 
-if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_DS_IMAGE" ]; then
+# ---------------------------------------------------------------------------
+# GitLab-native dependency-scanning match via the remote helper project
+# (reference/remote-matcher/), instead of the local SBOM + offline Trivy
+# match below. Only attempted when configured; --dry-run only previews the
+# command (call_remote_match) and uploads nothing.
+# ---------------------------------------------------------------------------
+DS_REMOTE_ACTIVE=false
+if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && \
+   [ -n "$REMOTE_MATCH_PROJECT" ] && [ "${APPSEC_REMOTE_MATCH:-}" != off ]; then
+  mark_attempted dependency_scanning
+  ds_version=$(bash "$SCRIPTS_DIR/catalog.sh" resolved-tag "$DEPENDENCY_SCANNING_COMPONENT" "$CATALOG_CACHE" 2>/dev/null) || ds_version=""
+  RM_ARGS=(--project-dir "$PWD" --results "$PWD/.appsec-results" \
+    --instance "${GITLAB_INSTANCE:-}" --matcher-project "$REMOTE_MATCH_PROJECT")
+  [ -z "$ds_version" ] || RM_ARGS+=(--ds-version "$ds_version")
+
+  set +e
+  rm_output=$(call_remote_match "${RM_ARGS[@]}")
+  rm_rc=$?
+  set -e
+  printf '%s\n' "$rm_output"
+
+  if ! $DRY_RUN; then
+    case "$rm_rc" in
+      0)
+        if [ "$rm_output" != "REMOTE-MATCH: none detected" ]; then
+          DS_REMOTE_ACTIVE=true
+          mark_executed dependency_scanning
+          info "[GitLab DS] Using GitLab-native remote match results (source: gitlab-native)"
+          record_engine_info dependency_scanning engine remote-matcher
+          record_engine_info dependency_scanning source gitlab-native
+          while IFS= read -r rm_pipeline; do
+            [ -n "$rm_pipeline" ] || continue
+            record_engine_info dependency_scanning matcher_pipeline "$rm_pipeline"
+          done < <(printf '%s\n' "$rm_output" | sed -n 's/^REMOTE-MATCH:.*pipeline=\(.*\)$/\1/p')
+        fi
+        ;;
+      3)
+        rm_reason=$(printf '%s\n' "$rm_output" | sed -n 's/^REMOTE-MATCH-REASON: //p' | tail -1)
+        info "ADVISORY: remote matcher unusable (${rm_reason:-see output above}) — falling back to the local SBOM + offline Trivy match"
+        ;;
+      *)
+        DS_REMOTE_ACTIVE=true
+        mark_executed dependency_scanning
+        record_engine_info dependency_scanning engine remote-matcher
+        record_engine_info dependency_scanning source gitlab-native
+        while IFS= read -r rm_pipeline; do
+          [ -n "$rm_pipeline" ] || continue
+          record_engine_info dependency_scanning matcher_pipeline "$rm_pipeline"
+        done < <(printf '%s\n' "$rm_output" | sed -n 's/^REMOTE-MATCH:.*pipeline=\(.*\)$/\1/p')
+        rm_failed=$(printf '%s\n' "$rm_output" | sed -n 's/^REMOTE-MATCH-REASON: //p' | tr '\n' ' ')
+        record_skip dependency_scanning "GitLab-native dependency-scanning match failed for at least one language: ${rm_failed}No Trivy match ran for those languages this run (the ones that succeeded keep their remote report). Set APPSEC_REMOTE_MATCH=off to force the offline SBOM + Trivy path instead, or fix the cause(s) above and re-run this skill."
+        ;;
+    esac
+  fi
+fi
+
+if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_DS_IMAGE" ] && ! $DS_REMOTE_ACTIVE; then
   DS_RAN=true
   mark_attempted dependency_scanning
   mark_executed dependency_scanning
@@ -903,28 +1150,90 @@ if selected dependency_scanning && [ "$RUN_GITLAB_DS" = true ] && [ -n "$GITLAB_
   fi
 fi
 
+# secret_detection_declares_historic_scan: true only when THIS instance's
+# resolved secret-detection component actually declares a historic_scan
+# input — gitlab.com's does not, the self-hosted platform-engineering one
+# does (see scanners/secret-detection.contract's header). glci runs the
+# real component, so passing an input it never declared would be wrong in
+# the other direction from the docker engine's runner script (which always
+# forwards SECRET_DETECTION_HISTORIC_SCAN as a plain env var, harmless
+# either way).
+secret_detection_declares_historic_scan() {
+  local live_contract="$CATALOG_CACHE/secret-detection-live.contract"
+  bash "$SCRIPTS_DIR/catalog.sh" contract "$SECRET_DETECTION_COMPONENT" "$CATALOG_CACHE" \
+    >"$live_contract" 2>/dev/null || return 1
+  grep -q '^input\.historic_scan\.' "$live_contract" 2>/dev/null
+}
+
 if selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -n "$SECRET_DETECTION_IMAGE" ]; then
   mark_attempted secret_detection
-  mark_executed secret_detection
-  info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
-  if pull_image secret_detection "Secret Detection" "${SECRET_DETECTION_IMAGE}" "secret detection did NOT run."; then
-    if $DRY_RUN; then
-      print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GIT_DEPTH="${GIT_DEPTH:-50}" -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" "${SECRET_DETECTION_IMAGE}" sh /runner.sh
+  sd_use_docker=true
+
+  if [ "$ENGINE_SECRET_DETECTION" = glci ]; then
+    sd_ref=$(glci_component_ref "$SECRET_DETECTION_COMPONENT") || sd_ref=""
+    if [ -z "$sd_ref" ]; then
+      warning "[Secret Detection] engine: glci could not resolve a component ref for ${SECRET_DETECTION_COMPONENT:-<none>}; falling back to the docker engine"
+      info "ADVISORY: glci unavailable — secret_detection ran with the docker engine"
+      record_engine_info secret_detection engine docker-fallback
     else
-      "$RUNTIME" run --rm \
-        --entrypoint "" \
-        -v "$PWD:/workspace" \
-        -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" \
-        ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
-        -w /workspace \
-        -e CI_PROJECT_DIR="/workspace" \
-        -e GIT_DEPTH="${GIT_DEPTH:-50}" \
-        -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" \
-        "${SECRET_DETECTION_IMAGE}" \
-        sh /runner.sh > .appsec-results/secret-detection.log 2>&1 &
-      SECRET_DETECTION_PID=$!
-      start_watchdog "$SECRET_DETECTION_PID"
-      SECRET_DETECTION_WATCHDOG=$WATCHDOG_PID
+      mark_executed secret_detection
+      SD_GLCI_ARGS=(--category secret_detection --component "$sd_ref" \
+        --results "$PWD/.appsec-results" --project-dir "$PWD")
+      if secret_detection_declares_historic_scan; then
+        SD_GLCI_ARGS+=(--input "historic_scan=${SECRET_DETECTION_HISTORIC_SCAN:-false}")
+      fi
+      set +e
+      sd_glci_output=$(call_glci_run "${SD_GLCI_ARGS[@]}")
+      sd_glci_rc=$?
+      set -e
+      printf '%s\n' "$sd_glci_output"
+      if $DRY_RUN; then
+        sd_use_docker=false
+      else
+        case "$sd_glci_rc" in
+          0)
+            sd_use_docker=false
+            record_engine_info secret_detection engine glci
+            record_engine_info secret_detection glci_commit "$(last_glci_commit "$sd_glci_output")"
+            ;;
+          3)
+            info "ADVISORY: glci unavailable — secret_detection ran with the docker engine"
+            warning "[Secret Detection] $(last_glci_reason "$sd_glci_output")"
+            record_engine_info secret_detection engine docker-fallback
+            ;;
+          *)
+            sd_use_docker=false
+            record_engine_info secret_detection engine glci
+            record_skip secret_detection "glci ran secret detection but it did not complete: $(last_glci_reason "$sd_glci_output"). See .appsec-results/glci/secret_detection.*.log for detail, fix it, then re-run this skill."
+            ;;
+        esac
+      fi
+    fi
+  fi
+
+  if $sd_use_docker; then
+    mark_executed secret_detection
+    info "[Secret Detection] Pulling ${SECRET_DETECTION_IMAGE}..."
+    if pull_image secret_detection "Secret Detection" "${SECRET_DETECTION_IMAGE}" "secret detection did NOT run."; then
+      if $DRY_RUN; then
+        print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e GIT_DEPTH="${GIT_DEPTH:-50}" -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" -e SECRET_DETECTION_HISTORIC_SCAN="${SECRET_DETECTION_HISTORIC_SCAN:-false}" "${SECRET_DETECTION_IMAGE}" sh /runner.sh
+      else
+        "$RUNTIME" run --rm \
+          --entrypoint "" \
+          -v "$PWD:/workspace" \
+          -v "$SCANNERS_DIR/secret-detection.sh:/runner.sh:ro" \
+          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+          -w /workspace \
+          -e CI_PROJECT_DIR="/workspace" \
+          -e GIT_DEPTH="${GIT_DEPTH:-50}" \
+          -e SECRET_DETECTION_EXCLUDED_PATHS="${SECRET_DETECTION_EXCLUDED_PATHS:-}" \
+          -e SECRET_DETECTION_HISTORIC_SCAN="${SECRET_DETECTION_HISTORIC_SCAN:-false}" \
+          "${SECRET_DETECTION_IMAGE}" \
+          sh /runner.sh > .appsec-results/secret-detection.log 2>&1 &
+        SECRET_DETECTION_PID=$!
+        start_watchdog "$SECRET_DETECTION_PID"
+        SECRET_DETECTION_WATCHDOG=$WATCHDOG_PID
+      fi
     fi
   fi
 elif selected secret_detection && [ "$RUN_SECRET_DETECTION" = true ]; then
@@ -1057,107 +1366,235 @@ if selected dependency_scanning && [ "$DS_RAN" = true ] && \
       "${GITLAB_CS_IMAGE}" \
       sh /runner.sh; then
       sbom_match_degraded "it failed — see .appsec-results/sbom-vuln-scan.log"
+    else
+      record_engine_info dependency_scanning source offline-trivy
     fi
   fi
 fi
 
+cs_slug_of() {
+  local slug
+  slug=$(appsec_slugify "$1")
+  [ -n "$slug" ] || slug=root
+  printf '%s' "$slug"
+}
+
 if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_CS_IMAGE" ]; then
-  if $DRY_RUN; then
-    print_dry_run bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$APP_NAME" .appsec-results
-    if [ -n "${CS_IMAGE:-}" ]; then
+  if [ -n "${CS_IMAGE:-}" ]; then
+    # ---------------------------------------------------------------------
+    # Registry mode: scan a BYO image already in the registry. Unchanged —
+    # container-target.sh still runs unconditionally for its Dockerfile
+    # discovery / base-images.json side effect (see its own header comment).
+    # ---------------------------------------------------------------------
+    if $DRY_RUN; then
+      print_dry_run bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$APP_NAME" .appsec-results
       CS_TARGET="registry|${CS_IMAGE}"
-    elif $HAS_DOCKERFILE; then
-      CS_TARGET="archive|.appsec-results/container-image.tar"
     else
-      CS_TARGET="none|"
+      CS_TARGET="$(bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$APP_NAME" ".appsec-results" || true)"
+    fi
+    CS_MODE="${CS_TARGET%%|*}"
+    CS_VALUE="${CS_TARGET#*|}"
+    mark_attempted container_scanning
+    mark_executed container_scanning
+    info "[GitLab CS] Scanning registry image $CS_VALUE..."
+    # GTCS turns a base-image finding into a concrete "upgrade FROM to X"
+    # remediation, but only when CS_DOCKERFILE_PATH names the Dockerfile
+    # (the component declares the input and defaults it to "Dockerfile").
+    # Nothing here ever set it, so that remediation never ran locally.
+    CS_DOCKERFILE_ARGS=()
+    cs_dockerfile=$(find_dockerfile || true)
+    if [ -n "$cs_dockerfile" ]; then
+      CS_DOCKERFILE_ARGS=(-e CS_DOCKERFILE_PATH="$cs_dockerfile")
+    fi
+    if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
+      if $DRY_RUN; then
+        print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
+      elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
+        -v "$PWD:/workspace" \
+        -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
+        ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+        -w /workspace \
+        -e CI_PROJECT_DIR="/workspace" \
+        -e CS_SCAN_MODE="registry" \
+        -e CS_IMAGE="$CS_VALUE" \
+        ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} \
+        -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" \
+        -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" \
+        "${GITLAB_CS_IMAGE}" \
+        sh /runner.sh; then
+        GITLAB_CS_PID="ran"
+      else
+        warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
+        record_skip container_scanning "Container scanning failed while scanning $CS_VALUE, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (registry credentials, image reference, container runtime, timeout), fix it, then re-run this skill."
+      fi
     fi
   else
-    CS_TARGET="$(bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$APP_NAME" ".appsec-results" || true)"
-  fi
-  CS_MODE="${CS_TARGET%%|*}"
-  CS_VALUE="${CS_TARGET#*|}"
-  case "$CS_MODE" in
-    registry)
-      mark_attempted container_scanning
-      mark_executed container_scanning
-      info "[GitLab CS] Scanning registry image $CS_VALUE..."
-      # GTCS turns a base-image finding into a concrete "upgrade FROM to X"
-      # remediation, but only when CS_DOCKERFILE_PATH names the Dockerfile
-      # (the component declares the input and defaults it to "Dockerfile").
-      # Nothing here ever set it, so that remediation never ran locally.
-      CS_DOCKERFILE_ARGS=()
-      cs_dockerfile=$(find_dockerfile || true)
-      if [ -n "$cs_dockerfile" ]; then
-        CS_DOCKERFILE_ARGS=(-e CS_DOCKERFILE_PATH="$cs_dockerfile")
-      fi
-      if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
-        if $DRY_RUN; then
-          print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=registry -e CS_IMAGE="$CS_VALUE" ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" "${GITLAB_CS_IMAGE}" sh /runner.sh
-        elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
-          -v "$PWD:/workspace" \
-          -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
-          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
-          -w /workspace \
-          -e CI_PROJECT_DIR="/workspace" \
-          -e CS_SCAN_MODE="registry" \
-          -e CS_IMAGE="$CS_VALUE" \
-          ${CS_DOCKERFILE_ARGS[@]+"${CS_DOCKERFILE_ARGS[@]}"} \
-          -e CS_REGISTRY_USER="$(printenv "$CS_USER_ENV" 2>/dev/null || true)" \
-          -e CS_REGISTRY_PASSWORD="$(printenv "$CS_PASS_ENV" 2>/dev/null || true)" \
-          "${GITLAB_CS_IMAGE}" \
-          sh /runner.sh; then
-          GITLAB_CS_PID="ran"
-        else
-          warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
-          record_skip container_scanning "Container scanning failed while scanning $CS_VALUE, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (registry credentials, image reference, container runtime, timeout), fix it, then re-run this skill."
-        fi
-      fi
-      ;;
-    archive)
-      mark_attempted container_scanning
-      mark_executed container_scanning
-      info "[GitLab CS] Scanning locally-built image (offline, bundled Trivy)..."
-      if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run."; then
-        if $DRY_RUN; then
-          print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
-        elif run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
-          -v "$PWD:/workspace" \
-          -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
-          ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
-          -w /workspace \
-          -e CI_PROJECT_DIR="/workspace" \
-          -e CS_SCAN_MODE="archive" \
-          -e CS_ARCHIVE="/workspace/.appsec-results/container-image.tar" \
-          "${GITLAB_CS_IMAGE}" \
-          sh /runner.sh; then
-          GITLAB_CS_PID="ran"
-        else
-          warning "[GitLab CS] Scan failed — check .appsec-results/gitlab-cs.log"
-          record_skip container_scanning "Container scanning failed on the locally-built image archive, so the image was NOT scanned. Read .appsec-results/gitlab-cs.log for the cause (image build, container runtime, memory, timeout), fix it, then re-run this skill."
-        fi
-      fi
-      ;;
-    error)
-      # No target means no scan. Unrecorded, this branch left container_scanning
-      # counted as covered — clean if any older report was still on disk.
-      #
-      # container-target.sh already tells a base-image pull failure apart from a
-      # broken build and prints the remedy for each. Reading CS_VALUE keeps that
-      # distinction: collapsing both into one message sent people to raise a
-      # ticket for a missing `docker login`.
-      if [ "$CS_VALUE" = base-pull ]; then
-        record_config_error container_scanning "The Dockerfile's FROM base image could not be pulled from the registry, so container scanning did NOT run. Log in to the registry, or set the credentials named by settings.container_registry in scanner-preferences.yaml, and point FROM at the internal mirror — the exact commands are printed above. Details: .appsec-results/container-build.log"
-      else
-        warning "[GitLab CS] Could not prepare a scan target (see container-target.sh output above)."
-        record_skip container_scanning "The container-scanning target could not be prepared (the image could not be built or saved), so container scanning did NOT run. Fix the build/save error reported above, then re-run this skill."
-      fi
-      ;;
-    *)
+    # ---------------------------------------------------------------------
+    # No registry image: build and scan every selected Dockerfile,
+    # sequentially. $DOCKERFILE (one path) > $APPSEC_DOCKERFILES (comma-
+    # separated repo-relative paths) > every path detect-dockerfiles.sh
+    # finds. Exactly one Dockerfile keeps the canonical report name
+    # (backward compatible); more than one gets a per-image report name.
+    # Selection itself already ran once, before the "Detected:" banner
+    # (select_dockerfiles) — reuse it here instead of re-deriving it, and
+    # emit any warnings it deferred (an invalid DOCKERFILE/APPSEC_DOCKERFILES
+    # entry) now that this section is the one actually acting on it.
+    # ---------------------------------------------------------------------
+    CS_DOCKERFILES=("${SELECTED_DOCKERFILES[@]+"${SELECTED_DOCKERFILES[@]}"}")
+    for cs_warning in "${SELECTED_DOCKERFILES_WARNINGS[@]+"${SELECTED_DOCKERFILES_WARNINGS[@]}"}"; do
+      warning "[GitLab CS] $cs_warning"
+    done
+
+    if [ "${#CS_DOCKERFILES[@]}" -eq 0 ]; then
       info "[GitLab CS] Deferred to CI — no CS_IMAGE and no Dockerfile found."
-      record_skip container_scanning "No Dockerfile found and CS_IMAGE is unset, so container scanning did NOT run locally. Write a Dockerfile for this project (or set CS_IMAGE=<image:tag> for an image already in your registry) and re-run this skill to get container coverage."
+      record_skip container_scanning "No Dockerfile found and CS_IMAGE is unset, so container scanning did NOT run locally. Write a Dockerfile for this project (or set CS_IMAGE=<image:tag> for an image already in your registry, or DOCKERFILE=<path>/APPSEC_DOCKERFILES=<paths> to point at one) and re-run this skill to get container coverage."
       info "Container scanning runs post-build in the pipeline."
-      ;;
-  esac
+    else
+      mark_attempted container_scanning
+      mark_executed container_scanning
+      $DRY_RUN || rm -f .appsec-results/base-images.json
+      CS_MULTI=false
+      [ "${#CS_DOCKERFILES[@]}" -gt 1 ] && CS_MULTI=true
+
+      # Resolved once: every Dockerfile in this run shares the same
+      # component ref (the tag does not vary per image).
+      CS_GLCI_REF=""
+      CS_ENGINE_ANY_GLCI=false
+      CS_ENGINE_ANY_FALLBACK=false
+      CS_GLCI_COMMIT=""
+      if [ "$ENGINE_CONTAINER_SCANNING" = glci ]; then
+        CS_GLCI_REF=$(glci_component_ref "$CONTAINER_SCANNING_COMPONENT") || CS_GLCI_REF=""
+        if [ -z "$CS_GLCI_REF" ]; then
+          warning "[GitLab CS] engine: glci could not resolve a component ref for ${CONTAINER_SCANNING_COMPONENT:-<none>}; every Dockerfile falls back to the docker engine"
+          info "ADVISORY: glci unavailable — container_scanning ran with the docker engine"
+          CS_ENGINE_ANY_FALLBACK=true
+        fi
+      fi
+
+      CS_OK_COUNT=0
+      CS_FAILURES=()
+      for cs_dockerfile in "${CS_DOCKERFILES[@]}"; do
+        cs_slug=$(cs_slug_of "$cs_dockerfile")
+        cs_app="${APP_NAME}-${cs_slug}"
+        cs_image_ref="appsec-local/${cs_app}:appsec-scan"
+        cs_report_name=gl-container-scanning-report.json
+        $CS_MULTI && cs_report_name="gl-container-scanning-report-${cs_slug}.json"
+
+        info "[GitLab CS] Building $cs_dockerfile..."
+        # glci pushes the built image into its own registry, so a local
+        # `docker save` archive is only needed for the docker engine and for
+        # the glci->docker fallback below (produced there, only if reached).
+        CS_TRY_GLCI=false
+        [ "$ENGINE_CONTAINER_SCANNING" = glci ] && [ -n "$CS_GLCI_REF" ] && CS_TRY_GLCI=true
+        if $DRY_RUN; then
+          print_dry_run env DOCKERFILE="$cs_dockerfile" BASE_IMAGES_APPEND=true CS_SKIP_SAVE="$CS_TRY_GLCI" bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$cs_app" .appsec-results
+          if $CS_TRY_GLCI; then
+            call_glci_run --category container_scanning --component "$CS_GLCI_REF" \
+              --image "$cs_image_ref" --dockerfile "$cs_dockerfile" \
+              --results "$PWD/.appsec-results" --project-dir "$PWD"
+          else
+            print_dry_run "$RUNTIME" run --rm --entrypoint "" -v "$PWD:/workspace" -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} -w /workspace -e CI_PROJECT_DIR=/workspace -e CS_SCAN_MODE=archive -e CS_ARCHIVE=/workspace/.appsec-results/container-image.tar "${GITLAB_CS_IMAGE}" sh /runner.sh
+          fi
+          CS_OK_COUNT=$((CS_OK_COUNT + 1))
+          continue
+        fi
+
+        cs_build="$(DOCKERFILE="$cs_dockerfile" BASE_IMAGES_APPEND=true CS_SKIP_SAVE="$CS_TRY_GLCI" bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$cs_app" ".appsec-results" || true)"
+        cs_build_mode="${cs_build%%|*}"
+        cs_build_value="${cs_build#*|}"
+        [ -f .appsec-results/container-build.log ] && cp .appsec-results/container-build.log ".appsec-results/container-build-${cs_slug}.log"
+
+        if [ "$cs_build_mode" != archive ] && [ "$cs_build_mode" != built ]; then
+          if [ "$cs_build_value" = base-pull ]; then
+            record_config_error container_scanning "$cs_dockerfile: the Dockerfile's FROM base image could not be pulled from the registry, so this Dockerfile was NOT scanned. Log in to the registry, or set the credentials named by settings.container_registry in scanner-preferences.yaml, and point FROM at the internal mirror. Details: .appsec-results/container-build-${cs_slug}.log"
+          else
+            warning "[GitLab CS] $cs_dockerfile: could not prepare a scan target (see container-target.sh output above)."
+          fi
+          CS_FAILURES+=("$cs_dockerfile (build failed — see .appsec-results/container-build-${cs_slug}.log)")
+          continue
+        fi
+
+        cs_scanned=false
+        if $CS_TRY_GLCI; then
+          set +e
+          cs_glci_output=$(call_glci_run --category container_scanning --component "$CS_GLCI_REF" \
+            --image "$cs_image_ref" --dockerfile "$cs_dockerfile" \
+            --results "$PWD/.appsec-results" --project-dir "$PWD")
+          cs_glci_rc=$?
+          set -e
+          printf '%s\n' "$cs_glci_output"
+          case "$cs_glci_rc" in
+            0)
+              cs_scanned=true
+              CS_ENGINE_ANY_GLCI=true
+              CS_GLCI_COMMIT=$(last_glci_commit "$cs_glci_output")
+              ;;
+            3)
+              info "ADVISORY: glci unavailable — $cs_dockerfile ran with the docker engine"
+              warning "[GitLab CS] $(last_glci_reason "$cs_glci_output")"
+              CS_ENGINE_ANY_FALLBACK=true
+              # container-target.sh built but (CS_SKIP_SAVE=true) did not save
+              # — the docker-engine scan below needs the archive, so produce
+              # it now from the already-built image instead of rebuilding.
+              if ! "$RUNTIME" save "$cs_image_ref" -o .appsec-results/container-image.tar \
+                  >>".appsec-results/container-build-${cs_slug}.log" 2>&1; then
+                warning "[GitLab CS] $cs_dockerfile: could not save the built image for the docker-engine fallback"
+                CS_FAILURES+=("$cs_dockerfile (image save failed — see .appsec-results/container-build-${cs_slug}.log)")
+                continue
+              fi
+              ;;
+            *)
+              CS_ENGINE_ANY_GLCI=true
+              CS_FAILURES+=("$cs_dockerfile (glci scan failed: $(last_glci_reason "$cs_glci_output"))")
+              continue
+              ;;
+          esac
+        fi
+
+        if ! $cs_scanned; then
+          if pull_image container_scanning "GitLab CS" "${GITLAB_CS_IMAGE}" "container scanning did NOT run." && \
+             run_container_scan .appsec-results/gitlab-cs.log "$RUNTIME" run --rm --entrypoint "" \
+              -v "$PWD:/workspace" \
+              -v "$SCANNERS_DIR/gitlab-container-scanning.sh:/runner.sh:ro" \
+              ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
+              -w /workspace \
+              -e CI_PROJECT_DIR="/workspace" \
+              -e CS_SCAN_MODE="archive" \
+              -e CS_ARCHIVE="/workspace/.appsec-results/container-image.tar" \
+              "${GITLAB_CS_IMAGE}" \
+              sh /runner.sh; then
+            cs_scanned=true
+          else
+            warning "[GitLab CS] $cs_dockerfile: scan failed — check .appsec-results/gitlab-cs.log"
+            CS_FAILURES+=("$cs_dockerfile (scan failed — see .appsec-results/gitlab-cs.log)")
+            continue
+          fi
+        fi
+
+        if $cs_scanned; then
+          if [ "$cs_report_name" != gl-container-scanning-report.json ]; then
+            mv -f .appsec-results/gl-container-scanning-report.json ".appsec-results/$cs_report_name" 2>/dev/null || true
+          fi
+          CS_OK_COUNT=$((CS_OK_COUNT + 1))
+        fi
+      done
+
+      if $CS_ENGINE_ANY_FALLBACK; then
+        record_engine_info container_scanning engine docker-fallback
+      elif $CS_ENGINE_ANY_GLCI; then
+        record_engine_info container_scanning engine glci
+        record_engine_info container_scanning glci_commit "$CS_GLCI_COMMIT"
+      fi
+
+      if [ "${#CS_FAILURES[@]}" -gt 0 ]; then
+        cs_failure_text=""
+        for cs_f in "${CS_FAILURES[@]}"; do
+          cs_failure_text="${cs_failure_text}${cs_f}; "
+        done
+        record_skip container_scanning "Container scanning built/scanned $CS_OK_COUNT of ${#CS_DOCKERFILES[@]} Dockerfile(s); the rest did NOT run: ${cs_failure_text}Fix the listed cause(s) and re-run this skill."
+      fi
+    fi
+  fi
 fi
 
 if [ -z "$EXECUTED_CATEGORIES" ]; then
@@ -1173,9 +1610,9 @@ if $DRY_RUN; then
   if dry_python="$(command -v python3 2>/dev/null)" && \
      "$dry_python" -c "import sys" >/dev/null 2>&1; then
     if [ -n "$ONLY_CATEGORY" ]; then
-      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --only "$ONLY_CATEGORY"
+      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --disabled "$DISABLED_FILE" --engine-info "$ENGINE_INFO_FILE" --only "$ONLY_CATEGORY"
     else
-      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE"
+      print_dry_run "$dry_python" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --disabled "$DISABLED_FILE" --engine-info "$ENGINE_INFO_FILE"
     fi
   elif [ -z "${PYTHON_INSTALL_URL:-}" ]; then
     warning "python3 is unavailable: install python3 or set settings.python.install_url."
@@ -1200,10 +1637,10 @@ run_normalize() {
   if [ -n "$ONLY_CATEGORY" ]; then
     # AVAILABILITY_ARGS is an intentional word list, not one argument.
     # shellcheck disable=SC2086
-    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --only "$ONLY_CATEGORY" $AVAILABILITY_ARGS
+    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --disabled "$DISABLED_FILE" --engine-info "$ENGINE_INFO_FILE" --only "$ONLY_CATEGORY" $AVAILABILITY_ARGS
   else
     # shellcheck disable=SC2086
-    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" $AVAILABILITY_ARGS
+    "$PY_BIN" "$SCRIPTS_DIR/normalize.py" .appsec-results --gate "${CI_GATE_FAIL_ON:-high}" --ran "$RAN_CATEGORIES" --skips "$SKIPS_FILE" --disabled "$DISABLED_FILE" --engine-info "$ENGINE_INFO_FILE" $AVAILABILITY_ARGS
   fi
 }
 

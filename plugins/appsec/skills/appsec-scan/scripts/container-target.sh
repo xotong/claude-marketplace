@@ -121,8 +121,8 @@ parse_image_tag() {
 }
 
 append_base_image_entry() {
-  local raw=$1 image=$2 tag=$3 line=$4 alias=$5
-  ENTRIES+=("{\"raw\":\"$(json_escape "$raw")\",\"image\":\"$(json_escape "$image")\",\"tag\":\"$(json_escape "$tag")\",\"line\":${line},\"alias\":\"$(json_escape "$alias")\"}")
+  local raw=$1 image=$2 tag=$3 line=$4 alias=$5 dockerfile=$6
+  ENTRIES+=("{\"raw\":\"$(json_escape "$raw")\",\"image\":\"$(json_escape "$image")\",\"tag\":\"$(json_escape "$tag")\",\"line\":${line},\"alias\":\"$(json_escape "$alias")\",\"dockerfile\":\"$(json_escape "$dockerfile")\"}")
 }
 
 write_base_images_json() {
@@ -149,12 +149,25 @@ write_base_images_json() {
 # base-images.json. Always writes the file — [] when there is no Dockerfile
 # or it names nothing external — so a consumer can tell "looked, found none"
 # apart from "never ran".
+#
+# BASE_IMAGES_APPEND=true (env): a multi-Dockerfile caller invokes this
+# script once per Dockerfile, sequentially, with the SAME `out` path each
+# time. Rather than the last call clobbering every earlier one, prior
+# entries are read back and kept — each one already carries the
+# "dockerfile" field naming which Dockerfile it came from, since every
+# entry has always been written with one.
 write_base_images() {
   local dockerfile=$1 out=$2
   ENTRIES=()
   ARG_NAMES=()
   ARG_VALUES=()
   ALIAS_NAMES=()
+
+  if [[ "${BASE_IMAGES_APPEND:-false}" == true && -f "$out" ]]; then
+    while IFS= read -r prior_entry; do
+      ENTRIES+=("$prior_entry")
+    done < <(grep -o '{"raw":.*}' "$out" 2>/dev/null || true)
+  fi
 
   if [[ -n "$dockerfile" && -f "$dockerfile" ]]; then
     local lineno=0 line
@@ -195,7 +208,7 @@ write_base_images() {
           if [[ "$RESOLVED_OK" -eq 1 && ! "$RESOLVED_REF" =~ ^[Ss][Cc][Rr][Aa][Tt][Cc][Hh]$ ]] \
             && ! is_known_alias "$RESOLVED_REF"; then
             parse_image_tag "$RESOLVED_REF"
-            append_base_image_entry "$raw_ref" "$IMAGE_NAME" "$IMAGE_TAG" "$lineno" "$alias"
+            append_base_image_entry "$raw_ref" "$IMAGE_NAME" "$IMAGE_TAG" "$lineno" "$alias" "$dockerfile"
           fi
         fi
 
@@ -267,6 +280,16 @@ EOF
   echo "see ${build_log}" >&2
   printf 'error|build\n'
   exit 3
+fi
+
+# CS_SKIP_SAVE=true (env): the caller is about to hand ${image_ref} to glci,
+# which pushes it into its own embedded registry — a local `docker save`
+# archive would never be read in that path. Skip it here rather than build
+# one just to leave it on disk; the docker-engine fallback (glci exit 3)
+# saves the already-built image itself, only when it turns out to need it.
+if [[ "${CS_SKIP_SAVE:-false}" == true ]]; then
+  printf 'built|%s\n' "${image_ref}"
+  exit 0
 fi
 
 if ! "${runtime}" save "${image_ref}" -o "${archive_path}" >>"${build_log}" 2>&1; then

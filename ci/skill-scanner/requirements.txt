@@ -1,5 +1,0 @@
-# Direct dependencies — pin to exact minor for reproducible image builds.
-# To regenerate the lockfile after bumping: pip-compile requirements.txt -o requirements.lock
-openai==1.30.*
-pyyaml==6.0.*
-rich==13.7.*

@@ -131,6 +131,24 @@ class RunScanDryRunTest(unittest.TestCase):
         self.assertIn("HAS_POM_NO_GRADLE=true", output)
         self.assertIn("FORTIFY_LANGUAGE=maven", output)
 
+    def test_detected_banner_counts_every_selected_dockerfile(self) -> None:
+        # The banner used to only ever check `-f Dockerfile`, so a monorepo
+        # with per-service Dockerfiles (what detect-dockerfiles.sh exists to
+        # find) reported Dockerfile=false even though container scanning
+        # would go on to build and scan two of them.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            (repo / "services").mkdir()
+            (repo / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+            (repo / "services" / "Dockerfile").write_text(
+                "FROM scratch\n", encoding="utf-8"
+            )
+            result = self.run_scan(repo, "--dry-run")
+
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("Dockerfiles=2", output)
+
     def test_enabled_scanners_emit_runtime_run_shapes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_repo(tmp)
@@ -851,10 +869,37 @@ class FixBranchTest(unittest.TestCase):
             text=True,
         )
 
-    def test_init_creates_branch_and_loop_state(self) -> None:
+    def test_init_without_approved_refuses(self) -> None:
+        """SKILL.md Step 5: ask the user before --init creates a branch."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_committed_repo(tmp)
             result = self.run_fix(repo, "--init")
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("--approved", result.stderr)
+        self.assertIn("Step 5", result.stderr)
+        self.assertFalse(branch.startswith("appsec/fix-"), "must not create a branch without approval")
+
+    def test_check_progress_still_unguarded(self) -> None:
+        """--check-progress is explicitly unchanged by the --init gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_committed_repo(tmp)
+            self.assertEqual(self.run_fix(repo, "--init", "--approved").returncode, 0)
+            result = self.run_fix(repo, "--check-progress", "10", "9")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_init_creates_branch_and_loop_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_committed_repo(tmp)
+            result = self.run_fix(repo, "--init", "--approved")
             state = (repo / ".appsec-results" / "loop-state").read_text(
                 encoding="utf-8"
             )
@@ -879,7 +924,7 @@ class FixBranchTest(unittest.TestCase):
                 '[{"fingerprint":"one"},{"fingerprint":"two"}]\n',
                 encoding="utf-8",
             )
-            result = self.run_fix(repo, "--init")
+            result = self.run_fix(repo, "--init", "--approved")
             state = (results / "loop-state").read_text(encoding="utf-8")
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -888,7 +933,7 @@ class FixBranchTest(unittest.TestCase):
     def test_check_progress_increments_and_rejects_no_progress(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_committed_repo(tmp)
-            self.assertEqual(self.run_fix(repo, "--init").returncode, 0)
+            self.assertEqual(self.run_fix(repo, "--init", "--approved").returncode, 0)
             result = self.run_fix(repo, "--check-progress", "10", "10")
             state = (repo / ".appsec-results" / "loop-state").read_text(
                 encoding="utf-8"
@@ -901,7 +946,7 @@ class FixBranchTest(unittest.TestCase):
     def test_check_progress_allows_five_fix_cycles_then_aborts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = self.make_committed_repo(tmp)
-            self.assertEqual(self.run_fix(repo, "--init").returncode, 0)
+            self.assertEqual(self.run_fix(repo, "--init", "--approved").returncode, 0)
             for previous, current in ((10, 9), (9, 8), (8, 7), (7, 6), (6, 5)):
                 result = self.run_fix(
                     repo, "--check-progress", str(previous), str(current)
@@ -1288,3 +1333,36 @@ class CheckRemediationAtomicWriteTest(unittest.TestCase):
             ["registry-availability.json"],
             leftovers,
         )
+
+
+class SecretDetectionHistoricScanTest(RunScanDryRunTest):
+    """SECRET_DETECTION_HISTORIC_SCAN: honoured by the runner, wired through
+    by run-scan.sh, default false either way."""
+
+    def test_runner_defaults_and_exports_historic_scan(self) -> None:
+        runner_text = (SKILL_DIR / "scanners" / "secret-detection.sh").read_text(encoding="utf-8")
+        self.assertIn('SECRET_DETECTION_HISTORIC_SCAN="${SECRET_DETECTION_HISTORIC_SCAN:-false}"', runner_text)
+        self.assertIn("export SECRET_DETECTION_HISTORIC_SCAN", runner_text)
+
+    def test_dry_run_passes_historic_scan_flag_with_default_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            result = self.run_scan(repo, "--only", "secret_detection", "--dry-run")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # print_dry_run redacts any -e VAR whose name contains "secret" (case-
+        # insensitive), same as SECRET_DETECTION_EXCLUDED_PATHS above it -- the
+        # flag is present, its value is masked, which is correct behaviour.
+        self.assertIn("-e SECRET_DETECTION_HISTORIC_SCAN=***", result.stdout)
+
+    def test_both_invocation_sites_default_and_forward_the_override(self) -> None:
+        """Dry-run output redacts this value (its name contains "secret", same
+        as SECRET_DETECTION_EXCLUDED_PATHS above it in the same command), so
+        the override itself is verified at the source instead: both the
+        dry-run print and the real docker invocation must read the SAME
+        ambient variable with the SAME default."""
+        run_scan_text = RUN_SCAN.read_text(encoding="utf-8")
+        occurrences = run_scan_text.count(
+            '-e SECRET_DETECTION_HISTORIC_SCAN="${SECRET_DETECTION_HISTORIC_SCAN:-false}"'
+        )
+        self.assertEqual(occurrences, 2, "expected one dry-run print site and one real invocation site")

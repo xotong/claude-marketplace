@@ -39,7 +39,8 @@ config_error=false
 for tuple in ${ENABLED_COMPONENTS:-}; do
   component="${tuple%%|*}"; rest="${tuple#*|}"
   version="${rest%%|*}"; rest="${rest#*|}"
-  runner="${rest%%|*}"; image="${rest#*|}"
+  runner="${rest%%|*}"; rest="${rest#*|}"
+  image="${rest%%|*}"   # field 4; trailing field is category, unused here
   count=$((count + 1))
 
   resolved=$(bash "$SCRIPTS_DIR/catalog.sh" resolve \
@@ -53,8 +54,12 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
   # A refused token is not an outage: continuing on the snapshot here would look
   # exactly like a live check that passed. catalog.sh already printed the
   # CONFIG-ERROR line; this makes the step itself fail so it cannot be scrolled past.
+  # config-error covers every other CONFIG-ERROR resolve_cmd can label a
+  # fallback with (404 with/without a token, TLS verification, zero
+  # releases/tags) — unauthorized is kept as its own case only because the
+  # label predates the broader one and existing callers may still match on it.
   case "$source_label" in
-    *unauthorized*) config_error=true ;;
+    *unauthorized*|*config-error*) config_error=true ;;
   esac
 
   if [ "$runner" != "none" ]; then
@@ -91,6 +96,6 @@ fi
 # Printed the table first: the user still gets to see which components resolved
 # and how. Then fail, so a refused token cannot be mistaken for a live check.
 if [ "$config_error" = true ]; then
-  echo "ERROR: at least one component resolved [offline-fallback: unauthorized] — fix the catalogue token before scanning. Do not work around it." >&2
+  echo "ERROR: at least one component resolved [offline-fallback: unauthorized] or [offline-fallback: config-error] — see the CONFIG-ERROR line(s) above and fix the named setting before scanning. Do not work around it." >&2
   exit 1
 fi

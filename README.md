@@ -110,7 +110,7 @@ Ask your team lead for the exact repo URL and plugin names. Team skill names and
 
 If a plugin is missing after install, re-run the install command.
 
-> **Need a `LITELLM_API_KEY`?** This key is needed if your team runs the skill scanner CI job. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
+> **Skill security scan:** MRs and pushes to `main` run SkillSpector (static-only, no CI/CD variables required) via the `platform-engineering/ci-catalogue/skillspector` component. See "Skill security scan — CI safety gate" below.
 
 ---
 
@@ -306,8 +306,7 @@ Structure:
         <skill-name>/
           SKILL.md          ← required
           supporting-doc.md ← optional
-  scanner-config.yaml       ← optional: tune scanner threshold/prompts
-  .gitlab-ci.yml            ← required: include the skill scanner component
+  .gitlab-ci.yml            ← required: include the SkillSpector component
 ```
 
 ### Step 2 — Set up your marketplace catalog
@@ -346,10 +345,10 @@ Your repo is its own marketplace. Each plugin is an independently installable un
 **`.gitlab-ci.yml` minimum:**
 ```yaml
 include:
-  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner-component/skill-scanner-component@~latest
+  - component: $CI_SERVER_FQDN/platform-engineering/ci-catalogue/skillspector/skillspector@~latest
 ```
 
-> **`LITELLM_API_KEY` required:** Add it as a masked CI/CD variable in your project's **Settings → CI/CD → Variables**. If you don't have one, raise a Jira ticket titled **"Onboard Claudecode"** and assign it to the Platform Team.
+No CI/CD variables required — SkillSpector is static-only.
 
 ### Step 3 — Write a skill
 
@@ -470,7 +469,7 @@ Platform Team is a required approver (CODEOWNERS).
 
 ```
 .claude-plugin/marketplace.json        Central catalog — Platform Team only
-.gitlab-ci.yml                         CI: JSON validation + skill scanner across all plugins
+.gitlab-ci.yml                         CI: JSON validation + SkillSpector security scan across all plugins
 CODEOWNERS                             Write-access rules with [Section][1] approval counts
 VENDORED.md                            Upstream SHAs, license notes, update cadence
 CLAUDE.md                              Project context for contributors
@@ -501,22 +500,6 @@ plugins/
   appsec/                              Platform Team — 2 security scanning skills
   code-quality/                        Platform Team — 4 code/doc quality skills
 
-ci/
-  skill-scanner/                       Scanner implementation (scanner.py, Dockerfile, config.yaml)
-    scanner.py
-    config.yaml                        Default prompts and threshold (editable without rebuild)
-    Dockerfile
-    requirements.txt
-    scanner-config.example.yaml        Template for teams to copy into their repo
-
-skill-scanner-component/              GitLab CI component (component spec + docs)
-  templates/
-    skill-scanner-component.yml        Component spec — inputs: stage, skills_dir, threshold,
-                                       fail_on_review, scanner_model, image
-    README.md                          Platform Team reference (publishing, calibration, local runs)
-  .gitlab-ci.yml                       CI for validating and smoke-testing the component
-  README.md                            Tenant reference (how to add the scanner to your skills repo)
-
 .gitlab/
   merge_request_templates/
     add-vendored-plugin.md
@@ -539,16 +522,20 @@ Team skill content lives in separate private repos and is governed entirely by t
 
 ---
 
-## Skill scanner — CI safety gate
+## Skill security scan — CI safety gate
 
-Every team skills repo should include the scanner. It evaluates each `SKILL.md` using an LLM-as-judge and fails the pipeline if safety confidence is below threshold.
+Every team skills repo should include SkillSpector (NVIDIA, Apache-2.0), a static-only skill security scanner — no LLM calls, no CI/CD variables required.
 
 ```yaml
 # .gitlab-ci.yml in your skills repo — this is the complete config
 include:
-  - component: gitlab.company.com/skillshub/claude-marketplace/skill-scanner-component/skill-scanner-component@~latest
+  - component: $CI_SERVER_FQDN/platform-engineering/ci-catalogue/skillspector/skillspector@~latest
+    inputs:
+      scan_root: plugins
+      scope: changed
+
+# Pin to an exact version instead of ~latest:
+#   - component: $CI_SERVER_FQDN/platform-engineering/ci-catalogue/skillspector/skillspector@<VERSION>
 ```
 
-Set `LITELLM_API_KEY` as a masked CI/CD variable. That's it.
-
-Results appear as named test cases in the MR Tests tab. Full docs: `ci/skill-scanner/README.md`.
+Currently report-only (`fail_on: none`) while SkillSpector's accuracy is under review — it will not fail your pipeline. MR pipelines scan only changed skills (`scope: changed`); set the `SKILLSPECTOR_SCOPE=all` runtime variable (or `scope: all`) for a full scan.

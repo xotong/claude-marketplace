@@ -14,6 +14,7 @@
 #   - settings.jq.install_url
 #   - settings.python.install_url
 #   - settings.catalog.auth_token_env
+#   - settings.catalog.glab_fallback
 #   - settings.build_credentials.artifactory_user_env
 #   - settings.build_credentials.artifactory_password_env
 #   - settings.container_registry.user_env
@@ -24,7 +25,8 @@
 #   - default_profile
 #   - profiles.<name>.gitlab_instance
 #   - profiles.<name>.{auth_token_env,base_repo,hardened_repo}   (override the global)
-#   - profiles.<name>.categories.<category>.{component,version,image,runner,enabled}
+#   - profiles.<name>.{engine,remote_match_project}
+#   - profiles.<name>.categories.<category>.{component,version,image,runner,enabled,note}
 #
 # Config key -> exported name, for whoever wires a new key into a runner:
 #   ca_bundle                        -> CA_BUNDLE          (host path; mounted, then
@@ -35,6 +37,18 @@
 #                                       scanners/fortify-sast.sh)
 #   container_registry.base_repo     -> BASE_IMAGE_REPO
 #   container_registry.hardened_repo -> HARDENED_IMAGE_REPO (suggestion-only)
+#   catalog.glab_fallback            -> CATALOG_GLAB_FALLBACK (see scripts/lib-token.sh)
+#   categories.<c>.note              -> CATEGORY_NOTE_<C>   (one var per category,
+#                                       e.g. CATEGORY_NOTE_SAST; free text, shown
+#                                       verbatim wherever that category is disabled)
+#   engine (profile-level; sast/dependency_scanning always resolve to docker
+#   in this release, with an ADVISORY line explaining why) ->
+#                                       ENGINE_SECRET_DETECTION / ENGINE_CONTAINER_SCANNING
+#   remote_match_project              -> REMOTE_MATCH_PROJECT (empty = disabled)
+#
+# A category with enabled: false still appears in DISABLED_CATEGORIES (space
+# list of category names), so run-scan.sh/normalize.py can record it as a named
+# coverage gap ("disabled_by_profile") instead of it silently vanishing.
 #
 # Runner -> RUN_* mapping. Keep this table aligned with the case statement below;
 # it is the single source of truth referenced from SKILL.md.
@@ -251,6 +265,10 @@ function split_key_value(s,    idx) {
       settings["catalog.auth_token_env"] = parse_scalar(value)
       next
     }
+    if (indent == 4 && settings_block == "catalog" && key == "glab_fallback") {
+      settings["catalog.glab_fallback"] = parse_scalar(value)
+      next
+    }
     if (indent == 4 && settings_block == "build_credentials" && key == "artifactory_user_env") {
       settings["build_credentials.artifactory_user_env"] = parse_scalar(value)
       next
@@ -331,6 +349,23 @@ function split_key_value(s,    idx) {
     next
   }
 
+  # engine / remote_match_project are profile-level like the three above: an
+  # explicit value (including "") overrides the shipped default, and an
+  # absent one lets the shell default apply.
+  if (indent == 4 && key == "engine") {
+    profile_engine[current_profile] = parse_scalar(value)
+    profile_engine_set[current_profile] = 1
+    current_block = ""
+    next
+  }
+
+  if (indent == 4 && key == "remote_match_project") {
+    profile_remote_match_project[current_profile] = parse_scalar(value)
+    profile_remote_match_project_set[current_profile] = 1
+    current_block = ""
+    next
+  }
+
   if (indent == 4 && key == "categories" && strip_comment(value) == "") {
     current_block = "categories"
     current_category = ""
@@ -379,6 +414,7 @@ END {
   print "SETTING\tjq.install_url\t" settings["jq.install_url"]
   print "SETTING\tpython.install_url\t" settings["python.install_url"]
   print "SETTING\tcatalog.auth_token_env\t" settings["catalog.auth_token_env"]
+  print "SETTING\tcatalog.glab_fallback\t" settings["catalog.glab_fallback"]
   print "SETTING\tpython_runtime.translation_mode\t" settings["python_runtime.translation_mode"]
   print "SETTING\tpython_runtime.uv_version\t" settings["python_runtime.uv_version"]
   print "SETTING\tpython_runtime.uv_installer_base\t" settings["python_runtime.uv_installer_base"]
@@ -408,6 +444,12 @@ END {
     if (profile_hardened_repo_set[active_profile]) {
       print "PROFILE_HARDENED_REPO\t" profile_hardened_repo[active_profile]
     }
+    if (profile_engine_set[active_profile]) {
+      print "PROFILE_ENGINE\t" profile_engine[active_profile]
+    }
+    if (profile_remote_match_project_set[active_profile]) {
+      print "PROFILE_REMOTE_MATCH_PROJECT\t" profile_remote_match_project[active_profile]
+    }
     for (i = 1; i <= cat_count[active_profile]; i++) {
       category = cat_order[active_profile, i]
       print "CATEGORY\t" category "\tcomponent\t" category_value[active_profile, category, "component"]
@@ -415,6 +457,7 @@ END {
       print "CATEGORY\t" category "\timage\t" category_value[active_profile, category, "image"]
       print "CATEGORY\t" category "\trunner\t" category_value[active_profile, category, "runner"]
       print "CATEGORY\t" category "\tenabled\t" category_value[active_profile, category, "enabled"]
+      print "CATEGORY\t" category "\tnote\t" category_value[active_profile, category, "note"]
     }
   }
 }
@@ -431,6 +474,7 @@ container_runtime=
 jq_install_url=
 python_install_url=
 catalog_auth_env=
+catalog_glab_fallback=false
 ca_bundle=
 pip_index_url=
 maven_settings=
@@ -456,30 +500,38 @@ pkg_reg_maven=
 pkg_reg_go=
 pkg_reg_auth_env=
 gitlab_instance=
+# Profile-level engine default; "docker" (the shipped default and every
+# profile but platform-engineering) unless the profile overrides it.
+profile_engine=docker
+remote_match_project=
 
 sast_component=
 sast_version=
 sast_image_yaml=
 sast_runner=
 sast_enabled=false
+sast_note=
 
 dependency_scanning_component=
 dependency_scanning_version=
 dependency_scanning_image_yaml=
 dependency_scanning_runner=
 dependency_scanning_enabled=false
+dependency_scanning_note=
 
 secret_detection_component=
 secret_detection_version=
 secret_detection_image_yaml=
 secret_detection_runner=
 secret_detection_enabled=false
+secret_detection_note=
 
 container_scanning_component=
 container_scanning_version=
 container_scanning_image_yaml=
 container_scanning_runner=
 container_scanning_enabled=false
+container_scanning_note=
 
 category_order=
 run_fortify_sast=false
@@ -487,6 +539,11 @@ run_gitlab_ds=false
 run_secret_detection=false
 run_gitlab_cs=false
 enabled_components=
+disabled_categories=
+# Resolved (profile default, glci-unsupported-category ADVISORY applied) —
+# see the category_order loop below.
+engine_secret_detection=docker
+engine_container_scanning=docker
 
 tab=$(printf '\t')
 while IFS="$tab" read -r record field1 field2 field3; do
@@ -511,6 +568,7 @@ while IFS="$tab" read -r record field1 field2 field3; do
         jq.install_url) jq_install_url=$field2 ;;
         python.install_url) python_install_url=$field2 ;;
         catalog.auth_token_env) catalog_auth_env=$field2 ;;
+        catalog.glab_fallback) [ -z "$field2" ] || catalog_glab_fallback=$field2 ;;
         ca_bundle) ca_bundle=$field2 ;;
         pip_index_url) pip_index_url=$field2 ;;
         maven_settings) maven_settings=$field2 ;;
@@ -544,6 +602,12 @@ while IFS="$tab" read -r record field1 field2 field3; do
     PROFILE_HARDENED_REPO)
       hardened_image_repo=$field1
       ;;
+    PROFILE_ENGINE)
+      [ -z "$field1" ] || profile_engine=$field1
+      ;;
+    PROFILE_REMOTE_MATCH_PROJECT)
+      remote_match_project=$field1
+      ;;
     GITLAB_INSTANCE)
       gitlab_instance=$field1
       ;;
@@ -565,21 +629,25 @@ while IFS="$tab" read -r record field1 field2 field3; do
         sast:image) sast_image_yaml=$field3 ;;
         sast:runner) sast_runner=$field3 ;;
         sast:enabled) sast_enabled=$field3 ;;
+        sast:note) sast_note=$field3 ;;
         dependency_scanning:component) dependency_scanning_component=$field3 ;;
         dependency_scanning:version) dependency_scanning_version=$field3 ;;
         dependency_scanning:image) dependency_scanning_image_yaml=$field3 ;;
         dependency_scanning:runner) dependency_scanning_runner=$field3 ;;
         dependency_scanning:enabled) dependency_scanning_enabled=$field3 ;;
+        dependency_scanning:note) dependency_scanning_note=$field3 ;;
         secret_detection:component) secret_detection_component=$field3 ;;
         secret_detection:version) secret_detection_version=$field3 ;;
         secret_detection:image) secret_detection_image_yaml=$field3 ;;
         secret_detection:runner) secret_detection_runner=$field3 ;;
         secret_detection:enabled) secret_detection_enabled=$field3 ;;
+        secret_detection:note) secret_detection_note=$field3 ;;
         container_scanning:component) container_scanning_component=$field3 ;;
         container_scanning:version) container_scanning_version=$field3 ;;
         container_scanning:image) container_scanning_image_yaml=$field3 ;;
         container_scanning:runner) container_scanning_runner=$field3 ;;
         container_scanning:enabled) container_scanning_enabled=$field3 ;;
+        container_scanning:note) container_scanning_note=$field3 ;;
       esac
       ;;
   esac
@@ -711,11 +779,43 @@ for category_name in $category_order; do
       ;;
   esac
 
+  # Resolve engine from the profile-level default; glci is not supported for
+  # sast/dependency_scanning in this release — force docker and say so,
+  # rather than have the scanner fail later on a component this integration
+  # never wires up for glci. Only worth an ADVISORY for a category that
+  # would actually run.
+  resolved_engine=$profile_engine
+  case "$resolved_engine" in
+    glci) ;;
+    *) resolved_engine=docker ;;
+  esac
+  case "$category_name" in
+    sast|dependency_scanning)
+      if [ "$resolved_engine" = glci ]; then
+        [ "$category_enabled" = "true" ] && \
+          warn "ADVISORY: $category_name ignores engine: glci in this release — runs with the docker engine"
+        resolved_engine=docker
+      fi
+      ;;
+    secret_detection) engine_secret_detection=$resolved_engine ;;
+    container_scanning) engine_container_scanning=$resolved_engine ;;
+  esac
+
   if [ "$category_enabled" = "true" ]; then
     [ -n "$category_runner" ] || category_runner=$(default_runner_for "$category_name")
     apply_runner_flag "$category_name" "$category_runner"
     if [ -n "$category_component" ] && [ -n "$category_version" ] && [ -n "$category_runner" ]; then
       append_enabled_component "$category_component" "$category_version" "$category_runner" "$category_image" "$category_name"
+    fi
+  else
+    # A category the admin explicitly turned off (enabled: false) is a config
+    # fact, not silence — run-scan.sh/normalize.py record it in
+    # scan-coverage.json as disabled_by_profile (plus its note:), rather than
+    # it just never showing up anywhere.
+    if [ -n "$disabled_categories" ]; then
+      disabled_categories="$disabled_categories $category_name"
+    else
+      disabled_categories=$category_name
     fi
   fi
 done
@@ -727,6 +827,7 @@ emit CONTAINER_RUNTIME "$container_runtime"
 emit JQ_INSTALL_URL "$jq_install_url"
 emit PYTHON_INSTALL_URL "$python_install_url"
 emit CATALOG_AUTH_ENV "$catalog_auth_env"
+emit CATALOG_GLAB_FALLBACK "$catalog_glab_fallback"
 emit CA_BUNDLE "$ca_bundle"
 # Deliberately NOT named PIP_INDEX_URL. These assignments get eval'd into the
 # caller's own shell, and pip reads PIP_INDEX_URL directly — exporting the
@@ -763,3 +864,11 @@ emit RUN_GITLAB_DS "$run_gitlab_ds"
 emit RUN_SECRET_DETECTION "$run_secret_detection"
 emit RUN_GITLAB_CS "$run_gitlab_cs"
 emit ENABLED_COMPONENTS "$enabled_components"
+emit DISABLED_CATEGORIES "$disabled_categories"
+emit ENGINE_SECRET_DETECTION "$engine_secret_detection"
+emit ENGINE_CONTAINER_SCANNING "$engine_container_scanning"
+emit REMOTE_MATCH_PROJECT "$remote_match_project"
+emit CATEGORY_NOTE_SAST "$sast_note"
+emit CATEGORY_NOTE_DEPENDENCY_SCANNING "$dependency_scanning_note"
+emit CATEGORY_NOTE_SECRET_DETECTION "$secret_detection_note"
+emit CATEGORY_NOTE_CONTAINER_SCANNING "$container_scanning_note"
