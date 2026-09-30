@@ -1,0 +1,8 @@
+# Repo-relative paths that exist only on the public GitHub mirror.
+# ci/publish-github.sh restores each of these from the destination's current
+# main after every sync, so they survive even though the internal source
+# tree never has them.
+plugins/self-hosted
+plugins/appsec/skills/appsec-scan/MIGRATION.md
+ci/check-essentials-drift.py
+github

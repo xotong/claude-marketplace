@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Check that skills bundled in plugins/essentials/ are identical to their
+Check that skills bundled in plugins/self-hosted/essentials-self-hosted/ are identical to their
 canonical source plugin directories.
 
 Essentials bundles content from these sources:
-  plugins/superpowers/skills/                       → plugins/essentials/skills/
-  plugins/code-quality/skills/lint-and-validate/   → plugins/essentials/skills/lint-and-validate/
-  plugins/superpowers/assets/                       → plugins/essentials/assets/
-  plugins/anthropic-feature-dev/                    → plugins/essentials/ (agents/ + commands/)
-  plugins/anthropic-pr-review/                      → plugins/essentials/ (agents/ + commands/)
+  plugins/self-hosted/superpowers/skills/                       → plugins/self-hosted/essentials-self-hosted/skills/
+  plugins/code-quality/skills/lint-and-validate/   → plugins/self-hosted/essentials-self-hosted/skills/lint-and-validate/
+  plugins/self-hosted/superpowers/assets/                       → plugins/self-hosted/essentials-self-hosted/assets/
+  plugins/self-hosted/anthropic-feature-dev/                    → plugins/self-hosted/essentials-self-hosted/ (agents/ + commands/)
+  plugins/self-hosted/anthropic-pr-review/                      → plugins/self-hosted/essentials-self-hosted/ (agents/ + commands/)
 
-Note: plugins/essentials/hooks/ is intentionally a curated subset of
-plugins/superpowers/hooks/ (a different, trimmed hooks.json plus only the
+Note: plugins/self-hosted/essentials-self-hosted/hooks/ is intentionally a curated subset of
+plugins/self-hosted/superpowers/hooks/ (a different, trimmed hooks.json plus only the
 launcher files), NOT a byte-identical mirror, so it is deliberately excluded
 from drift checking.
 
@@ -19,7 +19,7 @@ When a source plugin is updated, essentials must be updated to match.
 This script detects drift between the two and fails if any file differs.
 
 Design note: anthropic-feature-dev and anthropic-pr-review both contribute
-to plugins/essentials/agents/ and plugins/essentials/commands/. The script
+to plugins/self-hosted/essentials-self-hosted/agents/ and plugins/self-hosted/essentials-self-hosted/commands/. The script
 pre-checks that no two source plugins contribute a file with the same
 relative path to the same destination — such a collision would create an
 unsatisfiable constraint (essentials cannot match two different sources
@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
-ESSENTIALS_ROOT = REPO_ROOT / "plugins/essentials"
+ESSENTIALS_ROOT = REPO_ROOT / "plugins/self-hosted/essentials-self-hosted"
 
 # (source_dir, essentials_dir, glob_pattern)
 # superpowers/skills and code-quality/lint-and-validate both contribute to
@@ -47,38 +47,38 @@ ESSENTIALS_ROOT = REPO_ROOT / "plugins/essentials"
 # same essentials agents/ and commands/ destinations — see design note above.
 SOURCES = [
     (
-        REPO_ROOT / "plugins/superpowers/skills",
-        REPO_ROOT / "plugins/essentials/skills",
+        REPO_ROOT / "plugins/self-hosted/superpowers/skills",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/skills",
         "**/*",
     ),
     (
         REPO_ROOT / "plugins/code-quality/skills/lint-and-validate",
-        REPO_ROOT / "plugins/essentials/skills/lint-and-validate",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/skills/lint-and-validate",
         "**/*",
     ),
     (
-        REPO_ROOT / "plugins/superpowers/assets",
-        REPO_ROOT / "plugins/essentials/assets",
+        REPO_ROOT / "plugins/self-hosted/superpowers/assets",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/assets",
         "**/*",
     ),
     (
-        REPO_ROOT / "plugins/anthropic-feature-dev/agents",
-        REPO_ROOT / "plugins/essentials/agents",
+        REPO_ROOT / "plugins/self-hosted/anthropic-feature-dev/agents",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/agents",
         "**/*",
     ),
     (
-        REPO_ROOT / "plugins/anthropic-feature-dev/commands",
-        REPO_ROOT / "plugins/essentials/commands",
+        REPO_ROOT / "plugins/self-hosted/anthropic-feature-dev/commands",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/commands",
         "**/*",
     ),
     (
-        REPO_ROOT / "plugins/anthropic-pr-review/agents",
-        REPO_ROOT / "plugins/essentials/agents",
+        REPO_ROOT / "plugins/self-hosted/anthropic-pr-review/agents",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/agents",
         "**/*",
     ),
     (
-        REPO_ROOT / "plugins/anthropic-pr-review/commands",
-        REPO_ROOT / "plugins/essentials/commands",
+        REPO_ROOT / "plugins/self-hosted/anthropic-pr-review/commands",
+        REPO_ROOT / "plugins/self-hosted/essentials-self-hosted/commands",
         "**/*",
     ),
 ]
@@ -205,7 +205,7 @@ def main() -> None:
         for e in all_errors:
             print(f"  {e}")
         print(
-            "\nUpdate plugins/essentials/ to match the source plugin dirs, "
+            "\nUpdate plugins/self-hosted/essentials-self-hosted/ to match the source plugin dirs, "
             "then re-run this check."
         )
         sys.exit(1)

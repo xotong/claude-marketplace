@@ -1,0 +1,7 @@
+{
+  "name": "superpowers",
+  "version": "1.0.0",
+  "description": "14 core developer superpowers: TDD, systematic debugging, planning, git worktrees, code review workflows, subagent-driven development, and more. These skills are also bundled in essentials — only install separately if you want superpowers without the rest of essentials.",
+  "author": { "name": "obra (vendored by Platform Team)" },
+  "keywords": ["tdd", "debugging", "planning", "git", "worktrees", "code-review", "superpowers"]
+}
