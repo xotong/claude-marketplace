@@ -17,7 +17,7 @@ instance and catalogue is a property of the active **profile**
 `gitlab.com/lobster-thermidor/devops/ci-catalogue`; the shipped default,
 `platform-engineering`, points at `gitlab.example.com`'s
 `platform-engineering/ci-catalogue` instead — same four categories, different
-instance (SAST uses the self-hosted `fortify-sast` 25.2.2). Component
+instance (SAST uses the internal `fortify-sast` 25.2.1). Component
 paths below use the `lobster-thermidor` catalogue as the example; substitute the
 active profile's own paths:
 
@@ -75,7 +75,11 @@ flowchart TD
 ```
 
 Fortify, Dependency Scanning, and Secret Detection run **in parallel** (backgrounded,
-PIDs collected by a wait loop); Container Scanning runs sequentially. Under the default
+PIDs collected by a wait loop); Container Scanning runs sequentially. Within Fortify,
+the build trees `detect-sast-units.sh` finds run as a pool of `APPSEC_FORTIFY_JOBS`
+containers (default: three quarters of the runtime's memory in 3 GiB slots, each capped
+with `--memory` so `-autoheap` sizes the JVM to its share); each unit's log is appended
+whole to `fortify-sast.log` when it finishes. Under the default
 `engine: docker`, every scanner is a `$RUNTIME run --rm` with its runner script mounted
 read-only at `/runner.sh` — scanner logic ships with the skill, not baked into images.
 `engine: glci` (secret_detection/container_scanning only) instead runs the catalogue
@@ -98,7 +102,7 @@ the component's effective job image at the resolved tag and hands it to
 analyzer *version* it was tested against, and the admin config is the authority on
 *where images are pulled from*. So with no `image:` the template's ref is used whole;
 with an `image:` the configured registry/path is kept and only the template's tag
-crosses over — taking the template's ref wholesale would send an airgapped run to
+crosses over — taking the template's ref wholesale would send a network-isolated run to
 `registry.gitlab.com`. The candidate is pulled once, which is both the availability
 check and the warm-up for the scan. A miss falls back to `image:` when there is one,
 and stops the scan when there is not: guessing a registry runs an unknown image, and
@@ -128,7 +132,7 @@ the template.
 
 Deriving the image means the vendored snapshots are load-bearing, not just a fallback:
 snapshots vendored from gitlab.com name gitlab.com's registry. Re-vendor from your own
-instance before rollout — [`MIGRATION.md`](../MIGRATION.md) "Re-vendor".
+instance before rollout — UPDATE-GUIDE.md Scenario 6.
 
 ```mermaid
 sequenceDiagram
@@ -262,12 +266,12 @@ touch. Full schema and switching guide: [`config/PREFERENCES.md`](../config/PREF
 | `settings.python.*` | host python3 preferred; optional `install_url` for portable tarballs; degrades to legacy jq counts with UNKNOWN statuses |
 | `settings.ci_gate.fail_on` | `critical` \| `high` \| `medium` \| `none` — severity threshold for the gate. Incomplete coverage fails the gate at every level except `none`, which is report-only |
 | `settings.image_policy` | `follow-component` (default) \| `pinned` — see "Component resolution" above and `scripts/resolve-image.sh` |
-| `settings.ca_bundle` | host path to an internal CA PEM, mounted into every scanner and exported inside it as `ADDITIONAL_CA_CERT_BUNDLE`. Empty = nothing mounted |
-| `settings.pip_index_url` / `settings.maven_settings` | where the DS analyzer resolves packages from while building the SBOM; its own defaults (public PyPI, `./settings.xml`) hang on an airgapped host. Exported as `APPSEC_PIP_INDEX_URL` and `MAVEN_ARGS="-s …"` |
-| `settings.package_registries.*` | URL templates probed before the fix loop to decide whether a suggested upgrade is obtainable here. All empty = probe disabled |
+| `settings.ca_bundle` | `auto` (shipped default) builds `.appsec-results/ca-bundle.pem` from the host trust store (macOS keychains, Linux system bundle) so TLS-inspecting proxies' roots reach the scanners; or a host path to a CA PEM; `""` = nothing mounted. Mounted into every scanner, exported as `ADDITIONAL_CA_CERT_BUNDLE`, and imported into a temp JVM truststore by the Fortify runner for Maven/Gradle builds |
+| `settings.pip_index_url` / `settings.maven_settings` | where the DS analyzer resolves packages from while building the SBOM; its own defaults (public PyPI, `./settings.xml`) hang on a host with no public internet access. Exported as `APPSEC_PIP_INDEX_URL` and `MAVEN_ARGS="-s …"` |
+| `settings.package_registries.*` | URL templates probed before the fix loop to decide whether a suggested upgrade is obtainable here. Shipped defaults point at the public registries (npm, PyPI, Maven Central, Go proxy); all empty, or `airgap: true`, = probe disabled |
 | `settings.container_registry.base_repo` | ref template asking whether a Dockerfile `FROM` image is in the registry; `absent` ⇒ `blocked_registry_gap` |
 | `settings.container_registry.hardened_repo` | ref template, **suggestion only** — a hardened image is a different image, so it never sets a status and the fix loop never applies it |
-| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT/OAuth token for the **GitLab API only** — unrelated to image pulls, sent as `Authorization: Bearer`. Ships `APPSEC_GITLAB_TOKEN` (`platform-engineering`) / `GITLAB_READ_TOKEN` (`catalog`) because both catalogues are private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Settable per profile (next to `gitlab_instance`). Preflight requires the named var non-empty, or the `glab_fallback` below to supply one. Setup: [MIGRATION.md step 0](../MIGRATION.md) |
+| `settings.catalog.auth_token_env` | env var *name* holding a `read_api` PAT/OAuth token for the **GitLab API only** — unrelated to image pulls, sent as `Authorization: Bearer`. Ships `APPSEC_GITLAB_TOKEN` (`platform-engineering`) / `GITLAB_READ_TOKEN` (`catalog`) because both catalogues are private (anonymous reads 404). Set `""` if your instance serves the components anonymously. Settable per profile (next to `gitlab_instance`). Preflight requires the named var non-empty, or the `glab_fallback` below to supply one |
 | `settings.catalog.glab_fallback` | default `true` — when the named `auth_token_env` var is unset, fall back to `glab config get token --host <host>` before failing. `false` disables it |
 | `settings.<profile>.engine` | `docker` (default) \| `glci` — see "Engines" above. Profile-level, next to `gitlab_instance` |
 | `settings.<profile>.remote_match_project` | helper-project path/ID for GitLab-native dependency-scanning matching — see above. Empty (default) = offline Trivy match |
@@ -279,8 +283,7 @@ Three profiles (`APPSEC_PROFILE` overrides `default_profile`, which ships
 - **`platform-engineering`** (default) — `https://gitlab.example.com`, catalogue
   `platform-engineering/ci-catalogue`, `engine: glci` for secrets/container scanning,
   `remote_match_project` set for GitLab-native dependency-scanning matching, `sast`
-  enabled against `fortify-sast` 25.2.2 (image from registry.gitlab.com until the internal
-  registry is enabled).
+  enabled against `fortify-sast` 25.2.1 (image from the instance's own public registry).
 - **`catalog`** — `https://gitlab.com`, the four lobster-thermidor components, images
   derived from those components' templates, `engine: docker`.
 - **`company`** — internal-mirror placeholder: same component names on the internal
@@ -386,10 +389,9 @@ below); base-image probes have no such verdict and keep collapsing auth into `un
 so they can never manufacture a false `absent`. Blocked findings are skipped by the fix
 loop (they cannot succeed) and batched into TRIAGE.md §3b as one mirroring request.
 
-The whole probe is gated on `package_registries` containing at least one URL, so an
-estate that configures only `base_repo` gets no probing.
-
-For the internet → airgapped platform migration runbook, see [`MIGRATION.md`](../MIGRATION.md).
+The whole probe is gated on `package_registries` containing at least one URL and on
+`airgap` being false, so an estate that configures only `base_repo`, or has
+`airgap: true`, gets no package probing.
 
 ## Configuration errors vs environment failures
 
@@ -533,7 +535,6 @@ appsec-scan/
 │   ├── scanner-preferences.yaml   admin-owned truth: profiles, components, versions, images
 │   └── PREFERENCES.md             schema + switching guide
 ├── CHANGELOG.md           version history (Keep a Changelog format)
-├── MIGRATION.md           internet → airgapped platform runbook
 ├── scripts/               host-side helpers — bash 3.2 / POSIX awk safe
 │   ├── load-prefs.sh      YAML → eval-ready env; the model never parses YAML
 │   ├── lib-token.sh       resolve a GitLab API token (named env var, else glab fallback);

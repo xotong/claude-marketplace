@@ -241,6 +241,9 @@ def _report_category(path):
     # canonical single-Dockerfile name is still the plain REPORT_CATEGORIES key.
     if name.startswith("gl-container-scanning-report-") and name.endswith(".json"):
         return "container_scanning"
+    # Archive mode (a locally built image) fans out the same way.
+    if name.startswith("container-scan-archive-") and name.endswith(".json"):
+        return "container_scanning"
     return REPORT_CATEGORIES.get(name)
 
 def _fallback_category(path):
@@ -334,10 +337,21 @@ def parse_generic_json(path, data, category=None):
 
     if isinstance(data, dict) and isinstance(data.get("Results"), list):
         trivy_category = category or _report_category(path) or _fallback_category(path)
+        # One archive report per Dockerfile (container-scan-archive-<slug>.json).
+        # Trivy's Target is only "Python" or "alpine 3.20" there, so without the
+        # slug the same CVE in two images collapsed into one finding and no
+        # finding said which image it came from.
+        report_name = Path(path).name
+        image_slug = (
+            report_name[len("container-scan-archive-"):-len(".json")]
+            if report_name.startswith("container-scan-archive-") else ""
+        )
         for result in data["Results"]:
             if not isinstance(result, dict):
                 continue
             target = result.get("Target") or str(path)
+            if image_slug:
+                target = f"{image_slug}: {target}"
             ecosystem = TRIVY_ECOSYSTEMS.get(str(result.get("Type") or "").lower())
             for vulnerability in result.get("Vulnerabilities") or []:
                 if not isinstance(vulnerability, dict):

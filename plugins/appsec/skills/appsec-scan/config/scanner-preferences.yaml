@@ -26,7 +26,14 @@ settings:
   # Container runtime. auto = detect docker, then podman. Or force docker/podman.
   container_runtime: auto
 
-  # Internal HTTPS CA bundle (PEM), given as a path ON THE HOST.
+  # Internal HTTPS CA bundle (PEM), given as a path ON THE HOST — or "auto" to
+  # build one from the host's own trust store at scan time into
+  # .appsec-results/ca-bundle.pem and use it exactly like a configured path.
+  # macOS: `security find-certificate -a -p` against the SystemRootCertificates
+  # and System keychains (where a corporate TLS-inspection root, e.g. Zscaler's,
+  # normally lands). Linux: the first readable of /etc/ssl/certs/ca-certificates.crt,
+  # /etc/pki/tls/certs/ca-bundle.crt. Finding nothing is not an error — an INFO
+  # line, same as "" below.
   # An airgapped estate terminates TLS on its own CA, so a scanner container
   # talking to JFrog or the internal GitLab rejects every certificate without
   # this — and the failure reads like a network outage rather than a trust
@@ -35,8 +42,11 @@ settings:
   # inside it as ADDITIONAL_CA_CERT_BUNDLE, the variable the GitLab analyzers
   # read. The dependency-scanning template forwards it into its own child
   # processes via DS_MAVEN_RESOLUTION_EXPORTED_VARS / DS_GRADLE_RESOLUTION_EXPORTED_VARS.
-  # Empty (the shipped default) = disabled: nothing is mounted, nothing exported.
-  ca_bundle: ""   # e.g. /etc/ssl/certs/internal-ca.pem
+  # Fortify's own maven/gradle build additionally imports it into a JVM
+  # truststore (scanners/fortify-sast.sh), since curl/pip alone never covers Java.
+  # Shipped default: auto. An explicit path keeps today's behaviour; "" keeps
+  # meaning disabled.
+  ca_bundle: auto   # or e.g. /etc/ssl/certs/internal-ca.pem
 
   # jq powers the Step 5 severity summary. It is OPTIONAL — without it the
   # summary shows UNKNOWN but the scan still runs.
@@ -46,7 +56,10 @@ settings:
   #                   darwin/arm64). Leave empty to just degrade to UNKNOWN.
   jq:
     prefer: host
-    install_url: ""   # e.g. https://jfrog.internal/artifactory/tools/jq/{os}/{arch}/jq
+    # Official release, used only when the host has no jq (macOS 15+ ships /usr/bin/jq).
+    # Verified against the release's sha256sum.txt before use. {jq_os} = macos|linux,
+    # {os} = uname spelling (darwin|linux) for internal mirrors, {arch} = amd64|arm64.
+    install_url: "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-{jq_os}-{arch}"
 
   # python3 powers normalized findings, triage, coverage, and the CI gate. Without
   # it, the scan degrades to legacy counts with UNKNOWN status.
@@ -56,6 +69,9 @@ settings:
   #                   rely on host python3 and degrade to legacy counts if absent.
   python:
     prefer: host
+    # Empty on purpose: macOS ships python3 with the Xcode Command Line Tools
+    # this skill's own git dependency already requires, and every mainstream
+    # Linux distro ships python3 too — there is no host this needs to cover.
     install_url: ""   # e.g. https://jfrog.internal/artifactory/tools/python/{os}/{arch}/python.tar.gz
 
   # CI/CD Catalog resolution (per run). Components are always resolved live
@@ -118,10 +134,14 @@ settings:
   # settings.xml file, not a URL flag.
   #
   # Empty (the shipped default) = leave the analyzer's own default alone.
+  # Empty on purpose: public PyPI is reachable from these laptops, so the
+  # analyzer's own default (pypi.org) already works.
   pip_index_url: ""   # e.g. https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/
   # Host path to a Maven settings.xml naming the internal mirror. Bind-mounted
   # read-only into the scanner container; the Fortify SAST maven build reads the
   # same value. Empty = disabled, nothing is mounted.
+  # Empty on purpose: public Maven Central is reachable, so the analyzer's own
+  # default settings.xml already works.
   maven_settings: ""  # e.g. /home/dev/.m2/settings-internal.xml
 
   # How the Fortify python scan resolves imports.
@@ -168,6 +188,10 @@ settings:
   # one you asked for. It never silently reaches the public internet to close the
   # gap. In normal mode none of this is consulted and nothing is reported.
   #
+  # Left empty on purpose: only translation_mode: full (above, ours is normal)
+  # reads any of this, and empty already means the official uv/python-build-standalone
+  # sources, which are reachable.
+  #
   # NOTE: with these set, the scanner container makes network calls (to your
   # mirror only). That is the one exception to "no network inside the containers"
   # — see docs/ARCHITECTURE.md "Network and airgap policy".
@@ -211,11 +235,16 @@ settings:
   # the fix loop skips them and TRIAGE.md lists them as one batched mirroring
   # request. Container-scanning findings are never probed — those are OS packages
   # in a base image, remediated by rebuilding on a newer base, not by a registry.
+  #
+  # Shipped default: the public registries below, reachable from these laptops.
+  # Skipped entirely when settings.airgap: true, regardless of what is
+  # configured here — an airgapped estate must never probe the public internet;
+  # point these at your own mirror instead.
   package_registries:
-    npm: ""    # e.g. https://jfrog.internal/artifactory/api/npm/npm-virtual/{package}/{version}
-    pypi: ""   # e.g. https://jfrog.internal/artifactory/api/pypi/pypi-virtual/simple/{package}/
-    maven: ""  # e.g. https://jfrog.internal/artifactory/maven-virtual/{group_path}/{artifact}/{version}/
-    go: ""     # e.g. https://jfrog.internal/artifactory/api/go/go-virtual/{module}/@v/{version}.info
+    npm: "https://registry.npmjs.org/{package}/{version}"
+    pypi: "https://pypi.org/pypi/{package}/{version}/json"
+    maven: "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/"
+    go: "https://proxy.golang.org/{module}/@v/{version}.info"
     # Env var NAME holding a registry token. Leave empty for anonymous read.
     auth_token_env: ""
 
@@ -361,6 +390,15 @@ profiles:
   platform-engineering:
     gitlab_instance: https://gitlab.example.com
     auth_token_env: APPSEC_GITLAB_TOKEN
+    # base_repo is the same public docker.io equivalent the `catalog` profile
+    # above declares — these laptops reach docker.io directly.
+    base_repo: docker.io/library/{image}:{tag}
+    # hardened_repo diverges from `catalog`: Chainguard (cgr.dev) is unreachable
+    # from developer laptops (Zscaler blocks its Cloudflare R2 blob storage), and
+    # its free tier publishes :latest only anyway, so a versioned {tag} would
+    # always miss. Red Hat's Hummingbird registry is reachable from both laptops
+    # and the runner and serves versioned tags, so this profile points there instead.
+    hardened_repo: registry.access.redhat.com/hi/{image}:{tag}
     # engine: docker (the shipped default, every other profile) runs each
     # category's runner script (scanners/<runner>.sh) inside the scanner
     # image, exactly like CI. engine: glci instead runs the real CI/CD
@@ -382,11 +420,11 @@ profiles:
         component: platform-engineering/ci-catalogue/fortify-sast/fortify-sast
         version: ~latest
         enabled: true
-        # Released as 25.2.2 on 2026-09-24. Its image (fortify-sca:25.2.0-<variant>) is
-        # still pulled from registry.gitlab.com: CI via the platform-engineering group's
-        # DOCKER_AUTH_CONFIG, laptops via `docker login registry.gitlab.com`. When the
-        # internal container registry is enabled, only the component's registry input
-        # changes. `note:` (CATEGORY_NOTE_SAST) is shown whenever a category is disabled.
+        # Released as 25.2.1 (gitlab.com's number, adapted here). Its image
+        # (fortify-sca:25.2.0-<variant>) comes from the public
+        # gitlab.example.com/platform-engineering/ci-catalogue/docker-images,
+        # so neither CI nor laptops log in to a registry. `note:` (CATEGORY_NOTE_SAST) is
+        # shown whenever a category is disabled.
       dependency_scanning:
         component: platform-engineering/ci-catalogue/dependency-scanning/dependency-scanning
         version: ~latest

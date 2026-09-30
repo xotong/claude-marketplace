@@ -302,5 +302,206 @@ class UvTlsLadderTest(unittest.TestCase):
         self.assertTrue(self._used_insecure(), "claimed insecure but never used -k")
 
 
+class JvmTrustStoreTest(unittest.TestCase):
+    """settings.ca_bundle reaches curl/python via appsec_trust_ca (see
+    UvTlsLadderTest above) but never the JVM on its own, so a Maven/Gradle
+    build behind TLS-inspection fails to resolve dependencies with a trust
+    error that reads like a broken mirror. Exercised with a stub `keytool` on
+    PATH and a fake $JAVA_HOME/lib/security/cacerts, so this never touches a
+    real JDK."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        stub = self.bin / "sourceanalyzer"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        self.keytool_log = self.root / "keytool-calls.log"
+        self.java_home = self.root / "javahome"
+        (self.java_home / "lib" / "security").mkdir(parents=True)
+        (self.java_home / "lib" / "security" / "cacerts").write_text("fake-cacerts\n")
+        self.bundle = self.root / "ca-bundle.pem"
+
+    def _keytool(self, *, fail_alias: str | None = None) -> None:
+        stub = self.bin / "keytool"
+        fail_case = (
+            f'case " $* " in *" -alias {fail_alias} "*) exit 1 ;; esac\n'
+            if fail_alias else ""
+        )
+        stub.write_text(
+            "#!/bin/sh\n"
+            f'echo "$@" >> {self.keytool_log}\n'
+            f"{fail_case}"
+            "exit 0\n"
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    def _run(self, path: str | None = None, **extra: str):
+        repo = self.root / "repo"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        env = dict(
+            os.environ,
+            PATH=path or f"{self.bin}{os.pathsep}{os.environ['PATH']}",
+            CI_PROJECT_DIR=str(repo),
+            SOURCE_PATH="src",
+            FORTIFY_LANGUAGE="javascript",
+            APP_NAME="demo",
+            JAVA_HOME=str(self.java_home),
+        )
+        env.update(extra)
+        return subprocess.run(["sh", str(RUNNER)], cwd=repo, env=env,
+                              capture_output=True, text=True)
+
+    def test_imports_every_certificate_and_exports_java_tool_options(self) -> None:
+        self._keytool()
+        self.bundle.write_text(
+            "-----BEGIN CERTIFICATE-----\nFAKECERTONE\n-----END CERTIFICATE-----\n"
+            "-----BEGIN CERTIFICATE-----\nFAKECERTTWO\n-----END CERTIFICATE-----\n"
+        )
+        result = self._run(ADDITIONAL_CA_CERT_BUNDLE=str(self.bundle))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("imported 2 certificate(s)", result.stderr)
+        self.assertIn("JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=", result.stderr)
+        self.assertIn("-Djavax.net.ssl.trustStorePassword=changeit", result.stderr)
+        calls = self.keytool_log.read_text().splitlines()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertTrue(
+            all("-importcert" in c and "-noprompt" in c for c in calls), calls
+        )
+
+    def test_a_certificate_that_fails_to_import_is_skipped_not_fatal(self) -> None:
+        self._keytool(fail_alias="appsec-ca-1")
+        self.bundle.write_text(
+            "-----BEGIN CERTIFICATE-----\nBADCERT\n-----END CERTIFICATE-----\n"
+            "-----BEGIN CERTIFICATE-----\nGOODCERT\n-----END CERTIFICATE-----\n"
+        )
+        result = self._run(ADDITIONAL_CA_CERT_BUNDLE=str(self.bundle))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not import certificate #1", result.stderr)
+        self.assertIn("imported 1 certificate(s)", result.stderr)
+
+    def test_no_bundle_configured_leaves_the_jvm_untouched(self) -> None:
+        """Shipped default (no ca_bundle): every other estate is unchanged."""
+        self._keytool()
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("JAVA_TOOL_OPTIONS", result.stderr)
+        self.assertNotIn("imported", result.stderr)
+        self.assertFalse(self.keytool_log.exists(), "keytool ran with no bundle configured")
+
+    def test_no_keytool_on_path_leaves_the_jvm_untouched(self) -> None:
+        self.bundle.write_text(
+            "-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"
+        )
+        result = self._run(
+            path=f"{self.bin}{os.pathsep}/bin",
+            ADDITIONAL_CA_CERT_BUNDLE=str(self.bundle),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("JAVA_TOOL_OPTIONS", result.stderr)
+
+
+class GoTrustTest(unittest.TestCase):
+    """go reads SSL_CERT_FILE, not the JVM truststore, so behind TLS
+    inspection `go mod download` failed every fetch with "x509: certificate
+    signed by unknown authority" and the unit produced no report — even with
+    settings.ca_bundle configured."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        for name, body in (
+            ("sourceanalyzer", "exit 0\n"),
+            # Succeeds only if the bundle it is told to trust carries our CA.
+            ("go", 'grep -q MAGIC-CA "${SSL_CERT_FILE:-/nonexistent}" 2>/dev/null'
+                   ' || { echo "x509: certificate signed by unknown authority" >&2; exit 1; }\n'),
+        ):
+            stub = self.bin / name
+            stub.write_text("#!/bin/sh\n" + body)
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+    def _run(self, **extra: str):
+        repo = self.root / "repo"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        env = dict(
+            os.environ,
+            PATH=f"{self.bin}{os.pathsep}/usr/bin{os.pathsep}/bin",
+            CI_PROJECT_DIR=str(repo),
+            SOURCE_PATH="src",
+            FORTIFY_LANGUAGE="go",
+            APP_NAME="demo",
+        )
+        env.pop("SSL_CERT_FILE", None)
+        env.update(extra)
+        return subprocess.run(["sh", str(RUNNER)], cwd=repo, env=env,
+                              capture_output=True, text=True)
+
+    def test_go_module_fetch_trusts_the_configured_ca(self) -> None:
+        bundle = self.root / "ca-bundle.pem"
+        bundle.write_text("-----BEGIN CERTIFICATE-----\nMAGIC-CA\n-----END CERTIFICATE-----\n")
+        result = self._run(ADDITIONAL_CA_CERT_BUNDLE=str(bundle))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_no_bundle_leaves_go_on_the_system_trust(self) -> None:
+        result = self._run()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("x509", result.stderr)
+
+
+class PythonVenvLocationTest(unittest.TestCase):
+    """translation_mode: full builds a venv. /workspace is the user's
+    repository and is shared by every unit run-scan.sh runs in parallel, so the
+    venv must live in the container's own temp space, never in the repo."""
+
+    def test_full_mode_venv_is_not_created_in_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            home = root / "home"
+            (home / ".local" / "bin").mkdir(parents=True)
+            (home / ".local" / "bin" / "env").write_text("")
+            for name, body in (
+                ("sourceanalyzer", 'echo "sourceanalyzer $*"\n'),
+                # The installer fetch: write a no-op installer wherever -o says.
+                ("curl", 'while [ $# -gt 0 ]; do [ "$1" = -o ] && { printf "exit 0\\n" > "$2"; shift; }; shift; done\n'),
+                ("uv", 'if [ "$1" = venv ]; then mkdir -p "$2/bin" "$2/lib/python3.12/site-packages";'
+                       ' : > "$2/bin/activate"; fi\nexit 0\n'),
+            ):
+                stub = bin_dir / name
+                stub.write_text("#!/bin/sh\n" + body)
+                stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+            repo = root / "repo"
+            (repo / "src").mkdir(parents=True)
+            (repo / "src" / "requirements.txt").write_text("requests\n")
+            env = dict(
+                os.environ,
+                PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                HOME=str(home),
+                CI_PROJECT_DIR=str(repo),
+                SOURCE_PATH="src",
+                FORTIFY_LANGUAGE="python",
+                APP_NAME="demo",
+                UV_VERSION="0.0.0",
+                UV_INSTALLER_BASE="https://mirror.invalid/uv",
+                FORTIFY_TRANSLATION_MODE="full",
+            )
+            result = subprocess.run(["sh", str(RUNNER)], cwd=repo, env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((repo / ".venv").exists(), "venv written into the repository")
+            translate = next(line for line in result.stdout.splitlines()
+                             if "-python-path" in line)
+            self.assertIn("/venv/lib/python3.12/site-packages", translate)
+            self.assertNotIn(str(repo) + "/", translate.split("-python-version")[0])
+            self.assertNotIn("APPSEC-PY-DEGRADED", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

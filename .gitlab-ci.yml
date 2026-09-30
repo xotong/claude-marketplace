@@ -1,10 +1,9 @@
-# CI for the skillshub/claude-marketplace repo itself.
+# CI for the platform-engineering/skillshub/claude-marketplace repo itself.
 # Runs on every MR and push to main.
 #
 # Jobs:
 #   validate-json       — Ensures marketplace.json and all plugin.json files parse cleanly.
 #   lint-shell          — shellcheck on all bash/sh scripts in plugins/ (hooks, bin, scripts).
-#   check-essentials    — Verifies bundled skills in essentials/ match their source plugin dirs.
 #   skillspector        — SkillSpector static security scan across plugins (report-only; see below).
 #
 # workflow: MR and main-branch pipelines behave as before. web/schedule pipelines additionally
@@ -30,7 +29,7 @@ stages:
 
 validate-json:
   stage: validate
-  image: python:3.12-slim-bookworm
+  image: registry.access.redhat.com/hi/python:3.12-builder
   script:
     - |
       set -e
@@ -54,9 +53,15 @@ validate-json:
 
 lint-shell:
   stage: validate
-  # koalaman/shellcheck-alpine ships shellcheck preinstalled — the runner can't
-  # reach OS package mirrors to `apk add` it at job time.
-  image: koalaman/shellcheck-alpine:stable
+  # Hardened image has no shellcheck binary preinstalled, so pip-install the
+  # shellcheck-py wheel (it bundles the real shellcheck binary) into a venv —
+  # /usr/local is root-owned and the image runs as a non-root uid — and put
+  # its bin first on PATH before the rest of the script runs unchanged.
+  image: registry.access.redhat.com/hi/python:3.12-builder
+  before_script:
+    - python3 -m venv .venv
+    - .venv/bin/pip install --quiet shellcheck-py
+    - export PATH="$PWD/.venv/bin:$PATH"
   script:
     - |
       set -e
@@ -109,7 +114,10 @@ lint-shell:
 
 test-appsec-scan:
   stage: validate
-  image: python:3.12-slim-bookworm
+  # The suite shells out to git, jq and curl together, and no Hummingbird image ships all
+  # three, so this stays on cimg/python:3.12 for now; plan is a Hummingbird-based custom
+  # image once the internal container registry exists to host it.
+  image: cimg/python:3.12
   before_script:
     - pip install --quiet pyyaml pytest
   script:
@@ -133,11 +141,12 @@ test-appsec-scan:
 
 check-appsec-drift:
   stage: validate
-  image: python:3.12-slim-bookworm
+  image: registry.access.redhat.com/hi/python:3.12-builder
   before_script:
-    - pip install --quiet pyyaml
+    # /usr/local is root-owned on this image (runs as non-root uid), so install into a venv.
+    - python3 -m venv .venv && .venv/bin/pip install --quiet pyyaml
   script:
-    - python3 ci/check-appsec-drift.py
+    - .venv/bin/python ci/check-appsec-drift.py
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes:
@@ -147,33 +156,6 @@ check-appsec-drift:
         - plugins/appsec/skills/appsec-scan/scripts/catalog.sh
         - ci/check-appsec-drift.py
     - if: '$CI_COMMIT_BRANCH == "main"'
-    - when: never
-
-# ── Essentials drift check ───────────────────────────────────────────────────
-# Verifies that skills bundled in plugins/essentials/ are byte-for-byte identical
-# to their source plugin dirs (superpowers, anthropic-feature-dev, anthropic-pr-review).
-# Fails if any file in essentials is missing or differs from its canonical source.
-
-check-essentials:
-  stage: validate
-  image: python:3.12-slim-bookworm
-  script:
-    - python3 ci/check-essentials-drift.py
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      changes:
-        - plugins/essentials/**/*
-        - plugins/code-quality/**/*
-        - plugins/superpowers/skills/**/*
-        - plugins/anthropic-feature-dev/**/*
-        - plugins/anthropic-pr-review/**/*
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      changes:
-        - plugins/essentials/**/*
-        - plugins/code-quality/**/*
-        - plugins/superpowers/skills/**/*
-        - plugins/anthropic-feature-dev/**/*
-        - plugins/anthropic-pr-review/**/*
     - when: never
 
 # ── Skill security scan across all plugins ───────────────────────────────────

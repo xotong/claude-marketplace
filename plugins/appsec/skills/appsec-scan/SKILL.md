@@ -134,7 +134,7 @@ echo "Profile: $APPSEC_PROFILE   GitLab: $GITLAB_INSTANCE   Runtime: $RUNTIME   
 - load-prefs.sh exits nonzero (unknown profile, or `airgap: true` with a
   `gitlab.com` `gitlab_instance`): show its stderr verbatim and stop.
 - `GITLAB_INSTANCE` still `*.example`, or images still `jfrog.internal/...`: not
-  configured yet — stop and point the user to README "AppSec airgap setup".
+  configured yet — stop and point the user to `config/PREFERENCES.md`.
 
 ---
 

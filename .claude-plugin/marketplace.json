@@ -10,26 +10,8 @@
       "name": "essentials",
       "source": "./plugins/essentials",
       "version": "2.0.0",
-      "description": "Start here. One install gives you the Platform Team default set for Claude: appsec (security scanning), code-quality, claude-security (deep vulnerability hunt with patches), security-guidance (edit-time warnings and an end-of-turn security review) and the Python/TypeScript/Go/Java language servers (each needs its binary on PATH; a missing one is skipped). Claude models only, internet-connected. Planning and review come from Claude Code's built-ins. On a self-hosted model (e.g. Qwen), install essentials-self-hosted instead.",
+      "description": "Start here. One install gives you the Platform Team default set for Claude: appsec (security scanning), code-quality, claude-security (deep vulnerability hunt with patches), security-guidance (edit-time warnings and an end-of-turn security review) and the Python/TypeScript/Go/Java language servers (each needs its binary on PATH; a missing one is skipped). Claude models only, internet-connected. Planning and review come from Claude Code's built-ins.",
       "category": "internal"
-    },
-    {
-      "name": "essentials-self-hosted",
-      "source": "./plugins/self-hosted/essentials-self-hosted",
-      "version": "1.0.0",
-      "description": "Start here. Curated starter pack: superpowers (TDD, debugging, planning, git worktrees), 7-phase feature development, and 6-agent parallel PR review \u2014 all in one install.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "internal",
-      "keywords": [
-        "starter",
-        "tdd",
-        "debugging",
-        "planning",
-        "feature-dev",
-        "pr-review"
-      ]
     },
     {
       "name": "appsec",
@@ -75,93 +57,6 @@
       ]
     },
     {
-      "name": "superpowers",
-      "source": "./plugins/self-hosted/superpowers",
-      "version": "1.0.0",
-      "description": "[Vendored: obra/superpowers] 14 core developer skills: TDD, systematic debugging, planning, git worktrees, code review workflows, subagent-driven development, and more. Already bundled in essentials-self-hosted \u2014 install separately only if you want superpowers without the rest of that pack.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "tdd",
-        "debugging",
-        "planning",
-        "git",
-        "worktrees",
-        "superpowers"
-      ]
-    },
-    {
-      "name": "compound-engineering",
-      "source": "./plugins/self-hosted/compound-engineering",
-      "version": "3.13.0",
-      "description": "[Vendored: EveryInc/compound-engineering-plugin] 38 skills + 50 specialised review agents: code review, architecture strategy, performance analysis, security review, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY; ce-riffrec-feedback-analysis calls the OpenAI transcription API when OPENAI_API_KEY is set; ce-demo-reel can upload demo GIFs to public catbox.moe (user-approved); ce-release-notes/ce-update query the GitHub API.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "agents",
-        "code-review",
-        "architecture",
-        "compound",
-        "engineering"
-      ]
-    },
-    {
-      "name": "gstack",
-      "source": "./plugins/self-hosted/gstack",
-      "version": "2.0.0",
-      "description": "[Vendored: garrytan/gstack] 54 developer productivity skills: QA, design consultation, browser automation, production safety gates (canary/guard/ship), context management, planning workflows, code review, benchmarking. Browser skills require Chrome.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "productivity",
-        "qa",
-        "browser",
-        "design",
-        "gstack"
-      ]
-    },
-    {
-      "name": "ruflo",
-      "source": "./plugins/self-hosted/ruflo",
-      "version": "1.0.0",
-      "description": "[Vendored: ruvnet/ruflo] 33 skills for AI swarm orchestration, AgentDB memory management (learning, vector-search, optimization), SPARC methodology, GitHub automation, and v3 architecture patterns. Swarm features (flow-nexus, hive-mind) require internet access.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "swarm",
-        "memory",
-        "agentdb",
-        "sparc",
-        "orchestration",
-        "ruflo"
-      ]
-    },
-    {
-      "name": "getshitdone",
-      "source": "./plugins/self-hosted/getshitdone",
-      "version": "1.0.0",
-      "description": "[Vendored: gsd-build/get-shit-done] 66 slash commands covering the full Discuss\u2192Plan\u2192Execute\u2192Verify lifecycle: /gsd task, /gsd plan, /gsd execute, /gsd verify, plus context management and team workflow commands.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "commands",
-        "slash-commands",
-        "gsd",
-        "workflow",
-        "productivity"
-      ]
-    },
-    {
       "name": "anthropic-dev-skills",
       "source": "./plugins/anthropic-dev-skills",
       "version": "1.1.0",
@@ -192,38 +87,6 @@
         "markdown",
         "knowledge-management",
         "notes"
-      ]
-    },
-    {
-      "name": "anthropic-feature-dev",
-      "source": "./plugins/self-hosted/anthropic-feature-dev",
-      "version": "1.0.0",
-      "description": "[Vendored: anthropics/claude-plugins-official] 7-phase feature development workflow with 3 agents (code-architect, code-explorer, code-reviewer) and the /feature-dev slash command. Already bundled in essentials-self-hosted.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "feature-dev",
-        "agents",
-        "workflow",
-        "anthropic"
-      ]
-    },
-    {
-      "name": "anthropic-pr-review",
-      "source": "./plugins/self-hosted/anthropic-pr-review",
-      "version": "1.0.0",
-      "description": "[Vendored: anthropics/claude-plugins-official] 6-agent parallel PR review toolkit: code simplicity, comment analysis, conversation context, test coverage, silent failure detection, type design. Plus /review-pr slash command. Already bundled in essentials-self-hosted.",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "pr-review",
-        "code-review",
-        "agents",
-        "anthropic"
       ]
     },
     {
@@ -277,24 +140,6 @@
       ]
     },
     {
-      "name": "agent-skills",
-      "source": "./plugins/self-hosted/agent-skills",
-      "version": "1.0.0",
-      "description": "[Vendored: addyosmani/agent-skills] 24 production-engineering skills (TDD, API design, security hardening, performance, planning, debugging, docs/ADRs) with a skill-discovery meta-skill injected at session start, plus 4 reviewer/auditor agents. Session hook requires jq (degrades gracefully). Note: source-driven-development needs doc access (internal mirror OK); browser-testing-with-devtools installs chrome-devtools-mcp via npx (npm mirror OK).",
-      "author": {
-        "name": "Platform Team"
-      },
-      "category": "vendored",
-      "keywords": [
-        "engineering",
-        "tdd",
-        "code-review",
-        "planning",
-        "security",
-        "performance"
-      ]
-    },
-    {
       "name": "trailofbits-skills",
       "source": "./plugins/trailofbits-skills",
       "version": "1.0.0",
@@ -317,7 +162,7 @@
       "name": "security-guidance",
       "source": "./plugins/security-guidance",
       "version": "2.0.8",
-      "description": "[Vendored: anthropics/claude-plugins-official] Security review for Claude-generated code: instant pattern warnings on edits, an LLM diff review on Stop, and an agentic commit reviewer catching injection, XSS, SSRF, hardcoded secrets, IDOR, auth bypass and more. Claude only, internet-connected: pip-installs claude-agent-sdk from PyPI at session start and sends each turn's diff to the Anthropic API for review \u2014 skip on airgapped installs.",
+      "description": "[Vendored: anthropics/claude-plugins-official] Security review for Claude-generated code: instant pattern warnings on edits, an LLM diff review on Stop, and an agentic commit reviewer catching injection, XSS, SSRF, hardcoded secrets, IDOR, auth bypass and more. Claude only; needs internet and the Anthropic API: pip-installs claude-agent-sdk from PyPI at session start and sends each turn's diff to the Anthropic API for review.",
       "author": {
         "name": "David Dworken"
       },
@@ -422,6 +267,161 @@
         "scanner",
         "prompt-injection",
         "supply-chain"
+      ]
+    },
+    {
+      "name": "essentials-self-hosted",
+      "source": "./plugins/self-hosted/essentials-self-hosted",
+      "version": "1.0.0",
+      "description": "Start here. Curated starter pack: superpowers (TDD, debugging, planning, git worktrees), 7-phase feature development, and 6-agent parallel PR review \u2014 all in one install.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "internal",
+      "keywords": [
+        "starter",
+        "tdd",
+        "debugging",
+        "planning",
+        "feature-dev",
+        "pr-review"
+      ]
+    },
+    {
+      "name": "superpowers",
+      "source": "./plugins/self-hosted/superpowers",
+      "version": "1.0.0",
+      "description": "[Vendored: obra/superpowers] 14 core developer skills: TDD, systematic debugging, planning, git worktrees, code review workflows, subagent-driven development, and more. Already bundled in essentials-self-hosted \u2014 install separately only if you want superpowers without the rest of that pack.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "tdd",
+        "debugging",
+        "planning",
+        "git",
+        "worktrees",
+        "superpowers"
+      ]
+    },
+    {
+      "name": "compound-engineering",
+      "source": "./plugins/self-hosted/compound-engineering",
+      "version": "3.13.0",
+      "description": "[Vendored: EveryInc/compound-engineering-plugin] 38 skills + 50 specialised review agents: code review, architecture strategy, performance analysis, security review, data integrity, deployment verification, and more. Note: ce-gemini-imagegen requires GEMINI_API_KEY; ce-riffrec-feedback-analysis calls the OpenAI transcription API when OPENAI_API_KEY is set; ce-demo-reel can upload demo GIFs to public catbox.moe (user-approved); ce-release-notes/ce-update query the GitHub API.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "agents",
+        "code-review",
+        "architecture",
+        "compound",
+        "engineering"
+      ]
+    },
+    {
+      "name": "gstack",
+      "source": "./plugins/self-hosted/gstack",
+      "version": "2.0.0",
+      "description": "[Vendored: garrytan/gstack] 54 developer productivity skills: QA, design consultation, browser automation, production safety gates (canary/guard/ship), context management, planning workflows, code review, benchmarking. Browser skills require Chrome.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "productivity",
+        "qa",
+        "browser",
+        "design",
+        "gstack"
+      ]
+    },
+    {
+      "name": "ruflo",
+      "source": "./plugins/self-hosted/ruflo",
+      "version": "1.0.0",
+      "description": "[Vendored: ruvnet/ruflo] 33 skills for AI swarm orchestration, AgentDB memory management (learning, vector-search, optimization), SPARC methodology, GitHub automation, and v3 architecture patterns. Swarm features (flow-nexus, hive-mind) require internet access.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "swarm",
+        "memory",
+        "agentdb",
+        "sparc",
+        "orchestration",
+        "ruflo"
+      ]
+    },
+    {
+      "name": "getshitdone",
+      "source": "./plugins/self-hosted/getshitdone",
+      "version": "1.0.0",
+      "description": "[Vendored: gsd-build/get-shit-done] 66 slash commands covering the full Discuss\u2192Plan\u2192Execute\u2192Verify lifecycle: /gsd task, /gsd plan, /gsd execute, /gsd verify, plus context management and team workflow commands.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "commands",
+        "slash-commands",
+        "gsd",
+        "workflow",
+        "productivity"
+      ]
+    },
+    {
+      "name": "anthropic-feature-dev",
+      "source": "./plugins/self-hosted/anthropic-feature-dev",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/claude-plugins-official] 7-phase feature development workflow with 3 agents (code-architect, code-explorer, code-reviewer) and the /feature-dev slash command. Already bundled in essentials-self-hosted.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "feature-dev",
+        "agents",
+        "workflow",
+        "anthropic"
+      ]
+    },
+    {
+      "name": "anthropic-pr-review",
+      "source": "./plugins/self-hosted/anthropic-pr-review",
+      "version": "1.0.0",
+      "description": "[Vendored: anthropics/claude-plugins-official] 6-agent parallel PR review toolkit: code simplicity, comment analysis, conversation context, test coverage, silent failure detection, type design. Plus /review-pr slash command. Already bundled in essentials-self-hosted.",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "pr-review",
+        "code-review",
+        "agents",
+        "anthropic"
+      ]
+    },
+    {
+      "name": "agent-skills",
+      "source": "./plugins/self-hosted/agent-skills",
+      "version": "1.0.0",
+      "description": "[Vendored: addyosmani/agent-skills] 24 production-engineering skills (TDD, API design, security hardening, performance, planning, debugging, docs/ADRs) with a skill-discovery meta-skill injected at session start, plus 4 reviewer/auditor agents. Session hook requires jq (degrades gracefully). Note: source-driven-development needs doc access (internal mirror OK); browser-testing-with-devtools installs chrome-devtools-mcp via npx (npm mirror OK).",
+      "author": {
+        "name": "Platform Team"
+      },
+      "category": "vendored",
+      "keywords": [
+        "engineering",
+        "tdd",
+        "code-review",
+        "planning",
+        "security",
+        "performance"
       ]
     }
   ]

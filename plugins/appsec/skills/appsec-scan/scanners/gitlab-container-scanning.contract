@@ -13,6 +13,8 @@
 #   bash scripts/catalog.sh contract container-scanning/container-scanning <cache> > scanners/gitlab-container-scanning.contract
 input.cs_dockerfile_path.default=Dockerfile
 input.cs_image.default=artifactory.com:$CI_APPLICATION_TAG
+input.cs_registry_password.default=$ARTIFACTORY_TOKEN
+input.cs_registry_user.default=$ARTIFACTORY_USER
 input.dependencies.default=[]
 input.enable_mr_pipelines.default=true
 input.git_strategy.default=fetch

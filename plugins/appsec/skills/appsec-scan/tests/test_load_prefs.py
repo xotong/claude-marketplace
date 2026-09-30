@@ -330,12 +330,14 @@ class LoadPrefsTest(unittest.TestCase):
     )
 
     def test_shipped_config_leaves_airgap_plumbing_disabled(self) -> None:
-        """Empty means disabled: nothing is mounted and nothing is overridden."""
+        """Empty means disabled: nothing is mounted and nothing is overridden.
+        ca_bundle is the one exception -- its shipped default is "auto"
+        (build one from the host trust store at scan time), not empty."""
         result = self.run_loader(PREFERENCES_PATH, APPSEC_PROFILE="catalog")
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, *self.AIRGAP_VARS)
-        self.assertEqual(values["CA_BUNDLE"], "")
+        self.assertEqual(values["CA_BUNDLE"], "auto")
         self.assertEqual(values["APPSEC_PIP_INDEX_URL"], "")
         self.assertEqual(values["MAVEN_SETTINGS"], "")
         # base/hardened are the exception: the catalog profile ships public
@@ -354,7 +356,11 @@ class LoadPrefsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
         values = self.eval_output(result.stdout, *self.AIRGAP_VARS)
+        # ca_bundle is the one global default that is not empty -- see above.
+        self.assertEqual(values["CA_BUNDLE"], "auto")
         for name in self.AIRGAP_VARS:
+            if name == "CA_BUNDLE":
+                continue
             with self.subTest(var=name):
                 self.assertEqual(values[name], "")
 
@@ -362,7 +368,7 @@ class LoadPrefsTest(unittest.TestCase):
         """Shipped config with every airgap knob filled in by an admin."""
         text = PREFERENCES_PATH.read_text(encoding="utf-8")
         replacements = (
-            ('  ca_bundle: ""   #', "  ca_bundle: /etc/ssl/certs/internal-ca.pem   #"),
+            ("  ca_bundle: auto   #", "  ca_bundle: /etc/ssl/certs/internal-ca.pem   #"),
             ('  pip_index_url: ""   #', "  pip_index_url: https://jfrog.internal/simple/   #"),
             ('  maven_settings: ""  #', "  maven_settings: /home/dev/settings-internal.xml  #"),
             ('    base_repo: ""      #', "    base_repo: dock.internal/docker-virtual/{image}:{tag}      #"),

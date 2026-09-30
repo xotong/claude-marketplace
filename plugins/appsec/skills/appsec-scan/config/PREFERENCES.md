@@ -9,7 +9,7 @@
 skill. It is versioned, so changes go through an MR with Platform Team approval
 (CODEOWNERS). Users never pick scanners — the skill reads this file each run.
 
-Design principle for self-hosted / airgap environments: **everything is
+Design principle for restricted-network environments: **everything is
 declared here so the model only reads config, never guesses endpoints.** Every
 URL, registry path and env var name is either written in this file or derived
 from the CI component itself — nothing is inferred. `scripts/load-prefs.sh`
@@ -33,20 +33,19 @@ Unset → the `default_profile` at the top of the file applies — shipped as
 
 | Profile | Purpose |
 |---|---|
-| `platform-engineering` | **Default (3.4.0+).** Self-hosted instance `gitlab.example.com`, catalogue `platform-engineering/ci-catalogue`. Needs a `read_api` PAT in `$APPSEC_GITLAB_TOKEN` (or the `glab` fallback below). `sast` is enabled against `fortify-sast` 25.2.2 — see "SAST on `platform-engineering`" below. `engine: glci` for secret_detection/container_scanning; `remote_match_project` set for GitLab-native dependency-scanning matching. |
-| `catalog` | Resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet **and a `read_api` PAT in `$GITLAB_READ_TOKEN`** — that catalogue is private, so anonymous reads 404. Setup: MIGRATION.md step 0. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
+| `platform-engineering` | **Default (3.4.0+).** Internal instance `gitlab.example.com`, catalogue `platform-engineering/ci-catalogue`. Needs a `read_api` PAT in `$APPSEC_GITLAB_TOKEN` (or the `glab` fallback below). `sast` is enabled against `fortify-sast` 25.2.1 — see "SAST on `platform-engineering`" below. `engine: glci` for secret_detection/container_scanning; `remote_match_project` set for GitLab-native dependency-scanning matching. |
+| `catalog` | Resolves components live from gitlab.com (lobster-thermidor/devops/ci-catalogue). Needs internet **and a `read_api` PAT in `$GITLAB_READ_TOKEN`** — that catalogue is private, so anonymous reads 404. **Refused when `settings.airgap: true`** (gitlab.com = public internet). |
 | `company` | Production preferences: internal GitLab mirror. Edit the placeholder `gitlab_instance` (and `component:` if your paths differ) — images come from your own catalogue's templates once you re-vendor. Airgap-safe. |
 
 ### SAST on `platform-engineering`
 
-`fortify-sast` was released on `gitlab.example.com` as **25.2.2** (2026-09-24). Its
-template pulls `fortify-sca:25.2.0-<variant>` from the private gitlab.com project
-`lobster-thermidor/devops/ci-catalogue/docker-images` until the internal container
-registry is enabled:
+`fortify-sast` is released on `gitlab.example.com` as **25.2.1** (gitlab.com's
+version number, adapted for this instance). Its template pulls
+`fortify-sca:25.2.0-<variant>` from
+`gitlab.example.com/platform-engineering/ci-catalogue/docker-images`, a
+public project holding digest-identical copies of the gitlab.com images:
 
-- **CI**: the `platform-engineering` group's `DOCKER_AUTH_CONFIG` holds a `read_registry`
-  deploy token. Projects outside that group need their own until the switch.
-- **Laptops**: `docker login registry.gitlab.com` with the same kind of token.
+- **CI and laptops**: no registry login; anyone who can reach the instance pulls it.
 - **Apple Silicon**: the image is amd64-only; the skill retries the pull with
   `--platform linux/amd64` and Docker runs it emulated (a small Python unit took ~3.5 min).
 
@@ -79,7 +78,8 @@ extra text.
 settings:
   airgap: false               # shipped default; set true for internal-only environments
   container_runtime: auto     # auto (docker then podman) | docker | podman
-  ca_bundle: ""               # host path to an internal CA PEM; mounted into every scanner
+  ca_bundle: auto              # shipped default; host path to an internal CA PEM, "auto" to
+                               # build one from the host trust store, or "" to disable
   pip_index_url: ""           # internal PyPI index the DS analyzer resolves from
   maven_settings: ""          # host path to settings.xml naming the internal mirror
   jq:
@@ -94,11 +94,11 @@ settings:
   catalog:
     auth_token_env: ""        # env var NAME holding a read_api PAT (blank = anonymous)
     glab_fallback: true       # fall back to `glab config get token` when the named var is unset
-  package_registries:         # URL TEMPLATES; all empty = upgrade check disabled
-    npm: ""
-    pypi: ""
-    maven: ""
-    go: ""
+  package_registries:         # URL TEMPLATES; shipped default: the public registries
+    npm: "https://registry.npmjs.org/{package}/{version}"
+    pypi: "https://pypi.org/pypi/{package}/{version}/json"
+    maven: "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/"
+    go: "https://proxy.golang.org/{module}/@v/{version}.info"
     auth_token_env: ""
   container_registry:
     user_env: CS_REGISTRY_USER      # env var NAMES holding registry creds
@@ -126,7 +126,7 @@ settings:
   2. **install_url download** — if host python3 is absent and `install_url` is set, the
      skill downloads a portable python3 tarball and extracts it to `.appsec-results/bin/`.
      Template uses `{os}` and `{arch}` (e.g. `linux/amd64`); admin hosts tarballs on the
-     platform artifact server (see MIGRATION.md step 2).
+     platform artifact server.
   3. **Legacy degrade** — if neither is available, falls back to jq-based counts with
      UNKNOWN `verification_status` on all findings.
 - **ci_gate** — `settings.ci_gate.fail_on` controls the severity threshold at which
@@ -139,18 +139,29 @@ settings:
   without) an `image:` is the single table under
   [Per-category settings](#per-category-settings) — that table is the authority;
   nothing else here restates it.
-- **ca_bundle** — host path to your internal HTTPS CA in PEM form. Bind-mounted
+- **ca_bundle** — host path to your internal HTTPS CA in PEM form, or `auto`
+  (the shipped default) to build one at scan time from the host's own trust
+  store into `.appsec-results/ca-bundle.pem` and use it exactly like a
+  configured path: macOS reads `security find-certificate -a -p` against the
+  `SystemRootCertificates` and `System` keychains (where a corporate
+  TLS-inspection root, e.g. Zscaler's, normally lands); Linux reads the first
+  readable of `/etc/ssl/certs/ca-certificates.crt`,
+  `/etc/pki/tls/certs/ca-bundle.crt`. Finding nothing under `auto` is not an
+  error — an INFO line, same as `""`. Either way the file is bind-mounted
   read-only into every scanner container and exported inside it as
   `ADDITIONAL_CA_CERT_BUNDLE`, which is the variable the GitLab analyzers read;
-  the dependency-scanning template forwards it into its own child processes.
-  Empty (shipped default) mounts and exports nothing. Without it, an estate that
-  terminates TLS on its own CA fails every scanner request in a way that reads
-  like a network outage rather than a trust problem.
+  the dependency-scanning template forwards it into its own child processes,
+  and `scanners/fortify-sast.sh` additionally imports it into a JVM truststore
+  (via `keytool`) so Maven/Gradle builds trust it too — see "Fortify's Maven/
+  Gradle build and the JVM truststore" below. `""` disables it outright:
+  nothing is mounted, nothing exported. Without it, an estate that terminates
+  TLS on its own CA fails every scanner request in a way that reads like a
+  network outage rather than a trust problem.
 - **pip_index_url** / **maven_settings** — where the dependency-scanning analyzer
   *resolves packages from* while it builds the SBOM. Both of the component's own
   defaults (public PyPI, `./settings.xml`) only work with public internet, so on
-  an airgapped host the analyzer hangs and reports a broken SBOM instead of
-  saying it could not resolve anything. `maven_settings` is a host path,
+  a host with no public internet access the analyzer hangs and reports a broken
+  SBOM instead of saying it could not resolve anything. `maven_settings` is a host path,
   bind-mounted into the container; the Fortify maven build reads the same value.
   Exported as `APPSEC_PIP_INDEX_URL` (deliberately *not* `PIP_INDEX_URL`, which
   would repoint the developer's own `pip` in that terminal).
@@ -160,9 +171,13 @@ settings:
   only if your environment already names its credentials differently — no secret is
   ever written to this file.
 - **package_registries** — URL templates used to check, before the fix loop runs,
-  whether a suggested upgrade is obtainable here. All empty (the shipped default)
-  disables the check entirely. Placeholders: `{package}` `{version}` `{group_path}`
-  `{artifact}` `{module}`.
+  whether a suggested upgrade is obtainable here. Shipped default: the public
+  registries (npm, PyPI, Maven Central, the Go module proxy) — clear a value, or
+  all of them, to disable the check. Placeholders: `{package}` `{version}`
+  `{group_path}` `{artifact}` `{module}`. **`settings.airgap: true` skips this
+  probe entirely**, in both `preflight.sh` and `run-scan.sh`, regardless of what
+  is configured here — such an estate must never reach the public internet;
+  point these at your own mirror instead.
 
   Verdicts and what they do:
 
@@ -231,7 +246,7 @@ settings:
 
   A forced-offline setting was removed on 2026-07-25 because it provided nothing
   the rest of the design did not already give — exact `version:` pins provide
-  reproducibility, and the automatic fallback provides airgap resilience — while
+  reproducibility, and the automatic fallback provides offline resilience — while
   costing real safety: it silently disabled image and contract drift detection,
   since `scanners/*.contract` are generated from the very snapshots the check
   would compare against, so the comparison could never fail. It also risked
@@ -264,7 +279,7 @@ settings:
   to supply a token — deliberately, so a tokenless, `glab`-less run cannot quietly fall
   back to vendored snapshots and look like a live catalog test. Set it to `""` when the
   instance serves the components anonymously — that is how the `company` profile
-  ships. Token setup: MIGRATION.md step 0. Sent as `Authorization: Bearer` (works for
+  ships. Sent as `Authorization: Bearer` (works for
   both a PAT and an OAuth token).
 
   **Per profile.** `auth_token_env` may be set inside a profile block, next to
@@ -398,7 +413,7 @@ did not declare:
 
 Omitting `image:` is the intended steady state once your catalogue's templates
 name a registry you can reach — which means vendoring snapshots **from your own
-instance** (MIGRATION.md "Re-vendor"). Declare `image:` when your mirror path
+instance** (UPDATE-GUIDE.md Scenario 6). Declare `image:` when your mirror path
 differs from the template's, or as the fallback for a tag you have not mirrored.
 
 **The JDK variant (Fortify) is automatic — there is nothing to configure.** A Fortify tag
@@ -490,6 +505,17 @@ without touching the network.
   `FORTIFY_LANGUAGE` to override. The FPR output
   (`.appsec-results/fortify-sast.fpr`) contains the full severity breakdown; the
   local summary shows total vulnerability count.
+
+  **Fortify's Maven/Gradle build and the JVM truststore.** `settings.ca_bundle`
+  reaches `curl`/`pip`/`uv` inside the scanner container (see the `full`
+  `translation_mode` notes above) but never the JVM on its own — a Maven or
+  Gradle build behind TLS-inspection would still fail to resolve dependencies
+  with a trust error that reads like a broken mirror. When a bundle is mounted
+  and `keytool` is on `PATH`, `scanners/fortify-sast.sh` copies the JDK's own
+  `cacerts` into a temp truststore, imports every certificate from the bundle
+  into it (one that fails to import is skipped, not fatal), and exports
+  `JAVA_TOOL_OPTIONS` pointing Maven/Gradle at it. No bundle, or no `keytool` —
+  unchanged, exactly as before.
 - **dependency_scanning** — generates an **SBOM** locally
   (`gl-sbom-*.cdx.json`). The skill passes `GITLAB_FEATURES=dependency_scanning`
   to mirror the licensed CI environment. A lock file is required; plain manifests

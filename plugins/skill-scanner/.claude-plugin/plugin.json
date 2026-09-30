@@ -1,0 +1,8 @@
+{
+  "name": "skill-scanner",
+  "version": "1.0.0",
+  "description": "Scan agent skills for security issues before adoption: prompt injection, malicious scripts, excessive permissions, secret exposure, and supply chain risks.",
+  "author": {
+    "name": "Sentry"
+  }
+}

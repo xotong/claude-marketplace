@@ -65,6 +65,8 @@ if command -v curl >/dev/null 2>&1; then
   if ! curl --version 2>/dev/null | head -n 1 | grep -qi '^curl '; then
     ERRORS+=("the 'curl' on PATH ($(command -v curl)) is not curl — it does not identify itself to 'curl --version'. Something is shadowing the real binary; every catalog fetch and registry probe would silently fail through it.")
   fi
+elif [ "${APPSEC_AIRGAP:-false}" != true ]; then
+  ERRORS+=("curl is not installed. It ships with macOS and Windows 10+; elsewhere install it from your package manager or https://curl.se/download/, then re-run.")
 fi
 
 # A path that is configured but unreadable fails every scanner request from
@@ -72,7 +74,9 @@ fi
 # rather than a trust problem — which is why it used to cost a day to diagnose.
 # It was a mid-run warning; the whole point of preflight is to catch it before
 # any container starts. Empty (the shipped default) means disabled, not broken.
-if [ -n "${CA_BUNDLE:-}" ] && [ ! -r "$CA_BUNDLE" ]; then
+# "auto" is not a path yet -- run-scan.sh builds it at scan time -- so it is
+# never checked for readability here.
+if [ -n "${CA_BUNDLE:-}" ] && [ "$CA_BUNDLE" != auto ] && [ ! -r "$CA_BUNDLE" ]; then
   ERRORS+=("settings.ca_bundle points at $CA_BUNDLE, which is not readable here")
 fi
 if [ -n "${MAVEN_SETTINGS:-}" ] && [ ! -r "$MAVEN_SETTINGS" ]; then
@@ -98,6 +102,10 @@ json_value() {
 }
 
 for ecosystem in npm pypi maven go; do
+  # settings.airgap: true never probes here -- the shipped default now points
+  # package_registries at the public registries, and an airgapped estate must
+  # not reach them.
+  [ "${APPSEC_AIRGAP:-}" != "true" ] || continue
   template=$(json_value "$ecosystem" "${PACKAGE_REGISTRIES:-}")
   [ -n "$template" ] || continue
   # A coordinate for maven, a plain name elsewhere; nobody publishes either, so a

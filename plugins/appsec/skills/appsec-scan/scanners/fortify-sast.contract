@@ -15,6 +15,11 @@
 # ignore-input: srm-branch
 # ignore-input: upload-srm-option
 #
+# Instance-specific: each catalogue points its registry default at its own copy of
+# the image (gitlab.com's private project vs the self-hosted public one). The image
+# is read from the template itself (image_policy: follow-component), never from here.
+# ignore-input: registry
+#
 # Regenerate after a component bump (UPDATE-GUIDE.md Scenario 6):
 #   bash scripts/catalog.sh contract fortify-sast/fortify-sast <cache> > scanners/fortify-sast.contract
 input.allow-failure.default=true
@@ -37,7 +42,6 @@ input.python-version.option=3.11
 input.python-version.option=3.12
 input.python-version.option=3.13
 input.python-version.option=3.14
-input.registry.default=registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/
 input.source-path.default=src
 input.stage.default=sast
 input.translation-mode.default=normal

@@ -455,14 +455,53 @@ host_path() {
   esac
 }
 
+# settings.ca_bundle: auto builds .appsec-results/ca-bundle.pem from the host's
+# own trust store (where a corporate TLS-inspection root, e.g. Zscaler's,
+# normally lands) and from then on is used exactly like a configured path.
+# Finding nothing is not an error -- an INFO line, same as "" (disabled).
+build_auto_ca_bundle() {
+  out=.appsec-results/ca-bundle.pem
+  mkdir -p .appsec-results
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin)
+      security find-certificate -a -p \
+        /System/Library/Keychains/SystemRootCertificates.keychain \
+        /Library/Keychains/System.keychain >"$out" 2>/dev/null || true
+      ;;
+    *)
+      for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        if [ -r "$candidate" ]; then
+          cp "$candidate" "$out" 2>/dev/null || true
+          break
+        fi
+      done
+      ;;
+  esac
+  if [ -s "$out" ]; then
+    printf '%s' "$out"
+    return 0
+  fi
+  rm -f "$out"
+  return 1
+}
+
 CA_ARGS=()
-if [ -n "${CA_BUNDLE:-}" ]; then
-  ca_host_path=$(host_path "$CA_BUNDLE")
+CA_BUNDLE_RESOLVED="${CA_BUNDLE:-}"
+if [ "$CA_BUNDLE_RESOLVED" = auto ]; then
+  if CA_BUNDLE_RESOLVED=$(build_auto_ca_bundle); then
+    :
+  else
+    info "settings.ca_bundle: auto found no host trust store; scanners will run without one."
+    CA_BUNDLE_RESOLVED=
+  fi
+fi
+if [ -n "$CA_BUNDLE_RESOLVED" ]; then
+  ca_host_path=$(host_path "$CA_BUNDLE_RESOLVED")
   if [ -r "$ca_host_path" ]; then
     CA_ARGS=(-v "$ca_host_path:/appsec/ca-bundle.pem:ro"
              -e ADDITIONAL_CA_CERT_BUNDLE=/appsec/ca-bundle.pem)
   else
-    warning "settings.ca_bundle points at $CA_BUNDLE, which is not readable here;"
+    warning "settings.ca_bundle points at $CA_BUNDLE_RESOLVED, which is not readable here;"
     warning "  scanners will run without it and TLS to internal hosts may fail."
   fi
 fi
@@ -585,6 +624,83 @@ unit_fpr() {
   fi
 }
 
+# How many SAST units run at once, and how much memory each may use.
+#
+# Fortify's -scan phase is already multithreaded (MultithreadedAnalysis=true in
+# the image's fortify-sca.properties), but translation is single-threaded per
+# build — so units run one after another left most of the machine idle on a
+# polyglot repository, where CI runs one job per service side by side.
+#
+# The memory cap is not optional once units overlap: -autoheap (on by default)
+# sizes the JVM from the memory the container is allowed, so N uncapped units
+# would each size themselves for the whole runtime and be OOM-killed together.
+# Three quarters of the runtime's memory is shared out; the rest stays free for
+# Dependency Scanning and Secret Detection, which run alongside. A runtime that
+# does not report its memory keeps the old behaviour: one unit, no cap.
+FORTIFY_MIN_UNIT_MIB=3072
+fortify_plan_parallelism() {
+  FORTIFY_JOBS=1
+  FORTIFY_MEM_ARGS=()
+  fortify_mem_mib=
+  fortify_budget_mib=
+  # docker names the field .MemTotal, podman .Host.MemTotal.
+  fortify_runtime_mem=$("$RUNTIME" info --format '{{.MemTotal}}' 2>/dev/null ||
+                        "$RUNTIME" info --format '{{.Host.MemTotal}}' 2>/dev/null || true)
+  case "$fortify_runtime_mem" in
+    ''|*[!0-9]*) ;;
+    *) fortify_budget_mib=$((fortify_runtime_mem / 1048576 * 3 / 4)) ;;
+  esac
+  fortify_jobs_pinned=false
+  case "${APPSEC_FORTIFY_JOBS:-}" in
+    '') ;;
+    *[!0-9]*|0)
+      warning "Invalid APPSEC_FORTIFY_JOBS '${APPSEC_FORTIFY_JOBS}'; sizing Fortify parallelism from the runtime's memory"
+      ;;
+    *) FORTIFY_JOBS=$APPSEC_FORTIFY_JOBS; fortify_jobs_pinned=true ;;
+  esac
+  if ! $fortify_jobs_pinned && [ -n "$fortify_budget_mib" ]; then
+    FORTIFY_JOBS=$((fortify_budget_mib / FORTIFY_MIN_UNIT_MIB))
+  fi
+  [ "$FORTIFY_JOBS" -ge 1 ] || FORTIFY_JOBS=1
+  [ "$FORTIFY_JOBS" -le "$SAST_UNIT_COUNT" ] || FORTIFY_JOBS=$SAST_UNIT_COUNT
+  if [ "$FORTIFY_JOBS" -gt 1 ] && [ -n "$fortify_budget_mib" ]; then
+    fortify_mem_mib=$((fortify_budget_mib / FORTIFY_JOBS))
+    FORTIFY_MEM_ARGS=(--memory "${fortify_mem_mib}m")
+  fi
+}
+
+# fortify_unit_args <source-path> <language>: the runtime arguments for one
+# unit, in FORTIFY_UNIT_ARGS. One definition for the dry run and the real run,
+# so the command a dry run prints is the command that executes.
+fortify_unit_args() {
+  FORTIFY_UNIT_ARGS=(run --rm
+    ${FORTIFY_MEM_ARGS[@]+"${FORTIFY_MEM_ARGS[@]}"}
+    -v "$PWD:/workspace"
+    -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro"
+    ${CA_ARGS[@]+"${CA_ARGS[@]}"}
+    ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"}
+    -w /workspace
+    -e APP_NAME="$APP_NAME"
+    -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$1")"
+    -e FPR_NAME="$(unit_fpr "$1")"
+    -e SOURCE_PATH="$1"
+    -e FORTIFY_LANGUAGE="$2"
+    -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH"
+    -e FORTIFY_TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}"
+    -e UV_VERSION="${UV_VERSION:-}"
+    -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}"
+    -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}"
+    -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}"
+    -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}"
+    -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}"
+    -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}"
+    -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}"
+    -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)"
+    -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)"
+    "${FORTIFY_SAST_IMAGE}"
+    sh /runner.sh)
+}
+
 # clear_stale_reports <category>: delete the PREVIOUS run's reports for a
 # category this run is going to attempt (see the single caller below).
 #
@@ -606,7 +722,8 @@ clear_stale_reports() {
   if $DRY_RUN; then return 0; fi
   case "$1" in
     sast)
-      rm -f .appsec-results/fortify-sast.fpr .appsec-results/fortify-sast-*.fpr .appsec-results/sast-units
+      rm -f .appsec-results/fortify-sast.fpr .appsec-results/fortify-sast-*.fpr \
+            .appsec-results/fortify-sast-*.log .appsec-results/sast-units
       ;;
     dependency_scanning)
       # dependency-sbom-scan-*.json is derived from these SBOMs and counts as
@@ -623,7 +740,9 @@ clear_stale_reports() {
       # dependency scanning uses, and container scanning runs after DS in a full
       # scan — clearing it here would delete this run's dependency evidence.
       rm -f .appsec-results/gl-container-scanning-report.json \
-            .appsec-results/container-scan-archive.json
+            .appsec-results/gl-container-scanning-report-*.json \
+            .appsec-results/container-scan-archive.json \
+            .appsec-results/container-scan-archive-*.json
       ;;
   esac
 }
@@ -785,8 +904,17 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
   # runs after fixing a dependency, still needs it resolved. Without this the
   # match degraded every time and the rescan reported the dependency findings
   # gone rather than fixed.
+  # Likewise SAST's image doubles as the JDK that build-ca-context.sh borrows
+  # keytool from, so `--only container_scanning` can still give JVM image
+  # builds a truststore. Only as a helper: failing to resolve it must not stop
+  # a scan that never asked for SAST.
+  sast_as_helper=false
   if ! selected "$cat_name"; then
-    { [ "$cat_name" = container_scanning ] && selected dependency_scanning; } || continue
+    if [ "$cat_name" = sast ] && selected container_scanning; then
+      sast_as_helper=true
+    else
+      { [ "$cat_name" = container_scanning ] && selected dependency_scanning; } || continue
+    fi
   fi
 
   eval "configured=\${$var:-}"
@@ -802,6 +930,8 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
       "$configured" "$tmpl" "$RUNTIME" "${IMAGE_POLICY:-follow-component}" \
       "$image_pull_mode" "$preferred_variant"); then
     [ -n "$effective" ] && eval "$var=\$effective"
+  elif $sast_as_helper; then
+    :
   else
     record_missing_image "$(category_scanner_name "$cat_name")" "$var" "$cat_name"
     error "[$cat_name] could not resolve a scanner image; refusing to continue"
@@ -992,70 +1122,77 @@ if selected sast && [ "$RUN_FORTIFY_SAST" = true ] && [ -n "$FORTIFY_SAST_IMAGE"
     mark_executed sast
     info "[Fortify SCA] Pulling ${FORTIFY_SAST_IMAGE}..."
     if pull_image sast "Fortify SCA" "${FORTIFY_SAST_IMAGE}" "SAST did NOT run and your source was never analysed."; then
+      fortify_plan_parallelism
+      info "[Fortify SCA] Running ${FORTIFY_JOBS} unit(s) at a time${fortify_mem_mib:+, ${fortify_mem_mib} MiB each} (set APPSEC_FORTIFY_JOBS to change)"
       if $DRY_RUN; then
         while IFS='|' read -r u_path u_lang; do
           [ -n "$u_path" ] || continue
-          print_dry_run "$RUNTIME" run --rm -v "$PWD:/workspace" -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" ${CA_ARGS[@]+"${CA_ARGS[@]}"} ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} -w /workspace -e APP_NAME="$APP_NAME" -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" -e FPR_NAME="$(unit_fpr "$u_path")" -e SOURCE_PATH="$u_path" -e FORTIFY_LANGUAGE="$u_lang" -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" -e FORTIFY_TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}" -e UV_VERSION="${UV_VERSION:-}" -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}" -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" "${FORTIFY_SAST_IMAGE}" sh /runner.sh
+          fortify_unit_args "$u_path" "$u_lang"
+          print_dry_run "$RUNTIME" "${FORTIFY_UNIT_ARGS[@]}"
         done <"$SAST_UNITS_FILE"
       else
-        # Units run sequentially inside ONE background job: a Fortify container
-        # is heavy, and N of them at once starves the other scanners this
-        # backgrounding exists to overlap with. The whole group keeps a single
-        # PID and a single watchdog, so timeout handling is unchanged.
+        # Units run as a pool of FORTIFY_JOBS containers inside ONE background
+        # job, so the whole group keeps a single PID and a single watchdog and
+        # timeout handling is unchanged. Each unit writes its own log, appended
+        # whole to fortify-sast.log when it finishes, so parallel units never
+        # interleave line by line.
         (
           group_rc=0
-          unit_pid=
           stopped=false
-          # start_watchdog signals THIS subshell, not the container, so the
+          unit_pids=()
+          unit_paths=()
+          unit_langs=()
+          unit_logs=()
+          signal_units() {
+            for i in ${unit_pids[@]+"${!unit_pids[@]}"}; do
+              kill "-$1" "${unit_pids[$i]}" 2>/dev/null || true
+            done
+          }
+          # start_watchdog signals THIS subshell, not the containers, so the
           # escalation has to be repeated one level down. Forwarding only TERM is
           # not enough: the subshell would exit first, the outer KILL would find
           # nothing left to kill, and a TERM-ignoring scanner would be orphaned
           # and run forever — the exact fail-open the watchdog exists to close.
           # The 1s grace is deliberately shorter than start_watchdog's 2s, so the
-          # container is dead before the outer KILL arrives. Stop afterwards too:
-          # the remaining units belong to a run that has been abandoned.
-          trap 'stopped=true
-                if [ -n "$unit_pid" ]; then
-                  kill -TERM "$unit_pid" 2>/dev/null || true
-                  sleep 1
-                  kill -KILL "$unit_pid" 2>/dev/null || true
-                fi' TERM
+          # containers are dead before the outer KILL arrives. Stop afterwards
+          # too: the remaining units belong to a run that has been abandoned.
+          trap 'stopped=true; signal_units TERM; sleep 1; signal_units KILL' TERM
+          finish_unit() {
+            if wait "${unit_pids[$1]}"; then u_rc=0; else u_rc=$?; group_rc=1; fi
+            echo "=== Fortify unit: ${unit_paths[$1]} (${unit_langs[$1]}) — exit ${u_rc} ==="
+            cat "${unit_logs[$1]}" 2>/dev/null || true
+            if [ "$u_rc" -eq 137 ] && [ -n "$fortify_mem_mib" ]; then
+              echo "[ERROR] Fortify unit ${unit_paths[$1]} was killed (exit 137), most likely out of memory at ${fortify_mem_mib} MiB. Re-run with a lower APPSEC_FORTIFY_JOBS (this run used ${FORTIFY_JOBS})."
+            fi
+            unset "unit_pids[$1]"
+          }
+          # A backgrounded sleep plus `wait`, not a bare sleep: a trapped TERM
+          # interrupts `wait` at once, while a foreground sleep would hold the
+          # trap back until it returned.
+          reap_units() {
+            sleep 0.25 & wait $! 2>/dev/null || true
+            for i in ${unit_pids[@]+"${!unit_pids[@]}"}; do
+              kill -0 "${unit_pids[$i]}" 2>/dev/null || finish_unit "$i"
+            done
+          }
+          n=0
           while IFS='|' read -r u_path u_lang; do
             [ -n "$u_path" ] || continue
+            while ! $stopped && [ "${#unit_pids[@]}" -ge "$FORTIFY_JOBS" ]; do
+              reap_units
+            done
             if $stopped; then break; fi
-            echo "=== Fortify unit: $u_path ($u_lang) ==="
-            "$RUNTIME" run --rm \
-              -v "$PWD:/workspace" \
-              -v "$SCANNERS_DIR/fortify-sast.sh:/runner.sh:ro" \
-              ${CA_ARGS[@]+"${CA_ARGS[@]}"} \
-              ${MAVEN_MOUNT_ARGS[@]+"${MAVEN_MOUNT_ARGS[@]}"} \
-              -w /workspace \
-              -e APP_NAME="$APP_NAME" \
-              -e FORTIFY_BUILD_ID="$APP_NAME-$(unit_slug "$u_path")" \
-              -e FPR_NAME="$(unit_fpr "$u_path")" \
-              -e SOURCE_PATH="$u_path" \
-              -e FORTIFY_LANGUAGE="$u_lang" \
-              -e MAVEN_SETTINGS="$MAVEN_SETTINGS_PATH" \
-              -e FORTIFY_TRANSLATION_MODE="${FORTIFY_TRANSLATION_MODE:-normal}" \
-              -e UV_VERSION="${UV_VERSION:-}" \
-              -e UV_INSTALLER_BASE="${UV_INSTALLER_BASE:-}" \
-              -e UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-}" \
-              -e UV_DEFAULT_INDEX="${APPSEC_PIP_INDEX_URL:-}" \
-              -e PIP_INDEX_URL="${APPSEC_PIP_INDEX_URL:-}" \
-              -e FORTIFY_PYTHON_VERSION="${FORTIFY_PYTHON_VERSION:-}" \
-              -e FORTIFY_PYTHON_TEMPLATE_DIRS="${FORTIFY_PYTHON_TEMPLATE_DIRS:-}" \
-              -e ALLOW_INSECURE_UV_DOWNLOAD="${ALLOW_INSECURE_UV_DOWNLOAD:-false}" \
-              -e ARTIFACTORY_USER="$(printenv "$ARTIFACTORY_USER_ENV" 2>/dev/null || true)" \
-              -e ARTIFACTORY_PASSWORD="$(printenv "$ARTIFACTORY_PASSWORD_ENV" 2>/dev/null || true)" \
-              "${FORTIFY_SAST_IMAGE}" \
-              sh /runner.sh &
-            # Backgrounded so the TERM trap above can reach it: with the
-            # container in the foreground the trap does not run until it exits,
-            # which for a hung scan is never.
-            unit_pid=$!
-            wait "$unit_pid" || group_rc=1
-            unit_pid=
+            fortify_unit_args "$u_path" "$u_lang"
+            unit_logs[$n]=".appsec-results/fortify-sast-$(unit_slug "$u_path").log"
+            "$RUNTIME" "${FORTIFY_UNIT_ARGS[@]}" >"${unit_logs[$n]}" 2>&1 </dev/null &
+            unit_pids[$n]=$!
+            unit_paths[$n]=$u_path
+            unit_langs[$n]=$u_lang
+            n=$((n + 1))
           done <"$SAST_UNITS_FILE"
+          while [ "${#unit_pids[@]}" -gt 0 ]; do
+            reap_units
+          done
           exit "$group_rc"
         ) > .appsec-results/fortify-sast.log 2>&1 &
         FORTIFY_SAST_PID=$!
@@ -1283,8 +1420,11 @@ if ! $DRY_RUN; then
           warning "[GITLAB_DS] Local run unsupported by this analyzer — run Dependency Scanning in the CI pipeline"
           record_skip dependency_scanning "This analyzer cannot run dependency scanning locally (exit 2), so no dependency was analysed here. Run Dependency Scanning in the CI pipeline for this category; details in $failed_log."
         else
-          warning "[${pid_var/_PID/}] Failed (exit $rc) — check $failed_log"
-          record_skip "$failed_category" "The $failed_category scanner exited $rc, so it did NOT complete and this category was not scanned. Read $failed_log for the cause (unusable image, container runtime, memory, timeout), fix it, then re-run this skill."
+          # ponytail: surface the build's own first errors (e.g. Maven "Source option 5 is no
+          # longer supported") so nobody has to open the log to learn why.
+          failed_cause=$(tr '\r' '\n' <"$failed_log" 2>/dev/null | grep -E '^\[ERROR\] [^[]' | grep -v 'Help 1' | awk '!seen[$0]++' | head -n 2 | paste -sd ' ' - || true)
+          warning "[${pid_var/_PID/}] Failed (exit $rc) — ${failed_cause:+$failed_cause — }check $failed_log"
+          record_skip "$failed_category" "The $failed_category scanner exited $rc, so it did NOT complete and this category was not scanned.${failed_cause:+ First errors: $failed_cause.} Read $failed_log for the cause (unusable image, container runtime, memory, timeout, or a project that does not build), fix it, then re-run this skill."
         fi
       fi
       watchdog_var="${pid_var%_PID}_WATCHDOG"
@@ -1471,11 +1611,36 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
         fi
       fi
 
+      # Local builds behind a TLS-inspecting proxy fail at the first RUN that
+      # downloads anything (apk, pip, npm, go, gradle) while CI builds the same
+      # Dockerfile fine. With a ca_bundle in play, container-target.sh mounts it
+      # into every RUN step instead; see ca-overlay.awk for why the image
+      # content is unchanged. Prepared once per run and reused across runs.
+      CS_BUILD_CA_DIR=""
+      CS_BUILD_CA_JAVA=0
+      if [ -n "$CA_BUNDLE_RESOLVED" ] && [ -r "$CA_BUNDLE_RESOLVED" ] && \
+         [ "${APPSEC_CS_BUILD_CA:-on}" != off ]; then
+        if $DRY_RUN; then
+          print_dry_run bash "$SCRIPTS_DIR/build-ca-context.sh" "$CA_BUNDLE_RESOLVED" .appsec-results/build-ca "$RUNTIME" "${FORTIFY_SAST_IMAGE:-}"
+          CS_BUILD_CA_DIR="$PWD/.appsec-results/build-ca"
+        elif cs_ca_out=$(bash "$SCRIPTS_DIR/build-ca-context.sh" "$CA_BUNDLE_RESOLVED" \
+                           .appsec-results/build-ca "$RUNTIME" "${FORTIFY_SAST_IMAGE:-}"); then
+          CS_BUILD_CA_DIR="$PWD/.appsec-results/build-ca"
+          [ "$cs_ca_out" = java=1 ] && CS_BUILD_CA_JAVA=1
+          [ "$CS_BUILD_CA_JAVA" = 1 ] || info "[GitLab CS] No keytool on this host or in the Fortify image, so JVM builds (Gradle/Maven) will not trust settings.ca_bundle; other RUN steps will."
+        else
+          warning "[GitLab CS] Could not prepare settings.ca_bundle for image builds; building without it"
+        fi
+      fi
+
       CS_OK_COUNT=0
       CS_FAILURES=()
       for cs_dockerfile in "${CS_DOCKERFILES[@]}"; do
         cs_slug=$(cs_slug_of "$cs_dockerfile")
-        cs_app="${APP_NAME}-${cs_slug}"
+        # Image repository names must be lowercase; APP_NAME defaults to the
+        # directory name, which need not be (a checkout named crAPI failed
+        # every build with "repository name must be lowercase").
+        cs_app=$(printf '%s-%s' "$APP_NAME" "$cs_slug" | tr '[:upper:]' '[:lower:]')
         cs_image_ref="appsec-local/${cs_app}:appsec-scan"
         cs_report_name=gl-container-scanning-report.json
         $CS_MULTI && cs_report_name="gl-container-scanning-report-${cs_slug}.json"
@@ -1487,7 +1652,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
         CS_TRY_GLCI=false
         [ "$ENGINE_CONTAINER_SCANNING" = glci ] && [ -n "$CS_GLCI_REF" ] && CS_TRY_GLCI=true
         if $DRY_RUN; then
-          print_dry_run env DOCKERFILE="$cs_dockerfile" BASE_IMAGES_APPEND=true CS_SKIP_SAVE="$CS_TRY_GLCI" bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$cs_app" .appsec-results
+          print_dry_run env DOCKERFILE="$cs_dockerfile" BASE_IMAGES_APPEND=true CS_SKIP_SAVE="$CS_TRY_GLCI" APPSEC_BUILD_CA_DIR="$CS_BUILD_CA_DIR" APPSEC_BUILD_CA_JAVA="$CS_BUILD_CA_JAVA" bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$cs_app" .appsec-results
           if $CS_TRY_GLCI; then
             call_glci_run --category container_scanning --component "$CS_GLCI_REF" \
               --image "$cs_image_ref" --dockerfile "$cs_dockerfile" \
@@ -1499,7 +1664,7 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
           continue
         fi
 
-        cs_build="$(DOCKERFILE="$cs_dockerfile" BASE_IMAGES_APPEND=true CS_SKIP_SAVE="$CS_TRY_GLCI" bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$cs_app" ".appsec-results" || true)"
+        cs_build="$(DOCKERFILE="$cs_dockerfile" BASE_IMAGES_APPEND=true CS_SKIP_SAVE="$CS_TRY_GLCI" APPSEC_BUILD_CA_DIR="$CS_BUILD_CA_DIR" APPSEC_BUILD_CA_JAVA="$CS_BUILD_CA_JAVA" bash "$SCRIPTS_DIR/container-target.sh" "$RUNTIME" "$cs_app" ".appsec-results" || true)"
         cs_build_mode="${cs_build%%|*}"
         cs_build_value="${cs_build#*|}"
         [ -f .appsec-results/container-build.log ] && cp .appsec-results/container-build.log ".appsec-results/container-build-${cs_slug}.log"
@@ -1574,6 +1739,11 @@ if selected container_scanning && [ "$RUN_GITLAB_CS" = true ] && [ -n "$GITLAB_C
         if $cs_scanned; then
           if [ "$cs_report_name" != gl-container-scanning-report.json ]; then
             mv -f .appsec-results/gl-container-scanning-report.json ".appsec-results/$cs_report_name" 2>/dev/null || true
+            # Archive mode writes a fixed name too. Left in place, each image's
+            # scan overwrote the last: six images counted as scanned while only
+            # the final one's findings survived.
+            mv -f .appsec-results/container-scan-archive.json \
+              ".appsec-results/container-scan-archive-${cs_slug}.json" 2>/dev/null || true
           fi
           CS_OK_COUNT=$((CS_OK_COUNT + 1))
         fi
@@ -1646,7 +1816,11 @@ run_normalize() {
 
 # Probing needs a configured registry URL. Without one the first pass IS the only
 # pass — its output is already on stdout and its exit code is the gate.
+# settings.airgap: true never probes here regardless of what package_registries
+# names -- the shipped default now points at the public registries, and an
+# airgapped estate must not reach them.
 probe_configured() {
+  [ "${APPSEC_AIRGAP:-}" != "true" ] || return 1
   printf '%s' "${PACKAGE_REGISTRIES:-}" | grep -q '[a-zA-Z]://'
 }
 

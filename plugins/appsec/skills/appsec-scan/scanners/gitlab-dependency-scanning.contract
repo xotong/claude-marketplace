@@ -9,6 +9,11 @@
 # rather than running the component's gl-sast-report.json converter) — that
 # divergence is intentional; this file exists to catch upstream RENAMES.
 #
+# Instance-specific: each catalogue points the resolution-job registry at its own
+# copy of the toolbox images (gitlab.com's private project vs the self-hosted public
+# one). tests/test_catalog.py and scripts/revendor.sh read this line:
+# ignore-input: resolution_job_registry
+#
 # Regenerate after a component bump (UPDATE-GUIDE.md Scenario 6):
 #   bash scripts/catalog.sh contract dependency-scanning/dependency-scanning <cache> > scanners/gitlab-dependency-scanning.contract
 input.allow_failure.default=true
@@ -22,7 +27,6 @@ input.job-name.default=dependency-scanning
 input.maven-setting-path.default=settings.xml
 input.pip-index-url.default=https://pypi.org/simple/
 input.python-version.default=3.12
-input.resolution_job_registry.default=registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/gitlab-scanners
 input.resolution_job_tag.default=toolbox:1.0.0
 input.resolution_job_variant.default=openjdk17
 input.resolution_job_variant.option=openjdk17

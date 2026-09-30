@@ -348,6 +348,36 @@ class PreflightProbeTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("ca_bundle", proc.stdout + proc.stderr)
 
+    def test_ca_bundle_auto_is_accepted_not_checked_as_a_path(self) -> None:
+        """"auto" is not a path yet -- run-scan.sh builds it at scan time -- so
+        preflight must never report it unreadable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self._preflight(Path(tmp), None, CA_BUNDLE="auto")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("ca_bundle", proc.stdout + proc.stderr)
+
+    def test_airgap_skips_the_package_registry_probe_entirely(self) -> None:
+        """The shipped package_registries default now points at the public
+        registries; an airgapped estate must never reach them, regardless of
+        what is configured."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "curl-was-called"
+            stub(
+                root / "bin",
+                "curl",
+                'case "${1:-}" in --version) echo "curl 8.0.0 (fake stub)"; exit 0 ;; esac\n'
+                f"touch '{marker}'\nprintf '000'\n",
+            )
+            proc = self._preflight(
+                root,
+                None,
+                APPSEC_AIRGAP="true",
+                PACKAGE_REGISTRIES='{"npm":"https://registry.npmjs.org/{package}/{version}","pypi":"","maven":"","go":""}',
+            )
+            self.assertFalse(marker.exists(), "probed with airgap: true")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
 
 class RunScanConfigErrorTest(unittest.TestCase):
     """The reported bug, end to end: stop the category, fail the run, say why."""

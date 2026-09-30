@@ -55,6 +55,21 @@ rm -f "${REPORT}" \
 sbom_sweep "${CI_PROJECT_DIR}" | while IFS= read -r _stale; do rm -f "${_stale}"; done
 sbom_sweep "${RESULTS}"         | while IFS= read -r _stale; do rm -f "${_stale}"; done
 
+# settings.ca_bundle reaches this container as ADDITIONAL_CA_CERT_BUNDLE, but
+# the image's own entrypoint — which would install it — is bypassed
+# (--entrypoint ""), so the archive scanner's vulnerability-DB download failed
+# behind TLS inspection with "x509: certificate signed by unknown authority".
+# It is a Go binary: SSL_CERT_FILE is the trust it reads. System bundle plus
+# ours, so public certificates keep verifying too.
+if [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ]; then
+  _ca=$(mktemp)
+  for _sys in /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem; do
+    [ -r "$_sys" ] && cat "$_sys" >>"$_ca" && break
+  done
+  cat "${ADDITIONAL_CA_CERT_BUNDLE}" >>"$_ca"
+  export SSL_CERT_FILE="$_ca"
+fi
+
 # Mounted worktrees may be owned by a different host UID than the container user.
 # GitLab analyzer images run git internally, so mark the workspace as safe when
 # git is available. If it is not, let the analyzer report the real failure.

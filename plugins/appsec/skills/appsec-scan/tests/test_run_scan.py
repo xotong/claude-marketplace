@@ -779,7 +779,7 @@ class RunScanDryRunTest(unittest.TestCase):
             maven_settings.write_text("<settings/>\n", encoding="utf-8")
             temp_skill = self.make_skill_with_config(
                 root,
-                ('ca_bundle: ""', f'ca_bundle: "{ca_bundle}"'),
+                ("ca_bundle: auto", f'ca_bundle: "{ca_bundle}"'),
                 ('pip_index_url: ""', 'pip_index_url: "https://jfrog.invalid/simple/"'),
                 ('maven_settings: ""', f'maven_settings: "{maven_settings}"'),
             )
@@ -812,6 +812,83 @@ class RunScanDryRunTest(unittest.TestCase):
         # in-container path rather than the host one.
         sast_line = self.dry_run_line(result, "fortify-sast.sh:/runner.sh:ro")
         self.assertIn("MAVEN_SETTINGS=/appsec/maven-settings.xml", sast_line)
+
+    def test_ca_bundle_auto_builds_and_mounts_the_bundle(self) -> None:
+        # settings.ca_bundle: auto (the shipped default) must build
+        # .appsec-results/ca-bundle.pem from the host trust store and mount it
+        # exactly like a configured path -- security/uname are stubbed so this
+        # is hermetic and never depends on this machine's real trust store.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            bin_dir = repo / "bin"
+            bin_dir.mkdir()
+            fake_security = bin_dir / "security"
+            fake_security.write_text(
+                "#!/bin/sh\n"
+                "printf -- '-----BEGIN CERTIFICATE-----\\n'\n"
+                "printf 'ZmFrZS16c2NhbGVyLXJvb3Q=\\n'\n"
+                "printf -- '-----END CERTIFICATE-----\\n'\n",
+                encoding="utf-8",
+            )
+            fake_security.chmod(0o755)
+            fake_uname = bin_dir / "uname"
+            fake_uname.write_text("#!/bin/sh\necho Darwin\n", encoding="utf-8")
+            fake_uname.chmod(0o755)
+            env = self.base_env(
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                CA_BUNDLE="auto",
+            )
+            result = self.run_scan(repo, "--dry-run", env=env)
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            # Checked while the tempdir still exists: it is removed the moment
+            # the `with` block above exits.
+            bundle = repo / ".appsec-results" / "ca-bundle.pem"
+            self.assertTrue(bundle.is_file(), output)
+            self.assertIn("BEGIN CERTIFICATE", bundle.read_text(encoding="utf-8"))
+
+        line = self.dry_run_line(result, "fortify-sast.sh:/runner.sh:ro")
+        self.assertIn("ca-bundle.pem:/appsec/ca-bundle.pem:ro", line)
+        self.assertIn("ADDITIONAL_CA_CERT_BUNDLE=/appsec/ca-bundle.pem", line)
+
+    def test_ca_bundle_empty_still_mounts_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            env = self.base_env(CA_BUNDLE="")
+            result = self.run_scan(repo, "--dry-run", env=env)
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            self.assertFalse((repo / ".appsec-results" / "ca-bundle.pem").exists(), output)
+
+        line = self.dry_run_line(result, "fortify-sast.sh:/runner.sh:ro")
+        self.assertNotIn("ca-bundle.pem", line)
+        self.assertNotIn("ADDITIONAL_CA_CERT_BUNDLE", line)
+
+    def test_ca_bundle_auto_with_no_host_trust_store_disables_without_error(self) -> None:
+        # Nothing found (empty/absent trust store) must behave exactly like ""
+        # -- an INFO line, never an error, and nothing mounted.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self.make_repo(tmp)
+            bin_dir = repo / "bin"
+            bin_dir.mkdir()
+            fake_security = bin_dir / "security"
+            fake_security.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_security.chmod(0o755)
+            fake_uname = bin_dir / "uname"
+            fake_uname.write_text("#!/bin/sh\necho Darwin\n", encoding="utf-8")
+            fake_uname.chmod(0o755)
+            env = self.base_env(
+                PATH=f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                CA_BUNDLE="auto",
+            )
+            result = self.run_scan(repo, "--dry-run", env=env)
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            self.assertIn("INFO: settings.ca_bundle: auto found no host trust store", output)
+            self.assertFalse((repo / ".appsec-results" / "ca-bundle.pem").exists(), output)
+
+        line = self.dry_run_line(result, "fortify-sast.sh:/runner.sh:ro")
+        self.assertNotIn("ca-bundle.pem", line)
 
 
 class ResolvePythonTest(unittest.TestCase):

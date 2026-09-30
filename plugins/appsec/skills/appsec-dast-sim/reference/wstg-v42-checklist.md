@@ -1,7 +1,7 @@
 # OWASP Web Security Testing Guide v4.2 — Quick Reference
 
 Condensed checklist of all test IDs, names, and one-line descriptions.
-Vendored locally for airgap compliance. Source: OWASP WSTG v4.2 (2021).
+Vendored locally so this skill works fully offline. Source: OWASP WSTG v4.2 (2021).
 Full guide: https://owasp.org/www-project-web-security-testing-guide/ (requires internet)
 
 ---

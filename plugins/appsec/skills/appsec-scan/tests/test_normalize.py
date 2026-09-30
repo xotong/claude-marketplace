@@ -107,6 +107,34 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(finding["evidence"]["package"], "libssl")
         self.assertEqual(finding["evidence"]["fixed_version"], "1.1")
 
+    def test_per_image_archive_reports_keep_their_image(self):
+        """One locally built image per Dockerfile, one archive report each.
+
+        They used to share container-scan-archive.json, so every image's scan
+        overwrote the last. Named per image, each must still count as container
+        evidence, and the same CVE in two images must stay two findings that
+        say which image they came from."""
+        report = {
+            "Results": [{
+                "Target": "Python",
+                "Vulnerabilities": [{
+                    "VulnerabilityID": "CVE-2026-2000", "Severity": "HIGH",
+                    "PkgName": "setuptools", "InstalledVersion": "1", "FixedVersion": "2",
+                }],
+            }]
+        }
+        locations = []
+        for slug in ("services-web-dockerfile", "services-workshop-dockerfile"):
+            path = self.write_json(f"container-scan-archive-{slug}.json", report)
+            self.assertEqual(normalize._report_category(path), "container_scanning")
+            (finding,) = normalize.parse_generic_json(path, normalize.read_json_loose(path))
+            self.assertEqual(finding["category"], "container_scanning")
+            locations.append(finding["location"])
+        self.assertEqual(locations, [
+            {"image": "services-web-dockerfile: Python"},
+            {"image": "services-workshop-dockerfile: Python"},
+        ])
+
     def test_fpr_zip_float_severity_mapping(self):
         fvdl = """<?xml version="1.0"?>
 <FVDL xmlns="xmlns://www.fortifysoftware.com/schema/fvdl">

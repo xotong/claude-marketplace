@@ -6,7 +6,7 @@
 (the server-side SBOM-to-advisory matching that only runs inside a real
 GitLab CI pipeline with a real `CI_JOB_TOKEN`) for a repo scanned **locally**,
 by shipping only that repo's dependency manifests/lockfiles to a small helper
-project on a self-hosted GitLab instance, triggering a real pipeline there,
+project on an internal GitLab instance, triggering a real pipeline there,
 and pulling back `gl-dependency-scanning-report.json`.
 
 The helper project itself is a fixed, already-deployed GitLab project —

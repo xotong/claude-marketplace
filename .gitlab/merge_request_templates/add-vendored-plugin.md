@@ -34,7 +34,7 @@
 - [ ] Each `SKILL.md` has correct YAML frontmatter with `name:` and `description:` fields
 - [ ] Description fields include specific trigger phrases
 - [ ] No hardcoded internal URLs, API keys, or system paths introduced
-- [ ] No instructions added to call external services at runtime (airgap requirement)
+- [ ] No instructions added to call external services at runtime
 - [ ] Tested locally: installed the plugin and verified at least one skill triggers correctly
 
 **Provenance:**

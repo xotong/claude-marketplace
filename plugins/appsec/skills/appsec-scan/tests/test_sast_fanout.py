@@ -325,6 +325,156 @@ class FanoutOrchestrationTest(unittest.TestCase):
         self.assertIn("services/worker", output)
 
 
+class ParallelFanoutTest(unittest.TestCase):
+    """Units run as a pool, not one after another.
+
+    Fortify's -scan phase is multithreaded but translation is not, so a
+    polyglot repository scanned unit by unit left most of the machine idle
+    while CI scans the same services side by side. The pool must still honour
+    its size, cap each container's memory (-autoheap sizes the JVM from it),
+    and keep every unit's log readable."""
+
+    SERVICES = ("services/a/pom.xml", "services/b/requirements.txt", "services/c/package.json")
+
+    def scan(self, root: Path, *args: str, mem: str = "", **env_extra):
+        repo = root / "repo"
+        repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        touch(repo, *self.SERVICES)
+        fixture = root / "fixture.fpr"
+        with zipfile.ZipFile(fixture, "w") as archive:
+            archive.writestr("audit.fvdl", FVDL)
+        self.events = root / "events.log"
+        runtime = root / "fake-runtime"
+        # `info` answers the memory query; `run` records when each unit starts
+        # and ends, so overlap is measured rather than inferred from timing.
+        runtime.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = info ]; then [ -n "$FAKE_MEM" ] || exit 1; echo "$FAKE_MEM"; exit 0; fi\n'
+            '[ "$1" = run ] || exit 0\n'
+            "name=; src=\n"
+            'for a in "$@"; do case "$a" in FPR_NAME=*) name=${a#FPR_NAME=} ;;'
+            " SOURCE_PATH=*) src=${a#SOURCE_PATH=} ;; esac; done\n"
+            f'echo "start $src" >> {self.events}\n'
+            'echo "first line from $src"\n'
+            "/bin/sleep 1\n"
+            'echo "last line from $src"\n'
+            'mkdir -p .appsec-results\n'
+            f'cp "{fixture}" ".appsec-results/$name"\n'
+            f'echo "end $src" >> {self.events}\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        runtime.chmod(0o755)
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("SOURCE_PATH", "FORTIFY_LANGUAGE", "APPSEC_FORTIFY_JOBS")
+        }
+        env.update(
+            RUNTIME=str(runtime),
+            SKILL_DIR=str(SKILL_DIR),
+            SCANNERS_DIR=str(SCANNERS),
+            SCRIPTS_DIR=str(SCRIPTS),
+            APPSEC_PROFILE="catalog",
+            RUN_FORTIFY_SAST="true",
+            RUN_GITLAB_DS="false",
+            RUN_SECRET_DETECTION="false",
+            RUN_GITLAB_CS="false",
+            FORTIFY_SAST_IMAGE="example/fortify:test",
+            GITLAB_DS_IMAGE="example/ds:test",
+            SECRET_DETECTION_IMAGE="example/secrets:test",
+            GITLAB_CS_IMAGE="example/cs:test",
+            CS_USER_ENV="U",
+            CS_PASS_ENV="P",
+            PYTHON_INSTALL_URL="",
+            JQ_INSTALL_URL="",
+            CI_GATE_FAIL_ON="high",
+            FAKE_MEM=mem,
+        )
+        env.update(env_extra)
+        return subprocess.run(
+            [BASH, str(RUN_SCAN), "--only", "sast", *args],
+            cwd=repo, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    def max_overlap(self) -> int:
+        running = peak = 0
+        for line in self.events.read_text(encoding="utf-8").splitlines():
+            running += 1 if line.startswith("start ") else -1
+            peak = max(peak, running)
+        return peak
+
+    def test_units_overlap_when_jobs_allow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proc = self.scan(root, APPSEC_FORTIFY_JOBS="3")
+            output = proc.stdout + proc.stderr
+            self.assertIn("Running 3 unit(s) at a time", output)
+            self.assertEqual(self.max_overlap(), 3, output)
+            reports = sorted(
+                p.name for p in (root / "repo" / ".appsec-results").glob("fortify-sast-*.fpr")
+            )
+        self.assertEqual(len(reports), 3, output)
+
+    def test_pool_never_exceeds_its_size(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            proc = self.scan(root, APPSEC_FORTIFY_JOBS="2")
+            self.assertEqual(self.max_overlap(), 2, proc.stdout + proc.stderr)
+
+    def test_unknown_runtime_memory_keeps_one_unit_at_a_time(self) -> None:
+        """A runtime that cannot report its memory gets the old behaviour: one
+        unit, no cap — never N uncapped JVMs each sized for the whole box."""
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self.scan(Path(tmp), "--dry-run")
+        output = proc.stdout + proc.stderr
+        self.assertIn("Running 1 unit(s) at a time", output)
+        self.assertNotIn("--memory", output)
+
+    def test_memory_is_shared_out_and_capped_per_container(self) -> None:
+        # 16 GiB runtime -> 12 GiB budget -> 4 slots of 3 GiB, clamped to the
+        # 3 units there are, so each gets 4096 MiB.
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self.scan(Path(tmp), "--dry-run", mem=str(16 * 1024**3))
+        output = proc.stdout + proc.stderr
+        self.assertIn("Running 3 unit(s) at a time, 4096 MiB each", output)
+        self.assertEqual(output.count("--memory 4096m "), 3, output)
+
+    def test_small_runtime_falls_back_to_one_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self.scan(Path(tmp), "--dry-run", mem=str(4 * 1024**3))
+        output = proc.stdout + proc.stderr
+        self.assertIn("Running 1 unit(s) at a time", output)
+        self.assertNotIn("--memory", output)
+
+    def test_invalid_jobs_value_is_named_and_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = self.scan(Path(tmp), "--dry-run", APPSEC_FORTIFY_JOBS="lots")
+        output = proc.stdout + proc.stderr
+        self.assertIn("Invalid APPSEC_FORTIFY_JOBS 'lots'", output)
+        self.assertIn("Running 1 unit(s) at a time", output)
+
+    def test_each_units_log_stays_contiguous(self) -> None:
+        """Parallel units write at once; the combined log must still read as
+        one unit after another, header first, or a failure cannot be traced."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.scan(root, APPSEC_FORTIFY_JOBS="3")
+            log = (root / "repo" / ".appsec-results" / "fortify-sast.log").read_text(
+                encoding="utf-8"
+            ).splitlines()
+        for src in ("services/a", "services/b", "services/c"):
+            with self.subTest(src=src):
+                header = next(i for i, line in enumerate(log)
+                              if line.startswith(f"=== Fortify unit: {src} "))
+                self.assertIn("exit 0", log[header])
+                self.assertEqual(
+                    log[header + 1:header + 3],
+                    [f"first line from {src}", f"last line from {src}"],
+                )
+
+
 class FanoutWatchdogTest(unittest.TestCase):
     """The watchdog must still reach the container, not just the group wrapper.
 
@@ -335,12 +485,22 @@ class FanoutWatchdogTest(unittest.TestCase):
     """
 
     def test_a_term_ignoring_container_is_still_killed(self) -> None:
+        self._assert_every_container_killed(("pom.xml",), jobs="")
+
+    def test_every_parallel_container_is_killed(self) -> None:
+        """With units overlapping there is more than one container to reach;
+        forwarding to only the most recent would orphan the rest."""
+        self._assert_every_container_killed(
+            ("services/a/pom.xml", "services/b/package.json"), jobs="2"
+        )
+
+    def _assert_every_container_killed(self, manifests, jobs: str) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / "repo"
             repo.mkdir()
             subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-            touch(repo, "pom.xml")
+            touch(repo, *manifests)
             pidfile = root / "container.pid"
             runtime = root / "fake-runtime"
             # IGNORES TERM, like a scanner wedged in an uninterruptible state.
@@ -349,7 +509,7 @@ class FanoutWatchdogTest(unittest.TestCase):
             runtime.write_text(
                 "#!/bin/sh\n"
                 'if [ "${1:-}" = run ]; then\n'
-                f"  echo $$ > {pidfile}\n"
+                f"  echo $$ >> {pidfile}\n"
                 "  trap '' TERM\n"
                 "  while :; do /bin/sleep 0.1; done\n"
                 "fi\nexit 0\n",
@@ -358,7 +518,8 @@ class FanoutWatchdogTest(unittest.TestCase):
             runtime.chmod(0o755)
             env = dict(
                 {k: v for k, v in os.environ.items()
-                 if k not in ("SOURCE_PATH", "FORTIFY_LANGUAGE")},
+                 if k not in ("SOURCE_PATH", "FORTIFY_LANGUAGE", "APPSEC_FORTIFY_JOBS")},
+                APPSEC_FORTIFY_JOBS=jobs,
                 RUNTIME=str(runtime),
                 SKILL_DIR=str(SKILL_DIR),
                 SCANNERS_DIR=str(SCANNERS),
@@ -388,20 +549,26 @@ class FanoutWatchdogTest(unittest.TestCase):
                 timeout=30,
             )
             self.assertTrue(pidfile.exists(), "container never started\n" + proc.stderr)
-            container_pid = int(pidfile.read_text().strip())
+            container_pids = [int(p) for p in pidfile.read_text().split()]
+            if jobs:
+                self.assertEqual(len(container_pids), int(jobs), proc.stderr)
+
+            def running(pid: int) -> bool:
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    return False
+                return True
+
             # Give the escalation its 1s grace plus slack on a loaded machine.
             deadline = time.monotonic() + 10
-            alive = True
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(container_pid, 0)
-                except (ProcessLookupError, PermissionError):
-                    alive = False
-                    break
+            alive = container_pids
+            while alive and time.monotonic() < deadline:
+                alive = [pid for pid in alive if running(pid)]
                 time.sleep(0.2)
-            if alive:  # never leave a runaway behind, pass or fail
+            for pid in alive:  # never leave a runaway behind, pass or fail
                 try:
-                    os.kill(container_pid, 9)
+                    os.kill(pid, 9)
                 except OSError:
                     pass
         self.assertFalse(

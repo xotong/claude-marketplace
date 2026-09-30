@@ -80,12 +80,16 @@ for tuple in ${ENABLED_COMPONENTS:-}; do
     cat "$src/README.md"
   } >"$dst/README.md"
 
-  # Regenerate the contract, preserving its #-comment header.
+  # Regenerate the contract, preserving its #-comment header. Inputs the header
+  # names as `# ignore-input: <name>` stay out of the body, the same rule
+  # tests/test_catalog.py applies when it checks the contract is current.
   contract="$SCANNERS_DIR/${runner%.sh}.contract"
   if [ -f "$contract" ]; then
+    ignored=$(sed -n 's/^# ignore-input: *//p' "$contract" | paste -sd'|' -)
     {
       sed -n '/^#/p' "$contract"
-      bash "$SCRIPTS_DIR/catalog.sh" contract "$component" "$CACHE" 2>/dev/null
+      bash "$SCRIPTS_DIR/catalog.sh" contract "$component" "$CACHE" 2>/dev/null |
+        grep -Ev "^input\.(${ignored:-#})\."  # '#': no input is named that; some greps reject ()
     } >"$contract.new"
     mv "$contract.new" "$contract"
   fi

@@ -25,7 +25,9 @@ include:
 
 fetch-bundle:
   stage: .pre
-  image: curlimages/curl:8.11.0
+  # registry.access.redhat.com Hummingbird hardened image (low-vuln) — no tar/gzip binary,
+  # so extract with Python's stdlib tarfile module instead.
+  image: registry.access.redhat.com/hi/python:3.12-builder
   variables:
     GIT_STRATEGY: fetch
   script:
@@ -34,7 +36,7 @@ fetch-bundle:
       -H "JOB-TOKEN: $CI_JOB_TOKEN"
       -o bundle.tar.gz
       "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/appsec-bundles/$[[ inputs.bundle ]]/bundle.tar.gz"
-    - tar -xzf bundle.tar.gz
+    - python3 -m tarfile -e bundle.tar.gz .
     - rm -f bundle.tar.gz
     - echo "Bundle extracted, contents:"
     - find . -type f -not -path "./.git/*"

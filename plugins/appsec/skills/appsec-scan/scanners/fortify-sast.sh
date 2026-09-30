@@ -44,6 +44,95 @@ if [ -f "filter_list.txt" ]; then
 fi
 
 # =============================================================================
+# JVM CA trust for Maven/Gradle — settings.ca_bundle (ADDITIONAL_CA_CERT_BUNDLE)
+# reaches curl/python (see appsec_trust_ca below, used for uv) but never the
+# JVM itself, so a Maven/Gradle build behind TLS inspection (a corporate proxy
+# that resigns every certificate) fails to resolve dependencies with a trust
+# error that reads like a broken mirror. Copy the JDK's own cacerts into a temp
+# truststore and import each certificate from the bundle into it; a
+# certificate that fails to import is skipped, not fatal. No-op when no bundle
+# is mounted or no keytool is on PATH — every other estate is unchanged.
+# =============================================================================
+if [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] && command -v keytool >/dev/null 2>&1; then
+  CA_CACERTS=
+  if [ -n "${JAVA_HOME:-}" ] && [ -r "${JAVA_HOME}/lib/security/cacerts" ]; then
+    CA_CACERTS="${JAVA_HOME}/lib/security/cacerts"
+  else
+    CA_KEYTOOL_BIN=$(command -v keytool)
+    CA_CANDIDATE=$(dirname "$(dirname "${CA_KEYTOOL_BIN}")")/lib/security/cacerts
+    [ -r "${CA_CANDIDATE}" ] && CA_CACERTS="${CA_CANDIDATE}"
+  fi
+  if [ -n "${CA_CACERTS}" ]; then
+    CA_TRUSTSTORE=$(mktemp)
+    cp "${CA_CACERTS}" "${CA_TRUSTSTORE}"
+    CA_CERT_N=0
+    CA_IMPORTED=0
+    CA_CERT_FILE=
+    while IFS= read -r CA_LINE; do
+      case "${CA_LINE}" in
+        *"-----BEGIN CERTIFICATE-----"*)
+          CA_CERT_N=$((CA_CERT_N + 1))
+          CA_CERT_FILE=$(mktemp)
+          printf '%s\n' "${CA_LINE}" >"${CA_CERT_FILE}"
+          ;;
+        *"-----END CERTIFICATE-----"*)
+          if [ -n "${CA_CERT_FILE}" ]; then
+            printf '%s\n' "${CA_LINE}" >>"${CA_CERT_FILE}"
+            if keytool -importcert -noprompt -trustcacerts \
+                -alias "appsec-ca-${CA_CERT_N}" \
+                -keystore "${CA_TRUSTSTORE}" -storepass changeit \
+                -file "${CA_CERT_FILE}" >/dev/null 2>&1; then
+              CA_IMPORTED=$((CA_IMPORTED + 1))
+            else
+              echo "[fortify] keytool could not import certificate #${CA_CERT_N} from settings.ca_bundle; skipping" >&2
+            fi
+            rm -f "${CA_CERT_FILE}"
+            CA_CERT_FILE=
+          fi
+          ;;
+        *)
+          [ -z "${CA_CERT_FILE}" ] || printf '%s\n' "${CA_LINE}" >>"${CA_CERT_FILE}"
+          ;;
+      esac
+    done <"${ADDITIONAL_CA_CERT_BUNDLE}"
+    if [ "${CA_IMPORTED}" -gt 0 ]; then
+      JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }-Djavax.net.ssl.trustStore=${CA_TRUSTSTORE} -Djavax.net.ssl.trustStorePassword=changeit"
+      export JAVA_TOOL_OPTIONS
+      echo "[fortify] imported ${CA_IMPORTED} certificate(s) from settings.ca_bundle into a JVM truststore for Maven/Gradle" >&2
+      echo "[fortify] JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS}" >&2
+    else
+      rm -f "${CA_TRUSTSTORE}"
+    fi
+  else
+    echo "[fortify] settings.ca_bundle is set but no JDK cacerts could be found; Maven/Gradle builds will not trust it" >&2
+  fi
+fi
+
+# Trust settings.ca_bundle for every non-JVM tool (curl, python/requests, uv, go).
+#
+# `update-ca-trust` is the usual way to install a CA, and it cannot run
+# here: verified against fortify-sca 25.2.0, the container is uid 1000 and
+# /etc/pki/ca-trust/source/anchors is not writable. Concatenating the
+# system bundle with ours into a writable file and exporting the standard
+# variables reaches the same end without root — and unlike `curl --cacert`
+# it also covers each tool's OWN downloads (uv's interpreter and packages,
+# go's module fetches). Returns 1 when no bundle is mounted.
+appsec_trust_ca() {
+  [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] || return 1
+  _b=/tmp/appsec-ca-bundle.pem
+  : >"$_b" || return 1
+  for _sys in /etc/pki/tls/certs/ca-bundle.crt \
+              /etc/ssl/certs/ca-certificates.crt \
+              /etc/ssl/cert.pem; do
+    [ -r "$_sys" ] && cat "$_sys" >>"$_b" && break
+  done
+  cat "${ADDITIONAL_CA_CERT_BUNDLE}" >>"$_b" || return 1
+  # curl, python/requests, uv and go each read one of these.
+  export SSL_CERT_FILE="$_b" CURL_CA_BUNDLE="$_b" REQUESTS_CA_BUNDLE="$_b"
+  return 0
+}
+
+# =============================================================================
 # SCAN — mirrors the private catalog Fortify SAST component script.
 # =============================================================================
 
@@ -107,30 +196,6 @@ case "${FORTIFY_LANGUAGE}" in
       UV_URL="${UV_INSTALLER_BASE}/${UV_VERSION}/uv-installer.sh"
       UV_SH=$(mktemp)
 
-      # Trust the internal CA for EVERY tool, not just this one curl call.
-      #
-      # `update-ca-trust` is the usual way to install a CA, and it cannot run
-      # here: verified against fortify-sca 25.2.0, the container is uid 1000 and
-      # /etc/pki/ca-trust/source/anchors is not writable. Concatenating the
-      # system bundle with ours into a writable file and exporting the standard
-      # variables reaches the same end without root — and unlike `curl --cacert`
-      # it also covers uv's OWN downloads, the interpreter and every package.
-      # Passing --cacert to the installer fetch alone left uv itself untrusting.
-      appsec_trust_ca() {
-        [ -n "${ADDITIONAL_CA_CERT_BUNDLE:-}" ] && [ -r "${ADDITIONAL_CA_CERT_BUNDLE}" ] || return 1
-        _b=/tmp/appsec-ca-bundle.pem
-        : >"$_b" || return 1
-        for _sys in /etc/pki/tls/certs/ca-bundle.crt \
-                    /etc/ssl/certs/ca-certificates.crt \
-                    /etc/ssl/cert.pem; do
-          [ -r "$_sys" ] && cat "$_sys" >>"$_b" && break
-        done
-        cat "${ADDITIONAL_CA_CERT_BUNDLE}" >>"$_b" || return 1
-        # curl, python/requests and uv each read a different one of these.
-        export SSL_CERT_FILE="$_b" CURL_CA_BUNDLE="$_b" REQUESTS_CA_BUNDLE="$_b"
-        return 0
-      }
-
       # Ask before assuming: if TLS already verifies, there is nothing to fix and
       # nothing to weaken.
       #
@@ -175,7 +240,11 @@ case "${FORTIFY_LANGUAGE}" in
       if $UV_GOT && sh "$UV_SH" >&2 && . "$HOME/.local/bin/env" 2>/dev/null; then
         rm -f "$UV_SH"
         [ -z "${FORTIFY_PYTHON_VERSION:-}" ] || uv python install "${FORTIFY_PYTHON_VERSION}" >&2 || true
-        if uv venv >&2 && . .venv/bin/activate; then
+        # Private to this container, not /workspace/.venv: /workspace is the
+        # user's repository, shared by every unit run-scan.sh runs in parallel,
+        # so a venv there would be rebuilt under a neighbouring python unit.
+        APPSEC_VENV="$(mktemp -d)/venv"
+        if uv venv "$APPSEC_VENV" >&2 && . "$APPSEC_VENV/bin/activate"; then
           if [ -f "${SOURCE_PATH}/requirements.txt" ]; then
             REQ="${SOURCE_PATH}/requirements.txt"
             # Bulk install is atomic: one unbuildable package (psycopg2 wants
@@ -197,7 +266,7 @@ case "${FORTIFY_LANGUAGE}" in
           elif [ -f "${SOURCE_PATH}/pyproject.toml" ]; then
             uv pip install "${SOURCE_PATH}" >&2 || echo "[fortify] project install failed" >&2
           fi
-          PYPATH=$(ls -d .venv/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
+          PYPATH=$(ls -d "$APPSEC_VENV"/lib*/python*/site-packages 2>/dev/null | paste -sd: -)
           [ -z "$PYPATH" ] || PY_RESOLUTION=full-achieved
         fi
       else
@@ -265,6 +334,11 @@ case "${FORTIFY_LANGUAGE}" in
     # The -clean above already ran; go mod download resolves the module graph so
     # sourceanalyzer can follow imports. Note the component omits
     # -Dcom.fortify.sca.follow.imports=false here, unlike the javascript arm.
+    #
+    # go reads SSL_CERT_FILE, not the JVM truststore above, so without this a
+    # TLS-inspecting proxy fails every module fetch with "x509: certificate
+    # signed by unknown authority" and the unit produces no report.
+    appsec_trust_ca || :
     ( cd "${SOURCE_PATH}" && go mod download )
     sourceanalyzer -b "${FORTIFY_BUILD_ID}" \
       -debug-verbose \

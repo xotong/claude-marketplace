@@ -261,7 +261,22 @@ fi
 dockerfile_dir=$(dirname "${dockerfile_path}")
 : > "${build_log}"
 
-if ! "${runtime}" build -t "${image_ref}" -f "${dockerfile_path}" "${dockerfile_dir}" >"${build_log}" 2>&1; then
+# APPSEC_BUILD_CA_DIR (set by run-scan.sh from settings.ca_bundle, see
+# build-ca-context.sh): build from a copy of the Dockerfile whose RUN steps
+# bind-mount that directory, so downloads inside the build trust a
+# TLS-inspecting proxy. The image content is unchanged — see ca-overlay.awk.
+build_dockerfile=${dockerfile_path}
+build_ca_args=()
+if [[ -n "${APPSEC_BUILD_CA_DIR:-}" && -f "${APPSEC_BUILD_CA_DIR}/ca.pem" ]]; then
+  build_dockerfile="${results_dir}/Dockerfile.appsec-ca"
+  awk -v java="${APPSEC_BUILD_CA_JAVA:-0}" -f "$(dirname "$0")/ca-overlay.awk" \
+    "${dockerfile_path}" >"${build_dockerfile}"
+  build_ca_args=(--build-context "appsec-ca=${APPSEC_BUILD_CA_DIR}")
+  echo "INFO: RUN steps trust settings.ca_bundle via a bind mount (image content unchanged; APPSEC_CS_BUILD_CA=off to disable)" >&2
+fi
+
+if ! "${runtime}" build ${build_ca_args[@]+"${build_ca_args[@]}"} -t "${image_ref}" \
+    -f "${build_dockerfile}" "${dockerfile_dir}" >"${build_log}" 2>&1; then
   if grep -qiE 'pull access denied|unauthorized|manifest unknown|no basic auth|not found: manifest|denied: requested access' "${build_log}"; then
     cat >&2 <<EOF
 Container image build failed because the Dockerfile base image could not be pulled from the internal registry.

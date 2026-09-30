@@ -196,9 +196,9 @@ freshly confirmed. If you see `REFUSED`, the instance was unreachable or the
 token was rejected — fix that and re-run. Nothing is written for a refused
 component.
 
-**Airgap note:** run this against your *internal* instance after publishing the
+**Offline-fallback note:** run this against your *internal* instance after publishing the
 components there. Snapshots vendored from gitlab.com describe gitlab.com's
-components; serving those as the offline fallback inside your airgap would
+components; serving those as the offline fallback in a network-isolated estate would
 report a component shape you never published.
 
 Review the diff: **every changed line is a real upstream change**. A new
@@ -267,7 +267,7 @@ Before committing a scanner update, verify it works end-to-end:
 
 ```bash
 # 1. Set required env vars
-export FORTIFY_SAST_IMAGE="registry.gitlab.com/lobster-thermidor/devops/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review"
+export FORTIFY_SAST_IMAGE="gitlab.example.com/platform-engineering/ci-catalogue/docker-images/fortify-sca:25.2.0-jdk17-review"
 export FORTIFY_LANGUAGE="maven"
 
 # 2. Resolve scanner dir

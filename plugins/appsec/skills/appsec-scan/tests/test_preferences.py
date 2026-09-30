@@ -59,13 +59,20 @@ class SettingsBlockTest(unittest.TestCase):
         self.assertIn("password_env", cr)
 
     def test_airgap_knobs_exist_and_ship_disabled(self) -> None:
-        """ca_bundle / pip_index_url / maven_settings must be declarable, and must
-        default to off — nothing may be mounted or rewritten unless an admin says so."""
-        for key in ("ca_bundle", "pip_index_url", "maven_settings"):
+        """pip_index_url / maven_settings must be declarable, and must default
+        to off — nothing may be rewritten unless an admin says so."""
+        for key in ("pip_index_url", "maven_settings"):
             with self.subTest(key=key):
                 self.assertIn(key, self.settings, "airgap estates have no other way in")
                 self.assertIsInstance(self.settings[key], str)
                 self.assertEqual(self.settings[key], "", "shipped default must disable it")
+
+    def test_ca_bundle_ships_auto(self) -> None:
+        """Unlike pip_index_url/maven_settings, ca_bundle's shipped default is
+        "auto" -- build one from the host trust store at scan time -- not
+        empty; "" is still how an admin disables it outright."""
+        self.assertIn("ca_bundle", self.settings)
+        self.assertEqual(self.settings["ca_bundle"], "auto")
 
     def test_global_base_image_templates_exist_and_ship_empty(self) -> None:
         """They live inside container_registry, which already holds this
@@ -211,6 +218,30 @@ class ScannerPreferencesTest(unittest.TestCase):
         company = PREFERENCES["profiles"]["company"]
         self.assertNotIn("base_repo", company)
         self.assertNotIn("hardened_repo", company)
+
+    def test_platform_engineering_ships_the_same_public_base_repo_template(self) -> None:
+        """These laptops reach docker.io directly, same as `catalog`."""
+        profile = PREFERENCES["profiles"]["platform-engineering"]
+        self.assertEqual(profile["base_repo"], "docker.io/library/{image}:{tag}")
+
+    def test_platform_engineering_hardened_repo_points_at_hummingbird(self) -> None:
+        """Unlike `catalog`: Chainguard is Zscaler-blocked from laptops, so this
+        profile's hardened_repo points at Red Hat's reachable Hummingbird registry."""
+        profile = PREFERENCES["profiles"]["platform-engineering"]
+        self.assertEqual(profile["hardened_repo"], "registry.access.redhat.com/hi/{image}:{tag}")
+
+    def test_package_registries_ship_the_public_registries(self) -> None:
+        """Global default (every profile): the reachability probe should answer
+        instead of 'unknown' out of the box on these laptops."""
+        registries = PREFERENCES["settings"]["package_registries"]
+        self.assertEqual(registries["npm"], "https://registry.npmjs.org/{package}/{version}")
+        self.assertEqual(registries["pypi"], "https://pypi.org/pypi/{package}/{version}/json")
+        self.assertEqual(
+            registries["maven"],
+            "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/",
+        )
+        self.assertEqual(registries["go"], "https://proxy.golang.org/{module}/@v/{version}.info")
+        self.assertEqual(registries["auth_token_env"], "")
 
     def test_every_declared_base_image_template_is_a_ref_template(self) -> None:
         """These are refs with {image} and {tag}, not base URLs — a pasted base
@@ -425,6 +456,60 @@ class HelperScriptsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "")
         self.assertIn("WARNING: failed to download jq", result.stderr)
+
+    FAKE_JQ = "#!/bin/sh\necho jq-1.8.2\n"
+
+    def run_official_jq_download(self, tmp: str, sums: str | None, uname_s: str = "Darwin"):
+        """resolve-jq.sh against the official URL, with curl stubbed: the asset URL
+        gets FAKE_JQ, the sha256sum.txt URL gets `sums` (None = 404)."""
+        curl_log = Path(tmp) / "curl.log"
+        sums_file = Path(tmp) / "sums.txt"
+        if sums is not None:
+            sums_file.write_text(sums, encoding="utf-8")
+        curl = (
+            "#!/bin/sh\nurl=; out=\n"
+            'while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; http*) url=$1 ;; esac; shift; done\n'
+            f'echo "$url" >> "{curl_log}"\n'
+            'case "$url" in\n'
+            f'  */sha256sum.txt) [ -f "{sums_file}" ] || exit 22; cat "{sums_file}" ;;\n'
+            f"  *) printf '%s' '{self.FAKE_JQ}' > \"$out\" ;;\n"
+            "esac\n"
+        )
+        bin_dir = self.make_stub_dir(tmp, {
+            "curl": curl,
+            "uname": f'#!/bin/sh\n[ "$1" = -s ] && echo {uname_s} || echo arm64\n',
+        })
+        self.add_passthrough_tools(bin_dir, ["tr", "mkdir", "chmod", "awk", "rm", "cat",
+                                             "shasum" if shutil.which("shasum") else "sha256sum"])
+        env = dict(
+            os.environ,
+            PATH=str(bin_dir),
+            APPSEC_RESULTS_DIR=str(Path(tmp) / "results"),
+            JQ_INSTALL_URL="https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-{jq_os}-{arch}",
+        )
+        return self.run_script("resolve-jq.sh", env=env), curl_log.read_text(encoding="utf-8")
+
+    def test_resolve_jq_official_download_verified_against_sha256sum(self) -> None:
+        import hashlib
+        digest = hashlib.sha256(self.FAKE_JQ.encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            result, urls = self.run_official_jq_download(tmp, f"{digest}  jq-macos-arm64\n")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(result.stdout.strip().endswith("/results/bin/jq"), result.stdout)
+            self.assertIn("/jq-1.8.2/jq-macos-arm64\n", urls)  # darwin -> macos via {jq_os}
+
+    def test_resolve_jq_refuses_checksum_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _ = self.run_official_jq_download(tmp, "0" * 64 + "  jq-macos-arm64\n")
+            self.assertEqual(result.stdout.strip(), "")
+            self.assertIn("does not match its published sha256", result.stderr)
+            self.assertFalse((Path(tmp) / "results" / "bin" / "jq").exists())
+
+    def test_resolve_jq_refuses_unverifiable_github_download(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _ = self.run_official_jq_download(tmp, None, uname_s="Linux")
+            self.assertEqual(result.stdout.strip(), "")
+            self.assertIn("could not verify jq", result.stderr)
 
     def test_container_target_defers_when_no_image_no_dockerfile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

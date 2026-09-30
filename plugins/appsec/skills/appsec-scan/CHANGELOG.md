@@ -5,6 +5,93 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [3.6.0] — 2026-09-30
+
+### Added
+
+- **`security-options` skill.** A routing table for security questions that
+  are neither a concrete CI-mirror scan request nor an OWASP WSTG/DAST
+  walkthrough — those two keep triggering `appsec-scan` and `appsec-dast-sim`
+  directly. Covers "what security tools do we have", a deep vulnerability
+  hunt with patches (`claude-security`, Claude models only), automatic
+  edit-time warnings plus end-of-turn LLM review (`security-guidance`,
+  opt-in, internet-connected Claude installs only), fuzzing/Semgrep/CodeQL/
+  crypto review (`trailofbits-skills`), and vetting a third-party skill or
+  plugin before installing it (`skill-scanner`). Notes which of those apply
+  on a self-hosted model: `appsec-scan`, `appsec-dast-sim`,
+  `trailofbits-skills`, and `skill-scanner` only.
+
+## [3.5.1] — 2026-09-30
+
+### Changed
+
+- **Scanner images come from the instance's own registry — no Docker login.**
+  `fortify-sast` 25.2.1 and `dependency-scanning` 1.3.1 on `gitlab.example.com` now
+  default to `gitlab.example.com/platform-engineering/ci-catalogue/docker-images`,
+  a public project holding digest-identical copies of the gitlab.com images. CI no longer
+  needs the group `DOCKER_AUTH_CONFIG`, and laptops no longer need
+  `docker login registry.gitlab.com`.
+- **Self-hosted component versions use gitlab.com's numbers.** The self-hosted-only
+  `fortify-sast` 25.2.2 and `dependency-scanning` 1.3.2 are withdrawn; snapshots are
+  re-vendored at 25.2.1 and 1.3.1. `container-scanning` 1.3.0 (both catalogues) is
+  vendored too; its new `cs_registry_user` / `cs_registry_password` inputs feed the same
+  `CS_REGISTRY_USER` / `CS_REGISTRY_PASSWORD` the runner already sets from
+  `settings.container_registry`.
+- **Registry inputs are instance-specific in the contracts.** `fortify-sast`'s
+  `registry` and `dependency-scanning`'s `resolution_job_registry` now differ between
+  gitlab.com and the self-hosted catalogue, so their contracts mark them
+  `# ignore-input:` instead of flagging one instance as drift. `revendor.sh` honours
+  `# ignore-input:` when it regenerates a contract, as the contract test already did.
+
+## [3.5.0] — 2026-09-29
+
+### Changed
+
+- **Fortify build trees run in parallel.** The units `detect-sast-units.sh` finds now
+  run as a pool of containers instead of one after another. Pool size defaults to three
+  quarters of the container runtime's memory in 3 GiB slots (override with
+  `APPSEC_FORTIFY_JOBS`), and each container gets a `--memory` cap so Fortify's
+  `-autoheap` sizes its JVM to its share instead of the whole machine. Each unit writes
+  its own log, appended whole to `fortify-sast.log` when it finishes; a unit killed
+  with exit 137 says it most likely ran out of memory. The watchdog still reaches every
+  running container. A runtime that does not report its memory keeps the old
+  behaviour (one unit, no cap). Measured on crAPI (6 units, 16 GB Docker VM): ~40 min
+  → ~11.5 min.
+- **Local image builds work behind TLS inspection.** With a `ca_bundle` in play,
+  container scanning builds each Dockerfile from a rewritten copy
+  (`.appsec-results/Dockerfile.appsec-ca`, via `scripts/ca-overlay.awk`) whose
+  shell-form `RUN` steps bind-mount the bundle (`RUN --mount=type=bind,from=appsec-ca`)
+  and export the variables each tool reads (`SSL_CERT_FILE`, `PIP_CERT`,
+  `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`,
+  `WGETRC`, and a JVM truststore via `JAVA_TOOL_OPTIONS`). No `COPY` or `ENV` is added
+  and every non-`RUN` line is byte-identical, so the scanned image matches what CI
+  builds. `scripts/build-ca-context.sh` prepares `.appsec-results/build-ca/` once and
+  reuses it while the bundle is unchanged; the JVM truststore comes from a host
+  `keytool` or the Fortify image's. `APPSEC_CS_BUILD_CA=off` disables it. Exec-form and
+  heredoc `RUN` steps are left untouched.
+
+### Fixed
+
+- **Container scanning kept only the last image's findings** on a repository with more
+  than one Dockerfile in archive mode (the local-build path): every image's scan wrote
+  `container-scan-archive.json`, so N images counted as scanned while only the final
+  one's results survived. Each image now writes `container-scan-archive-<slug>.json`,
+  its findings are located as `<slug>: <target>` (the same CVE in two images stays two
+  findings), and per-image reports from an earlier run are cleared before a rescan.
+- **Go SAST units behind TLS inspection** failed `go mod download` with `x509:
+  certificate signed by unknown authority` even with `ca_bundle` set — the bundle
+  reached the JVM and uv, never Go. The go arm now exports `SSL_CERT_FILE`.
+- **The container-scanning archive scanner could not download its vulnerability DB**
+  behind TLS inspection: the image's own entrypoint, which installs
+  `ADDITIONAL_CA_CERT_BUNDLE`, is bypassed. The runner now exports `SSL_CERT_FILE`.
+- **Image names are lowercased.** `APP_NAME` defaults to the directory name, so a
+  checkout named `crAPI` failed every build with `repository name must be lowercase`.
+- **Python `translation_mode: full` created its venv in the repository**
+  (`/workspace/.venv`), where parallel python units would rebuild it under each other.
+  It now lives in the container's temp space.
+- `--only container_scanning` resolves the Fortify image (when SAST is enabled) solely
+  to borrow its `keytool`; failing to resolve it does not stop the scan.
+
 ## [3.4.0] — 2026-09-24
 
 ### Added
@@ -77,6 +164,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `go` case this mechanism exists to catch — still blocks as `CONTRACT-DRIFT:`.
 
 ### Changed
+- **`platform-engineering` profile's `hardened_repo` now points at Red Hat's Hummingbird
+  registry** (`registry.access.redhat.com/hi/{image}:{tag}`) instead of Chainguard
+  (`cgr.dev/chainguard/{image}:{tag}`). Chainguard's Cloudflare R2 blob storage is
+  Zscaler-blocked from developer laptops, and its free tier publishes `:latest` only, so a
+  versioned `{tag}` probe always missed anyway. Hummingbird is reachable from both laptops
+  and the CI runner. `catalog` and `company` are unaffected.
+- `jq` is fetched from its official release (github.com/jqlang/jq, 1.8.2) when the host has
+  none — verified against the release's `sha256sum.txt` and refused if it cannot be
+  verified. New `{jq_os}` placeholder (`macos`/`linux`) matches jq's asset names; macOS 15+
+  ships `/usr/bin/jq`, so Macs never download. Preflight now names https://curl.se/download/
+  when `curl` is missing.
 - Image pulls retry with `--platform linux/amd64` when the only failure is a missing
   arm64 manifest (`resolve-image.sh` `pull_ok`, `run-scan.sh` `pull_image`), so amd64-only
   scanner images (Fortify, toolbox) run emulated on Apple Silicon instead of being
@@ -106,6 +204,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   selected-Dockerfiles list once and reuses it for both the `Detected:`
   banner and container scanning; `normalize.py`'s `load_skip_reasons` and
   `load_disabled_reasons` share one `_load_category_tsv` helper.
+- **`settings.ca_bundle` accepts `"auto"` and now ships as the default**
+  (previously `""`). At scan time `run-scan.sh` builds `.appsec-results/ca-bundle.pem`
+  from the host's own trust store (macOS: `security find-certificate -a -p` against
+  the `SystemRootCertificates`/`System` keychains, where a corporate TLS-inspection
+  root such as Zscaler's normally lands; Linux: the first readable of
+  `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`) and
+  mounts it exactly like a configured path. Finding nothing is an `INFO` line, not
+  an error. `scanners/preflight.sh` accepts `"auto"` without checking it as a
+  readable path; an explicit path keeps today's behaviour, `""` still disables it.
+- **`scanners/fortify-sast.sh` now trusts `settings.ca_bundle` in the JVM too.**
+  `ADDITIONAL_CA_CERT_BUNDLE` already reached `curl`/`pip`/`uv`, but never Maven or
+  Gradle, so a build behind TLS-inspection still failed to resolve dependencies.
+  When a bundle is mounted and `keytool` is on `PATH`, the runner copies the JDK's
+  own `cacerts` into a temp truststore, imports every certificate from the bundle
+  (one that fails to import is skipped, not fatal), and exports `JAVA_TOOL_OPTIONS`
+  pointing at it. No bundle, or no `keytool` — unchanged.
+- **`settings.package_registries` ships pointed at the public registries**
+  (npm, PyPI, Maven Central, the Go module proxy) instead of empty, so the
+  remediation reachability probe answers instead of `unknown` out of the box.
+  `auth_token_env` stays `""`. `settings.airgap: true` now skips this probe
+  entirely, in both `preflight.sh` and `run-scan.sh`, regardless of what
+  `package_registries` names — previously nothing gated it but an empty template.
+- **`platform-engineering` profile now declares `base_repo`/`hardened_repo`**
+  (`docker.io/library/{image}:{tag}` / `cgr.dev/chainguard/{image}:{tag}`), the
+  same public values the `catalog` profile already ships, so the base-image
+  reachability probe runs on the default profile too.
 
 ### Added
 

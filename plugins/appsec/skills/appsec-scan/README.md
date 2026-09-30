@@ -41,6 +41,9 @@ You need two things:
 | **Docker or Podman**, running | `docker info` (or `podman info`) |
 | **python3** on PATH | `python3 --version` |
 
+> `jq` and `curl` come with macOS; elsewhere a missing `jq` is downloaded from its official
+> release and checksum-verified automatically.
+>
 > Without `python3` the scan still runs, but severity normalization, triage, and the
 > gate degrade to raw counts with `UNKNOWN` status. Your platform admin can point
 > `settings.python.install_url` at an internal tarball to auto-provision it.
@@ -61,15 +64,12 @@ You need two things:
    your lockfiles/manifests there (never source), gets GitLab's own findings back, and
    deletes the upload. Without access, or with `APPSEC_REMOTE_MATCH=off`, the skill
    falls back to an offline Trivy match and labels the results as not GitLab's.
-3. **SAST (Fortify) only, until the internal container registry is live:** log Docker
-   in to registry.gitlab.com with the read-only token the platform team gives you
-   through the password manager. Once the images move to the self-hosted registry, run
-   `docker logout registry.gitlab.com`; no login is needed after that.
-   ```bash
-   docker login registry.gitlab.com -u <deploy-token-username>
-   ```
-   On Apple Silicon the Fortify image runs under emulation, so expect a few minutes
-   per build unit.
+3. **No Docker login is needed.** The scanner images, Fortify included, come from
+   this instance's public registry
+   (`gitlab.example.com/platform-engineering/ci-catalogue/docker-images`).
+   If you logged in to registry.gitlab.com for an earlier version, you can now run
+   `docker logout registry.gitlab.com`. On Apple Silicon the Fortify image runs under
+   emulation, so expect a few minutes per build unit.
 4. **Check it works** from a repo you want to scan:
    ```bash
    bash <path-to-skill>/scripts/run-scan.sh --only dependency_scanning
@@ -310,7 +310,7 @@ vendored snapshots in `reference/catalog/` and scans keep working with no networ
 the snapshots carry the same `template.yml` the live read would have returned, so
 version resolution, drift checks **and the scanner image** all still resolve — from a
 snapshot rather than from your instance. If those snapshots were vendored somewhere
-else, that is your admin's problem to fix (MIGRATION.md "Re-vendor"), not yours.
+else, that is your admin's problem to fix (UPDATE-GUIDE.md Scenario 6), not yours.
 
 `[offline-fallback: unauthorized]` is a different thing and does **not** continue: your
 instance answered and refused the token. Fix or set the PAT named by
@@ -411,6 +411,5 @@ the job it runs (`--no-token --secrets none`) — only reads catalogue metadata 
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How it works internally, with diagrams |
 | [`config/PREFERENCES.md`](config/PREFERENCES.md) | Admins: every config key and how to change it |
 | [`UPDATE-GUIDE.md`](UPDATE-GUIDE.md) | Maintainers: keeping runners in sync with the CI components |
-| [`MIGRATION.md`](MIGRATION.md) | Admins: moving from the public catalogue to an internal instance |
 | [`reference/remote-matcher/README.md`](reference/remote-matcher/README.md) | Admins: setting up the helper project for GitLab-native dependency-scanning matching |
 | [`CHANGELOG.md`](CHANGELOG.md) | Version history |
